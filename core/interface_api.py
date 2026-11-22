@@ -1892,6 +1892,9 @@ class Turn(BaseModel):
     # Snapshot visibly attached to the previous assistant turn. It is accepted
     # only as bounded evidence for explicit Cognitive Trace audit questions.
     displayed_cognitive_trace: dict | None = None
+    # Structured capability for numeric internal-state reporting. Natural
+    # language wording alone never unlocks raw affect telemetry.
+    debug_introspection: bool = False
 
 
 @router.post('/voice/coqui-recording')
@@ -1998,6 +2001,7 @@ async def chat(payload: Turn, request: Request):
         turn_completed = False
         assistant_parts = []
         completed_turn_id = ""
+        semantic_validation_post_response = False
         cognitive_scope_id = user_id
 
         async def emit(kind, **fields):
@@ -2031,6 +2035,7 @@ async def chat(payload: Turn, request: Request):
                 'vision_context': vision,
                 'voice_mode': payload.voice_mode,
                 'turn_id': turn_id,
+                'debug_introspection': payload.debug_introspection,
             }
             if payload.displayed_cognitive_trace is not None:
                 stream_kwargs['displayed_cognitive_trace'] = payload.displayed_cognitive_trace
@@ -2089,6 +2094,9 @@ async def chat(payload: Turn, request: Request):
                     if isinstance(chunk, dict):
                         if chunk.get('__meta__'):
                             completed_turn_id = str(chunk.get('turn_id') or '')
+                            semantic_validation_post_response = bool(
+                                chunk.get('semantic_validation_post_response')
+                            )
                             cognitive_scope_id = str(
                                 chunk.get('cognitive_scope_id') or user_id
                             )
@@ -2137,6 +2145,7 @@ async def chat(payload: Turn, request: Request):
                     text, ''.join(assistant_parts), user_id, reflection_epoch,
                     turn_id=completed_turn_id,
                     cognitive_scope_id=cognitive_scope_id,
+                    semantic_validation=semantic_validation_post_response,
                 )
 
     worker = asyncio.create_task(produce())

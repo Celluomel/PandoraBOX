@@ -1,0 +1,247 @@
+"""Run Lumina with opt-in, content-redacted LLM-call instrumentation.
+
+This is a Phase 0 diagnostic launcher. It does not change production modules.
+It records actual provider-boundary calls, opaque turn IDs, prompt sizes,
+duration, visible/reasoning character counts, and provider-reported token usage.
+It never records prompt or response text.
+"""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import inspect
+import json
+import os
+from pathlib import Path
+import runpy
+import sys
+import threading
+import time
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+LOG_PATH = Path(os.environ.get(
+    "LUMINA_LLM_AUDIT_LOG", str(ROOT / "logs" / "llm_call_audit.jsonl")
+)).resolve()
+_lock = threading.Lock()
+_sequence: dict[str, int] = {}
+_call_id = 0
+_PATCHED = "__lumina_audit_wrapped__"
+
+
+def _turn_id(kwargs: dict[str, Any]) -> str:
+    candidate = str(kwargs.get("audit_turn_id") or "")
+    if not candidate:
+        context = sys.modules.get("core.turn_execution_context")
+        var = getattr(context, "current_turn_id", None) if context else None
+        try:
+            candidate = str(var.get() or "") if var is not None else ""
+        except Exception:
+            candidate = ""
+    return candidate[:120]
+
+
+def _prompt_material(args: tuple[Any, ...]) -> str:
+    if not args:
+        return ""
+    value = args[0]
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                parts.append(str(item.get("content") or ""))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(value)
+
+
+def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: dict[str, Any]):
+    global _call_id
+    turn_id = _turn_id(kwargs)
+    with _lock:
+        _call_id += 1
+        call_id = _call_id
+        _sequence[turn_id] = _sequence.get(turn_id, 0) + 1
+        turn_call_number = _sequence[turn_id]
+    caller = "unknown"
+    caller_file = ""
+    frame = inspect.currentframe()
+    try:
+        frame = frame.f_back if frame else None
+        while frame:
+            module = str(frame.f_globals.get("__name__", ""))
+            if module != __name__:
+                caller = f"{module}.{frame.f_code.co_name}"
+                caller_file = str(Path(frame.f_code.co_filename).resolve())
+                try:
+                    caller_file = Path(caller_file).relative_to(ROOT).as_posix()
+                except ValueError:
+                    caller_file = Path(caller_file).name
+                break
+            frame = frame.f_back
+    finally:
+        del frame
+    prompt = _prompt_material(args)
+    return {
+        "call_id": call_id,
+        "turn_id": turn_id or None,
+        "turn_call_number": turn_call_number if turn_id else None,
+        "provider": type(instance).__name__,
+        "model": str(kwargs.get("model") or getattr(instance, "model", "unknown"))[:120],
+        "provider_method": method,
+        "caller": caller[:180],
+        "caller_file": caller_file[:120],
+        "execution": "foreground_turn" if turn_id else "background_or_unattributed",
+        "thread": threading.current_thread().name[:80],
+        "prompt_chars": len(prompt),
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest(),
+        "started_unix": time.time(),
+    }
+
+
+def _write_event(event: dict[str, Any]) -> None:
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
+        with _lock:
+            with LOG_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+                handle.flush()
+    except OSError as exc:
+        print(f"[llm-audit] log write failed: {type(exc).__name__}", file=sys.stderr)
+
+
+def _capture_item(event: dict[str, Any], item: Any) -> None:
+    if isinstance(item, str):
+        event["visible_chars"] = int(event.get("visible_chars", 0)) + len(item)
+        return
+    if not isinstance(item, dict):
+        return
+    kind = str(item.get("type") or "")
+    if kind == "reasoning":
+        event["reasoning_chars"] = int(event.get("reasoning_chars", 0)) + len(str(item.get("text") or ""))
+    elif kind == "content":
+        event["visible_chars"] = int(event.get("visible_chars", 0)) + len(str(item.get("text") or ""))
+    elif kind == "finish":
+        event["finish_reason"] = str(item.get("reason") or "")[:48]
+    usage = item.get("usage")
+    if isinstance(usage, dict):
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens"):
+            value = usage.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                event[f"reported_{key}"] = value
+    for key in ("reasoning_tokens", "reasoning_output_tokens"):
+        value = item.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            event[f"reported_{key}"] = value
+
+
+def _patch_provider_method(cls: type, method: str) -> None:
+    original = cls.__dict__.get(method)
+    if not callable(original) or getattr(original, _PATCHED, False):
+        return
+    if method == "_generate_messages_stream":
+        def wrapped(self, *args, **kwargs):
+            event = _call_metadata(self, method, args, kwargs)
+            started = time.perf_counter()
+            event["status"] = "completed"
+            try:
+                for item in original(self, *args, **kwargs):
+                    _capture_item(event, item)
+                    yield item
+            except BaseException as exc:
+                event["status"] = "failed"
+                event["error_type"] = type(exc).__name__
+                raise
+            finally:
+                event["duration_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                _write_event(event)
+        wrapped.__name__ = original.__name__
+        wrapped.__doc__ = original.__doc__
+        setattr(wrapped, _PATCHED, True)
+    else:
+        def wrapped(self, *args, **kwargs):
+            event = _call_metadata(self, method, args, kwargs)
+            started = time.perf_counter()
+            event["status"] = "completed"
+            try:
+                result = original(self, *args, **kwargs)
+                if isinstance(result, str):
+                    event["visible_chars"] = len(result)
+                elif isinstance(result, dict):
+                    text = result.get("text")
+                    if isinstance(text, str):
+                        event["visible_chars"] = len(text)
+                    for key in ("completion_reason", "finish_reason", "status"):
+                        if result.get(key) is not None:
+                            event[key] = str(result[key])[:48]
+                    for key in ("output_tokens", "reasoning_tokens", "prompt_tokens", "total_tokens"):
+                        value = result.get(key)
+                        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                            event[f"reported_{key}"] = value
+                return result
+            except BaseException as exc:
+                event["status"] = "failed"
+                event["error_type"] = type(exc).__name__
+                raise
+            finally:
+                event["duration_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                _write_event(event)
+        wrapped.__name__ = original.__name__
+        wrapped.__doc__ = original.__doc__
+        setattr(wrapped, _PATCHED, True)
+    setattr(cls, method, wrapped)
+
+
+def _install_provider_instrumentation() -> None:
+    from managers.llm_manager import PROVIDER_MAP
+    seen: set[type] = set()
+    for cls in PROVIDER_MAP.values():
+        if cls in seen:
+            continue
+        seen.add(cls)
+        for method in (
+            "_generate_messages_stream", "_generate_messages",
+            "generate_background_result", "generate_with_vision",
+        ):
+            _patch_provider_method(cls, method)
+
+
+def _run_with_module_profiler(target: Path) -> None:
+    profiler_path = ROOT / "scripts" / "audit_runtime_python_execution.py"
+    spec = importlib.util.spec_from_file_location("lumina_module_execution_audit", profiler_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Could not load module execution profiler")
+    profiler = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profiler)
+    sys.path.insert(0, str(ROOT))
+    sys.argv = [str(target)]
+    sys.setprofile(profiler._profile)
+    threading.setprofile(profiler._profile)
+    try:
+        runpy.run_path(str(target), run_name="__main__")
+    finally:
+        sys.setprofile(None)
+        threading.setprofile(None)
+        profiler._write_report()
+
+
+def main() -> int:
+    target = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "app.py").resolve()
+    if not target.is_file() or target.suffix.lower() != ".py":
+        print("Usage: audit_llm_calls.py [app.py]", file=sys.stderr)
+        return 2
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    os.environ.setdefault("LUMINA_MODULE_EXECUTION_AUDIT", "1")
+    sys.path.insert(0, str(ROOT))
+    _install_provider_instrumentation()
+    print(f"[audit] provider call log: {LOG_PATH}")
+    _run_with_module_profiler(target)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

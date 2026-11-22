@@ -514,6 +514,19 @@ def affect_self_report_context(
     )
 
 
+def affect_advisory_context(description: str = "") -> str:
+    """Render private qualitative affect context without exposing telemetry."""
+    qualitative = " ".join(str(description or "").split())[:320]
+    return (
+        "━━ PRIVATE AFFECT ADVISORY ━━\n"
+        "This is a qualitative software-state signal for conversational tone, not a human "
+        "sensation or a claim of consciousness. Use it only when it helps the exchange; "
+        "do not recite affect numbers or turn ordinary social replies into a self-report. "
+        "When asked how you are, answer naturally and briefly.\n"
+        f"Modeled affect: {qualitative or 'near its current baseline.'}"
+    )
+
+
 def sanitize_affect_event_receipts(recent_events: Any) -> list[dict[str, Any]]:
     """Expose only bounded event identifiers, ages, and known channel deltas."""
     allowed_channels = {

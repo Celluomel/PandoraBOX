@@ -39,6 +39,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             ready=True, persona=Persona(), vision=None, llm=None,
             get_uptime=lambda: 120,
             notify_user_turn=lambda text, user_id: self.user_turns.append((text, user_id)),
+            schedule_deferred_cognitive_stages=lambda *args, **kwargs: None,
         )
         self.modules = {
             'managers.settings_manager': SimpleNamespace(
@@ -317,6 +318,14 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 self.runtime.persona.stream_kwargs['turn_id'], events[0]['turn_id']
             )
             self.assertFalse(api._turn_lock.locked())
+
+    async def test_debug_introspection_is_an_explicit_structured_capability(self):
+        async with self.client() as client:
+            response = await client.post('/api/interface/chat', json={
+                'text': 'How are you?', 'debug_introspection': True,
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.runtime.persona.stream_kwargs['debug_introspection'])
 
     async def test_rejects_unready_busy_empty_and_cross_site(self):
         async with self.client() as client:

@@ -229,7 +229,7 @@ echo.
 if /I "%LUMINA_MODULE_EXECUTION_AUDIT%"=="1" (
     echo [AUDIT] Python file execution profiling is enabled for this session.
     echo [AUDIT] It adds overhead and records paths and counts only.
-    "%LUMINA_PYTHON%" scripts\audit_runtime_python_execution.py app.py
+    "%LUMINA_PYTHON%" scripts\audit_llm_calls.py app.py
 ) else (
     "%LUMINA_PYTHON%" app.py
 )

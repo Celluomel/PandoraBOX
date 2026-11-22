@@ -568,6 +568,7 @@ class PersonaBridge:
         max_tokens_override: int | None = None,
         cognitive_scope_id: str = "",
         turn_id: str = "",
+        debug_introspection: bool = False,
     ):
         _terminal_meta = None
         async with self._response_turn_lock:
@@ -590,6 +591,7 @@ class PersonaBridge:
                 max_tokens_override=max_tokens_override,
                 cognitive_scope_id=cognitive_scope_id,
                 turn_id=audit_turn_id,
+                debug_introspection=debug_introspection,
             ).__aiter__()
 
             async def next_chunk_with_turn_context():
@@ -1100,6 +1102,10 @@ class PersonaBridge:
             if status.startswith("abstained_")
             else "deterministic_affect_source_projection"
             if status == "passed_deterministic_source_projection"
+            else "review_not_required_single_pass"
+            if status == "not_required_single_pass"
+            else "review_scheduled_post_response"
+            if status == "scheduled_post_response"
             else "review_incomplete",
             "scope": (
                 "deterministic_response_equals_retrieved_user_source"
@@ -1514,6 +1520,10 @@ class PersonaBridge:
                             if validation_status.startswith("abstained_")
                         else "deterministic_affect_source_projection"
                         if validation_status == "passed_deterministic_source_projection"
+                            else "review_not_required_single_pass"
+                            if validation_status == "not_required_single_pass"
+                            else "review_scheduled_post_response"
+                            if validation_status == "scheduled_post_response"
                             else "review_incomplete"
                         ),
                         "scope": (
@@ -1745,6 +1755,7 @@ class PersonaBridge:
         max_tokens_override: int | None = None,
         cognitive_scope_id: str = "",
         turn_id: str = "",
+        debug_introspection: bool = False,
     ):
         """
         Main entry point for every user turn.
@@ -1860,7 +1871,7 @@ class PersonaBridge:
                 plan = (_displayed_trace or {}).get("dominant_plan") or {}
                 self._record_turn_context_source(
                     "displayed_cognitive_trace",
-                    "injected" if _displayed_trace is not None else "unavailable",
+                    "injected" if displayed_cognitive_trace is not None else "unavailable",
                     turn_id=audit_turn_id,
                     captured_at=(_displayed_trace or {}).get("captured_at"),
                     plan_present=bool(plan),
@@ -2023,6 +2034,7 @@ class PersonaBridge:
                     displayed_cognitive_trace=_displayed_trace,
                     input_safety_checked=_input_safety_checked,
                     audit_turn_id=audit_turn_id,
+                debug_introspection=debug_introspection,
                 ):
                     if isinstance(chunk, dict) and chunk.get("__meta__"):
                         # Finalize before the terminal event: stream clients
@@ -2274,6 +2286,38 @@ class PersonaBridge:
             )
             return epoch
 
+    def _schedule_post_response_collection(
+        self, awaitable, turn_id: str, stage_names=(),
+    ) -> asyncio.Task:
+        """Retain post-response work without holding the response stream open."""
+        task = asyncio.create_task(
+            awaitable, name=f"lumina-post-response-{str(turn_id)[:48]}",
+        )
+        background = getattr(self, "_post_response_tasks", None)
+        if background is None:
+            background = set()
+            self._post_response_tasks = background
+        background.add(task)
+
+        def _release(completed):
+            background.discard(completed)
+            if not completed.cancelled():
+                error = completed.exception()
+                if error is not None:
+                    logger.error(
+                        "Post-response receipt collector failed for turn %s: %s",
+                        turn_id, type(error).__name__,
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
+
+        task.add_done_callback(_release)
+        for stage_name in stage_names:
+            self._record_turn_stage(
+                str(stage_name), "scheduled_post_response",
+                output={"blocking": False}, turn_id=turn_id,
+            )
+        return task
+
     def run_deferred_analysis(
         self,
         user_text: str,
@@ -2291,6 +2335,83 @@ class PersonaBridge:
         memory/profile stages instead.
         """
         return "not_applicable_history_is_primary"
+
+    def run_deferred_semantic_validation(
+        self, user_text: str, assistant_text: str, user_id: str = "default",
+        *, turn_id: str = "", reflection_epoch: int = 0,
+    ) -> dict[str, str]:
+        """Audit a completed answer asynchronously without changing it.
+
+        This deliberately receives no cached sensor/world-model snapshot. It
+        can assess relevance and explicit constraints, but cannot certify live
+        facts; its receipt says so and any correction is advisory only.
+        """
+        manager = getattr(self._external_llm_fn, "__self__", None)
+        review_fn = getattr(manager, "generate_bare_result", None)
+        if not callable(review_fn):
+            return {"status": "unavailable", "error_type": "ReviewerUnavailable"}
+        audit_token = _set_audit_turn_id(turn_id)
+        try:
+            from cognition.semantic_response_validation import review_response
+            review = review_response(
+                review_fn,
+                request=user_text,
+                response=assistant_text,
+                context="",
+                constraints=(
+                    "This is an asynchronous quality audit after delivery. No current runtime, "
+                    "sensor, memory, or source evidence is supplied. Assess relevance and explicit "
+                    "constraints only; factual support must remain insufficient_evidence rather "
+                    "than guessed. This result cannot retract or replace the delivered answer."
+                ),
+            )
+            status = str(review.get("status") or "unavailable")
+            output = {
+                "scope": "post_response_relevance_and_constraints_only",
+                "live_facts_verified": False,
+                "response_replaced": False,
+                "reviewer_status": status,
+                "relevant": review.get("relevant"),
+                "claim_basis": review.get("claim_basis"),
+                "evidence_support": review.get("evidence_support"),
+                "contract_compliant": review.get("contract_compliant"),
+                "material_issue_count": min(8, len(review.get("material_issues") or [])),
+            }
+            self._record_turn_stage(
+                "semantic_answer_validation",
+                "reviewed_advisory" if status == "passed" else
+                "flagged_advisory" if status == "needs_revision" else "unavailable",
+                "Post-response model review; not independent verification and never an answer gate.",
+                output=output,
+                consumes=("response_finalization", "turn_input"),
+                turn_id=turn_id,
+            )
+            # Surface only a clear relevance/contract concern on the next
+            # prompt. A reviewer uncertainty or unsupported factual claim is
+            # not treated as proof that the delivered answer was wrong.
+            if status == "needs_revision" and (
+                review.get("relevant") is False
+                or review.get("contract_compliant") is False
+            ):
+                note = (
+                    "A post-response semantic review flagged a possible relevance or explicit-constraint issue "
+                    "in the prior answer. This is an unverified advisory; re-check the original request and "
+                    "available evidence before correcting it."
+                )
+                with self._reflection_lock:
+                    if self._reflection_epochs.get(user_id, reflection_epoch) == reflection_epoch:
+                        self._reflection_results[user_id] = (reflection_epoch, note)
+            return {"status": "completed" if status in {"passed", "needs_revision"} else status}
+        except Exception as exc:
+            self._record_turn_stage(
+                "semantic_answer_validation", "failed",
+                "Post-response review failed; delivered answer remains unchanged.",
+                output={"response_replaced": False},
+                error_type=type(exc).__name__, turn_id=turn_id,
+            )
+            return {"status": "failed", "error_type": type(exc).__name__}
+        finally:
+            _current_audit_turn_id.reset(audit_token)
 
     def run_deferred_goal_means_analysis(
         self, user_text: str, user_id: str = "default", interlocutor_name: str = "",
@@ -2390,6 +2511,7 @@ class PersonaBridge:
         displayed_cognitive_trace: dict | None = None,
         input_safety_checked: bool = False,
         audit_turn_id: str = "",
+        debug_introspection: bool = False,
     ):
         """
         Streaming path that runs every single lifecycle step from get_response().
@@ -2641,29 +2763,8 @@ class PersonaBridge:
 
         # ── Phase A: build prompt + cache real emotion/cond dicts ────
         self._chat_stage = 'building cognitive prompt'
-        _social_status_greeting = False
-        _structured_affect_status = False
-        _affect_change_analysis = False
-        _affect_self_report_query = False
-        try:
-            from cognition.self_description import (
-                is_affect_change_analysis_query, is_self_affect_query, is_social_status_greeting,
-                is_structured_affect_status_query,
-            )
-            _social_status_greeting = bool(
-                not peer_name and is_social_status_greeting(effective_input)
-            )
-            _structured_affect_status = bool(
-                not peer_name and is_structured_affect_status_query(effective_input)
-            )
-            _affect_change_analysis = bool(
-                not peer_name and is_affect_change_analysis_query(effective_input)
-            )
-            _affect_self_report_query = bool(
-                not peer_name and is_self_affect_query(effective_input)
-            )
-        except Exception as _affect_route_error:
-            logger.debug("Affect self-report routing unavailable: %s", _affect_route_error)
+        _structured_affect_status = bool(debug_introspection and not peer_name)
+        _affect_self_report_query = _structured_affect_status
         _suppress_external_search = bool(
             voice_mode
             or bool(peer_name)
@@ -2688,13 +2789,13 @@ class PersonaBridge:
             peer_name,
             _audit_turn_id,
             _are_turn_status == "completed",
+            _structured_affect_status,
         )
         _deterministic_affect_report = False
         _affect_direct_response = ""
-        if _social_status_greeting or _structured_affect_status or _affect_change_analysis:
+        if _structured_affect_status:
             try:
                 from cognition.self_description import (
-                    render_affect_change_analysis, render_affect_self_report,
                     render_detailed_affect_status,
                 )
                 from managers.settings_manager import config as _affect_cfg
@@ -2710,12 +2811,8 @@ class PersonaBridge:
                         or effective_input.casefold().startswith(("comment", "ça ", "tu ", "vous "))
                         else "en"
                     )
-                _affect_direct_response = (
-                    render_affect_change_analysis(_affect_evidence, language=_affect_language)
-                    if _affect_change_analysis
-                    else render_detailed_affect_status(_affect_evidence, language=_affect_language)
-                    if _structured_affect_status
-                    else render_affect_self_report(_affect_evidence, language=_affect_language)
+                _affect_direct_response = render_detailed_affect_status(
+                    _affect_evidence, language=_affect_language,
                 )
                 _deterministic_affect_report = True
                 self._record_turn_stage(
@@ -3892,163 +3989,33 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 or str(_memory_recall_result.get("status") or "").startswith("abstained_")
             )
         )
+        _semantic_review_post_response = False
         if (
             raw_response.strip() and not _generation_failed
             and not _source_recall_attempt and not _deterministic_affect_report
         ):
-            _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
-            # The answer is still inside an interactive turn here. The normal
-            # background helper deliberately defers while that marker is set,
-            # which made every in-turn semantic review appear unavailable.
-            # Use the manager's foreground, history-free analysis channel so
-            # the review shares the provider lock without competing with the
-            # visible generation or bypassing the active-turn policy.
-            _review_fn = getattr(_llm_manager, "generate_interactive_analysis", None)
-            if not callable(_review_fn):
-                _review_fn = getattr(_llm_manager, "generate_bare", None)
-            try:
-                from cognition.semantic_response_validation import review_response
-                _affect_claim_review = False
-                try:
-                    from cognition.self_description import is_self_affect_query
-                    _affect_claim_review = bool(
-                        not peer_name and is_self_affect_query(effective_input)
-                    )
-                except Exception:
-                    pass
-                if _affect_claim_review:
-                    _affect_marker = "━━ AFFECT SELF-REPORT EVIDENCE ━━"
-                    _prompt_text = str(system_prompt or "")
-                    _marker_at = _prompt_text.rfind(_affect_marker)
-                    _semantic_context = (
-                        _prompt_text[_marker_at:]
-                        if _marker_at >= 0 else ""
-                    )
-                    _semantic_constraints = (
-                        "Use only the named modeled affect channels and values in the supplied affect evidence. "
-                        "They are computed software signals, not subjective experiences. Reject claims such as "
-                        "'I feel'/'je ressens', bodily sensations, or any affect channel absent from that evidence. "
-                        "Do not state that a recorded appraisal caused the overall current state; at most report it "
-                        "as the latest logged appraisal, and say no cause is established when the evidence does not "
-                        "record one. Require evidence support for every claim, including social wording."
-                    )
-                else:
-                    _semantic_context = "\n\n".join(
-                        part for part in (str(system_prompt or ""), str(_generation_input or "")) if part
-                    )
-                    _semantic_constraints = (
-                        "Answer the user's actual request. Do not claim an action, measurement, "
-                        "source, or verification that is not supported by the provided context. "
-                        "Keep uncertainty explicit."
-                    )
-                _review = await asyncio.to_thread(
-                    review_response,
-                    _review_fn,
-                    request=effective_input,
-                    response=raw_response,
-                    context=_semantic_context,
-                    constraints=_semantic_constraints,
-                    require_evidence_support=_affect_claim_review,
+            # Conversation owns delivery. The former synchronous LLM review
+            # could spend 1–2 extra generations and replace valid prose with a
+            # refusal. Escalated review is scheduled after the answer and is
+            # advisory only; ordinary turns stay on the single-generation path.
+            _semantic_review_post_response = bool(
+                not peer_name and (
+                    _closed_world_cognitive_report_query
+                    or _goal_means_followup
+                    or displayed_cognitive_trace is not None
                 )
-                _semantic_status = str(_review.get("status") or "unavailable")
-                if _semantic_status == "needs_revision":
-                    _repair = str(_review.get("repair") or "").strip()
-                    if _repair:
-                        _repair_review = await asyncio.to_thread(
-                            review_response,
-                            _review_fn,
-                            request=effective_input,
-                            response=_repair,
-                            context=_semantic_context,
-                            constraints=_semantic_constraints,
-                            require_evidence_support=_affect_claim_review,
-                        )
-                        if _repair_review.get("status") == "passed":
-                            raw_response = _repair
-                            _semantic_status = "repaired_and_passed"
-                        else:
-                            _semantic_status = "abstained_after_failed_repair"
-                    else:
-                        _semantic_status = "abstained_no_grounded_repair"
-                elif _semantic_status == "invalid_review_output":
-                    _semantic_status = "abstained_invalid_review_output"
-                elif _semantic_status == "unavailable":
-                    _semantic_status = "abstained_review_unavailable"
-                elif _semantic_status != "passed":
-                    _semantic_status = "abstained_review_status_unrecognized"
-                if _semantic_status.startswith("abstained_"):
-                    try:
-                        from managers.settings_manager import config as _semantic_cfg
-                        _lang = str(getattr(_semantic_cfg, "RESPONSE_LANGUAGE", "auto") or "auto").lower()
-                    except Exception:
-                        _lang = "auto"
-                    raw_response = (
-                        "Je ne peux pas confirmer cette réponse à partir des éléments disponibles."
-                        if _lang.startswith("fr") or any(ch in effective_input for ch in "àâçéèêëîïôùûüÿœ")
-                        else "I can't confirm that answer from the available evidence."
-                    )
-                _semantic_consumes = [_response_source_stage, "turn_input"]
-                _semantic_trace = self.get_turn_trace(_audit_turn_id) or {}
-                _semantic_trace_stages = _semantic_trace.get("stages", {})
-                if isinstance(_semantic_trace_stages, dict) and isinstance(
-                    _semantic_trace_stages.get("primary_generation_input"), dict
-                ):
-                    _semantic_consumes.append("primary_generation_input")
-                self._record_turn_stage(
-                    "semantic_answer_validation",
-                    _semantic_status,
-                    "Probabilistic LLM review of request relevance, supplied-context support, and explicit constraints; not independent proof of truth.",
-                    output={
-                        "scope": _review.get("scope"),
-                        "relevant": _review.get("relevant"),
-                        "claim_basis": _review.get("claim_basis"),
-                        "evidence_support": _review.get("evidence_support"),
-                        "contract_compliant": _review.get("contract_compliant"),
-                        "material_issue_count": len(_review.get("material_issues") or []),
-                        "repair_rechecked": _semantic_status == "repaired_and_passed",
-                        "reviewer_status": _review.get("status"),
-                        "reviewer_reason": str(_review.get("reason") or "")[:80],
-                        "repair_reviewer_status": (
-                            _repair_review.get("status") if isinstance(_repair_review, dict) else None
-                        ),
-                        "repair_reviewer_issue_count": (
-                            min(8, len(_repair_review.get("material_issues") or []))
-                            if isinstance(_repair_review, dict) else 0
-                        ),
-                    },
-                    consumes=tuple(_semantic_consumes),
-                    turn_id=_audit_turn_id,
-                )
-                self._record_semantic_validation_summary(
-                    _audit_turn_id, _semantic_status, _review, _repair_review,
-                )
-                # Output safety must consume the semantically reviewed version
-                # even when the reviewer is unavailable; the receipt preserves
-                # that limitation instead of implying a successful review.
-                _response_source_stage = "semantic_answer_validation"
-            except Exception as _semantic_error:
-                _semantic_status = "abstained_review_unavailable"
-                try:
-                    from managers.settings_manager import config as _semantic_cfg
-                    _lang = str(getattr(_semantic_cfg, "RESPONSE_LANGUAGE", "auto") or "auto").lower()
-                except Exception:
-                    _lang = "auto"
-                raw_response = (
-                    "Je ne peux pas confirmer cette réponse à partir des éléments disponibles."
-                    if _lang.startswith("fr") or any(ch in effective_input for ch in "àâçéèêëîïôùûüÿœ")
-                    else "I can't confirm that answer from the available evidence."
-                )
-                self._record_turn_stage(
-                    "semantic_answer_validation", _semantic_status,
-                    type(_semantic_error).__name__,
-                    output={"scope": "probabilistic_semantic_consistency_not_truth_proof"},
-                    consumes=(_response_source_stage, "turn_input"),
-                    turn_id=_audit_turn_id,
-                )
-                self._record_semantic_validation_summary(
-                    _audit_turn_id, "unavailable", None,
-                )
-                _response_source_stage = "semantic_answer_validation"
+            )
+            _semantic_status = (
+                "scheduled_post_response" if _semantic_review_post_response
+                else "not_required_single_pass"
+            )
+            self._record_turn_stage(
+                "semantic_answer_validation", _semantic_status,
+                "Advisory review is scheduled only for state-signaled depth turns and cannot gate or replace the visible answer.",
+                output={"blocking": False, "response_replaced": False},
+                consumes=(_response_source_stage, "turn_input"),
+                turn_id=_audit_turn_id,
+            )
         elif raw_response.strip() and not _generation_failed and _deterministic_affect_report:
             _semantic_status = "passed_deterministic_source_projection"
             self._record_turn_stage(
@@ -4354,130 +4321,136 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 turn_id=_audit_turn_id,
             )
         if post_tasks:
-            results = await asyncio.gather(
-                *(task for _, task in post_tasks), return_exceptions=True
-            )
-            failures = []
-            for (stage_name, _), result in zip(post_tasks, results):
-                if isinstance(result, BaseException):
-                    failures.append(result)
-                    _profile_input = stage_name == "human_profile_learning"
-                    self._record_turn_stage(
-                        stage_name, "failed", type(result).__name__,
-                        output=result,
-                        consumes=("turn_input",) if _profile_input else ("output_safety",),
-                        turn_id=_audit_turn_id,
-                    )
-                elif stage_name == "human_profile_learning" and isinstance(result, dict):
-                    profile_status = str(result.get("status") or "unreported")
-                    profile_failed = profile_status == "persistence_failed"
-                    if profile_failed:
-                        failures.append(RuntimeError("user profile persistence was not verified"))
-                    self._record_turn_stage(
-                        stage_name,
-                        "failed" if profile_failed else profile_status,
-                        output=result,
-                        consumes=("turn_input",),
-                        turn_id=_audit_turn_id,
-                    )
-                elif stage_name == "goal_means_post_response" and isinstance(result, dict):
-                    analysis_status = str(result.get("status") or "failed")
-                    if analysis_status == "completed":
+            async def _collect_post_turn_results():
+                results = await asyncio.gather(
+                    *(task for _, task in post_tasks), return_exceptions=True
+                )
+                failures = []
+                for (stage_name, _), result in zip(post_tasks, results):
+                    if isinstance(result, BaseException):
+                        failures.append(result)
+                        _profile_input = stage_name == "human_profile_learning"
                         self._record_turn_stage(
-                            stage_name, "completed", output=result,
-                            consumes=("output_safety",),
+                            stage_name, "failed", type(result).__name__,
+                            output=result,
+                            consumes=("turn_input",) if _profile_input else ("output_safety",),
                             turn_id=_audit_turn_id,
                         )
-                    elif analysis_status in {"not_applicable", "deferred", "unavailable", "invalid_output", "failed"}:
+                    elif stage_name == "human_profile_learning" and isinstance(result, dict):
+                        profile_status = str(result.get("status") or "unreported")
+                        profile_failed = profile_status == "persistence_failed"
+                        if profile_failed:
+                            failures.append(RuntimeError("user profile persistence was not verified"))
                         self._record_turn_stage(
                             stage_name,
-                            "failed" if analysis_status == "unavailable" else analysis_status,
-                            str(result.get("reason") or ""),
+                            "failed" if profile_failed else profile_status,
+                            output=result,
+                            consumes=("turn_input",),
+                            turn_id=_audit_turn_id,
+                        )
+                    elif stage_name == "goal_means_post_response" and isinstance(result, dict):
+                        analysis_status = str(result.get("status") or "failed")
+                        if analysis_status == "completed":
+                            self._record_turn_stage(
+                                stage_name, "completed", output=result,
+                                consumes=("output_safety",),
+                                turn_id=_audit_turn_id,
+                            )
+                        elif analysis_status in {"not_applicable", "deferred", "unavailable", "invalid_output", "failed"}:
+                            self._record_turn_stage(
+                                stage_name,
+                                "failed" if analysis_status == "unavailable" else analysis_status,
+                                str(result.get("reason") or ""),
+                                output=result, consumes=("output_safety",),
+                                turn_id=_audit_turn_id,
+                            )
+                            if analysis_status in {"unavailable", "invalid_output", "failed"}:
+                                failures.append(RuntimeError(
+                                    f"structured goal/means stage {analysis_status}"
+                                ))
+                        else:
+                            self._record_turn_stage(
+                                stage_name, "failed", f"unknown status: {analysis_status}",
+                                output=result, consumes=("output_safety",),
+                                turn_id=_audit_turn_id,
+                            )
+                            failures.append(RuntimeError("unknown goal/means stage status"))
+                    elif stage_name in {"empathy_outcome", "abstract_reasoning_outcome"}:
+                        outcome_status = str(result.get("status") or "") if isinstance(result, dict) else ""
+                        if outcome_status == "updated":
+                            self._record_turn_stage(
+                                stage_name, "completed",
+                                output={"type": "cognitive_effect_receipt", **result},
+                                consumes=("output_safety",), turn_id=_audit_turn_id,
+                            )
+                        elif outcome_status in {
+                            "no_effect", "skipped_no_prior_affect_read",
+                            "skipped_no_current_result", "skipped_no_causal_pair",
+                            "skipped_no_independent_outcome_evidence",
+                            "skipped_not_applicable",
+                        }:
+                            self._record_turn_stage(
+                                stage_name, outcome_status,
+                                output={"type": "cognitive_effect_receipt", **result},
+                                consumes=("output_safety",), turn_id=_audit_turn_id,
+                            )
+                        else:
+                            failures.append(RuntimeError(
+                                f"{stage_name} returned an invalid effect receipt"
+                            ))
+                            self._record_turn_stage(
+                                stage_name, "failed",
+                                "invalid or unreported effect receipt",
+                                output=(
+                                    {"type": "cognitive_effect_receipt", **result}
+                                    if isinstance(result, dict) else result
+                                ), consumes=("output_safety",),
+                                turn_id=_audit_turn_id,
+                            )
+                    elif stage_name == "cognitive_post_turn" and result is False:
+                        failures.append(RuntimeError("post-turn lifecycle reported failure"))
+                        self._record_turn_stage(
+                            stage_name, "failed", "one or more required cognitive stages failed",
                             output=result, consumes=("output_safety",),
                             turn_id=_audit_turn_id,
                         )
-                        if analysis_status in {"unavailable", "invalid_output", "failed"}:
-                            failures.append(RuntimeError(
-                                f"structured goal/means stage {analysis_status}"
-                            ))
-                    else:
+                    elif stage_name == "cognitive_post_turn" and isinstance(result, dict):
+                        wsdm_receipt = result.get("world_self_dynamics_outcome")
+                        if isinstance(wsdm_receipt, dict):
+                            wsdm_status = str(wsdm_receipt.get("status") or "unreported")
+                            self._record_turn_stage(
+                                "world_self_dynamics_outcome",
+                                "completed" if wsdm_status == "persisted" else
+                                "failed" if wsdm_status == "failed" else
+                                "skipped_no_matching_pending_turn" if wsdm_status == "no_matching_pending_turn" else
+                                "skipped_unavailable",
+                                output={"type": "wsdm_transition_receipt", **wsdm_receipt},
+                                consumes=("world_self_dynamics_model",),
+                                turn_id=_audit_turn_id,
+                            )
+                            if wsdm_status in {"failed", "no_matching_pending_turn"}:
+                                failures.append(RuntimeError(
+                                    f"world/self transition receipt {wsdm_status}"
+                                ))
                         self._record_turn_stage(
-                            stage_name, "failed", f"unknown status: {analysis_status}",
-                            output=result, consumes=("output_safety",),
-                            turn_id=_audit_turn_id,
-                        )
-                        failures.append(RuntimeError("unknown goal/means stage status"))
-                elif stage_name in {"empathy_outcome", "abstract_reasoning_outcome"}:
-                    outcome_status = str(result.get("status") or "") if isinstance(result, dict) else ""
-                    if outcome_status == "updated":
-                        self._record_turn_stage(
-                            stage_name, "completed",
-                            output={"type": "cognitive_effect_receipt", **result},
-                            consumes=("output_safety",), turn_id=_audit_turn_id,
-                        )
-                    elif outcome_status in {
-                        "no_effect", "skipped_no_prior_affect_read",
-                        "skipped_no_current_result", "skipped_no_causal_pair",
-                        "skipped_no_independent_outcome_evidence",
-                        "skipped_not_applicable",
-                    }:
-                        self._record_turn_stage(
-                            stage_name, outcome_status,
-                            output={"type": "cognitive_effect_receipt", **result},
+                            stage_name, "completed", output=result,
                             consumes=("output_safety",), turn_id=_audit_turn_id,
                         )
                     else:
-                        failures.append(RuntimeError(
-                            f"{stage_name} returned an invalid effect receipt"
-                        ))
                         self._record_turn_stage(
-                            stage_name, "failed",
-                            "invalid or unreported effect receipt",
-                            output=(
-                                {"type": "cognitive_effect_receipt", **result}
-                                if isinstance(result, dict) else result
-                            ), consumes=("output_safety",),
+                            stage_name, "completed", output=result,
+                            consumes=("output_safety",), side_effect_only=result is None,
                             turn_id=_audit_turn_id,
                         )
-                elif stage_name == "cognitive_post_turn" and result is False:
-                    failures.append(RuntimeError("post-turn lifecycle reported failure"))
-                    self._record_turn_stage(
-                        stage_name, "failed", "one or more required cognitive stages failed",
-                        output=result, consumes=("output_safety",),
-                        turn_id=_audit_turn_id,
+                if failures:
+                    logger.warning(
+                        "Post-turn stage failures: %d/%d", len(failures), len(post_tasks),
                     )
-                elif stage_name == "cognitive_post_turn" and isinstance(result, dict):
-                    wsdm_receipt = result.get("world_self_dynamics_outcome")
-                    if isinstance(wsdm_receipt, dict):
-                        wsdm_status = str(wsdm_receipt.get("status") or "unreported")
-                        self._record_turn_stage(
-                            "world_self_dynamics_outcome",
-                            "completed" if wsdm_status == "persisted" else
-                            "failed" if wsdm_status == "failed" else
-                            "skipped_no_matching_pending_turn" if wsdm_status == "no_matching_pending_turn" else
-                            "skipped_unavailable",
-                            output={"type": "wsdm_transition_receipt", **wsdm_receipt},
-                            consumes=("world_self_dynamics_model",),
-                            turn_id=_audit_turn_id,
-                        )
-                        if wsdm_status in {"failed", "no_matching_pending_turn"}:
-                            failures.append(RuntimeError(
-                                f"world/self transition receipt {wsdm_status}"
-                            ))
-                    self._record_turn_stage(
-                        stage_name, "completed", output=result,
-                        consumes=("output_safety",), turn_id=_audit_turn_id,
-                    )
-                else:
-                    self._record_turn_stage(
-                        stage_name, "completed", output=result,
-                        consumes=("output_safety",), side_effect_only=result is None,
-                        turn_id=_audit_turn_id,
-                    )
-            if failures:
-                logger.warning(
-                    "Post-turn stage failures: %d/%d", len(failures), len(post_tasks),
-                )
+
+            self._schedule_post_response_collection(
+                _collect_post_turn_results(), _audit_turn_id,
+                (stage_name for stage_name, _future in post_tasks),
+            )
         speech = self._sanitize(raw_response)
         emotion, intensity = self._infer_emotion(effective_input)
         self._record_turn_stage(
@@ -4493,6 +4466,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             "speech":    speech,
             "emotion":   emotion,
             "intensity": intensity,
+            "semantic_validation_post_response": _semantic_review_post_response,
             **({"error": "provider_empty_output"} if _generation_failed else {}),
         }
 
@@ -4505,6 +4479,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         peer_name: str = "",
         audit_turn_id: str = "",
         include_are_context: bool = True,
+        debug_introspection: bool = False,
     ) -> tuple[str, dict, dict, float | None, dict | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -5210,9 +5185,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     is_internal_cognitive_query(user_input)
                     or _explicit_recall_query
                 )
-                _affect_self_report = bool(
-                    not peer_name and is_self_affect_query(user_input)
-                )
+                _affect_self_report = bool(not peer_name and debug_introspection)
                 if _affect_self_report:
                     from cognition.self_description import sanitize_affect_event_receipts
                     _recent_affect_events = s.emotional_state.get_recent_affect_events(5)
@@ -5906,6 +5879,10 @@ Memory honesty — two distinct cases:
                 "A Body camera source such as `remote:body:body_camera_yolox_midas` is exclusively Body evidence. "
                 "It cannot establish what the Brain-PC camera sees. If the Brain-PC status above is disabled, inactive, or stale, answer that its current view is unavailable; do not substitute the Body feed."
             )
+            if not peer_name:
+                _description = str(mods.get("state_description", "") or "").strip()
+                from cognition.self_description import affect_advisory_context
+                system_prompt += "\n\n" + affect_advisory_context(_description)
             if _affect_self_report:
                 from cognition.self_description import affect_self_report_context
                 system_prompt += "\n\n" + affect_self_report_context(
@@ -7967,14 +7944,6 @@ Memory honesty — two distinct cases:
         return bool(body_reference or direct_action)
 
     @staticmethod
-    def _may_route_to_local_camera(text: str) -> bool:
-        """Cheap candidate gate; the semantic classifier decides the actual intent."""
-        return bool(re.search(
-            r"\b(camera|caméra|vision|visual|image|picture|photo|face|visage|see|seeing|look|looking|vois|voir|vois-tu|regarde|reconnais|reconnaissance)\b",
-            str(text or "").lower(),
-        ))
-
-    @staticmethod
     def _is_factual_question_form(text: str) -> bool:
         """Recognize interrogative grammar so a read-only question cannot fall into the diagnostic dump."""
         normalized = str(text or "").strip().casefold()
@@ -8508,7 +8477,7 @@ Memory honesty — two distinct cases:
             }
         if not pending and self._is_developmental_autonomy_audit_request(user_input):
             return self._developmental_autonomy_response()
-        if not pending and not (self._may_route_to_body(user_input) or self._may_route_to_local_camera(user_input)):
+        if not pending and not self._may_route_to_body(user_input):
             return None
         if (
             not pending

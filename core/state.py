@@ -488,6 +488,7 @@ class AppState:
     def schedule_deferred_cognitive_stages(
         self, user_text: str, assistant_text: str, user_id: str = "default",
         reflection_epoch: int = 0, turn_id: str = "", cognitive_scope_id: str = "",
+        semantic_validation: bool = False,
     ) -> bool:
         """Schedule bounded post-answer analysis without delaying chat delivery."""
         persona = self.persona
@@ -495,7 +496,10 @@ class AppState:
             return False
         deferred = getattr(persona, "run_deferred_analysis", None)
         goal_means = getattr(persona, "run_deferred_goal_means_analysis", None)
-        if not callable(deferred) and not callable(goal_means):
+        semantic_review = getattr(persona, "run_deferred_semantic_validation", None)
+        if not callable(deferred) and not callable(goal_means) and not (
+            semantic_validation and callable(semantic_review)
+        ):
             return False
         try:
             trace = persona.get_last_turn_trace() if callable(
@@ -544,6 +548,29 @@ class AppState:
                     logger.exception("Deferred continuity analysis failed")
             else:
                 record("continuity_analysis_post_response", "skipped_unavailable")
+            if semantic_validation and callable(semantic_review):
+                try:
+                    result = semantic_review(
+                        user_text, assistant_text, user_id,
+                        turn_id=turn_id, reflection_epoch=reflection_epoch,
+                    )
+                    if not isinstance(result, dict) or result.get("status") in {
+                        "unavailable", "failed", "error",
+                    }:
+                        record(
+                            "semantic_answer_validation",
+                            str(result.get("status") if isinstance(result, dict) else result or "unavailable"),
+                            error_type=str(result.get("error_type") or "")
+                            if isinstance(result, dict) else "",
+                        )
+                except Exception as exc:
+                    record(
+                        "semantic_answer_validation", "failed",
+                        error_type=type(exc).__name__,
+                    )
+                    logger.exception("Deferred semantic review failed")
+            elif semantic_validation:
+                record("semantic_answer_validation", "skipped_unavailable")
             if callable(goal_means):
                 try:
                     result = goal_means(user_text, user_id, user_id, cognitive_scope_id)
