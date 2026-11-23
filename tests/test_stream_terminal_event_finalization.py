@@ -94,7 +94,7 @@ def test_terminal_meta_is_yielded_after_turn_lock_is_released():
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "get_response_stream"
     )
     lock_scope = next(
-        node for node in wrapper.body
+        node for node in ast.walk(wrapper)
         if isinstance(node, ast.AsyncWith)
         and any("_response_turn_lock" in ast.unparse(item.context_expr) for item in node.items)
     )

@@ -2683,9 +2683,10 @@ class PersonaBridge:
             self._record_turn_stage("empathy_read", "failed", str(_empathy_error), turn_id=_audit_turn_id)
             logger.debug("Empathy input stage unavailable: %s", _empathy_error)
 
-        # Heavy reasoning belongs after the visible answer. The response model
-        # receives fast local constraints below; structured explorations are
-        # queued only for turns whose shape warrants them.
+        # ARE is an explicitly authorized foreground auxiliary only when its
+        # applicability gate selects a conceptual turn. Its single structured
+        # result may inform this turn's prompt; unrelated background cognition
+        # remains deferred while the interactive reservation is held.
         _goal_means_analysis = None
         _goal_means_followup = False
         _temporal_analysis = None
@@ -2708,11 +2709,13 @@ class PersonaBridge:
             elif _state_are.are:
                 _are_result = await asyncio.to_thread(
                     _state_are.are.reason, user_id, effective_input,
+                    allow_interactive_turn=True,
                 )
                 _are_method = getattr(_are_result, "method", None) if _are_result else None
                 _are_turn_status = (
                     "completed" if _are_method == "llm"
                     else "deferred" if _are_method == "deferred"
+                    else "failed" if _are_method == "failed"
                     else "not_applicable"
                 )
                 _are_pair = getattr(_are_result, "causal_pair", ("", "")) if _are_result else ("", "")
@@ -2892,9 +2895,15 @@ class PersonaBridge:
             _memory_query_prior_count,
         )
         if not peer_name:
-            _recent_anchor, _anchor_message_count = recent_dialogue_anchor(
-                _history_for_anchor, effective_input,
-            )
+            if _architecture_query or _factual_plan_query:
+                # Closed-world self-reports must be grounded in the current
+                # registry/snapshot. Do not even advertise prior assistant
+                # continuity as an available source for these answers.
+                _recent_anchor, _anchor_message_count = "", 0
+            else:
+                _recent_anchor, _anchor_message_count = recent_dialogue_anchor(
+                    _history_for_anchor, effective_input,
+                )
             if _recent_anchor:
                 system_prompt += (
                     "\n\n━━ IMMEDIATE CONVERSATION CONTEXT ━━\n"
@@ -3387,6 +3396,21 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     )
                     if _goal_report:
                         _deterministic_response = _goal_report
+                        _snapshot_sha256 = (
+                            hashlib.sha256(_snapshot_bytes).hexdigest()
+                            if isinstance(_planner_snapshot, dict) else None
+                        )
+                        self._record_turn_stage(
+                            "planner_factual_answer", "rendered",
+                            output={
+                                "response_sha256": hashlib.sha256(
+                                    str(_goal_report).encode("utf-8", errors="replace")
+                                ).hexdigest(),
+                                "snapshot_sha256": _snapshot_sha256,
+                            },
+                            consumes=("turn_input", "planner_factual_snapshot"),
+                            turn_id=_audit_turn_id,
+                        )
             except Exception as _report_error:
                 logger.debug("Factual goal report fallback unavailable: %s", _report_error)
 
@@ -4449,6 +4473,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             elif _are_turn_status == "deferred":
                 self._record_turn_stage(
                     "abstract_reasoning_outcome", "skipped_deferred",
+                    turn_id=_audit_turn_id,
+                )
+            elif _are_turn_status == "failed":
+                self._record_turn_stage(
+                    "abstract_reasoning_outcome", "skipped_analysis_failed",
                     turn_id=_audit_turn_id,
                 )
             else:

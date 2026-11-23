@@ -547,7 +547,7 @@ def test_deterministic_reasoning_receipt_links_memory_and_planner_inputs():
     ) == ("turn_input", "memory_recall_answer")
     assert deterministic_reasoning_dependencies(
         selected=True, planner_snapshot=True,
-    ) == ("turn_input", "planner_factual_snapshot")
+    ) == ("turn_input", "planner_factual_answer")
     assert deterministic_reasoning_dependencies(
         selected=True, cognitive_audit_report=True,
     ) == ("turn_input", "cognitive_audit_status_report")

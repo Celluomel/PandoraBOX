@@ -86,10 +86,50 @@ def test_invalid_single_call_output_is_not_replaced_by_keyword_heuristic():
     llm = _LLM("not json")
     engine = AbstractReasoningEngine(_Organism(), llm)
 
-    result = engine._llm_reason("user-1", "A sufficiently abstract question?", 0.8)
+    with patch("core.llm_scheduler.llm_scheduler.is_busy", return_value=False), \
+         patch.object(engine, "_score_abstractness", return_value=0.8):
+        result = engine.reason("user-1", "A sufficiently abstract question?")
 
     assert len(llm.calls) == 1
-    assert result is None
+    assert result is not None
+    assert result.method == "failed"
+    assert result.reason_code == "JSONDecodeError"
+    assert result.llm_call_count == 1
+    with patch.object(engine, "_score_abstractness", return_value=0.8):
+        retry = engine.reason("user-1", "A sufficiently abstract question?")
+    assert retry is not None and retry.method == "deferred"
+    assert retry.reason_code == "per_user_cooldown"
+    assert len(llm.calls) == 1
+
+
+def test_failed_reanalysis_cannot_relabel_previous_same_text_as_current():
+    from cognition.abstract_reasoning_engine import ARE_COOLDOWN_S, ReasoningResult
+
+    llm = _LLM("not json")
+    engine = AbstractReasoningEngine(_Organism(), llm)
+    previous = ReasoningResult(
+        user_id="user-1", method="llm", core_concept="old result",
+        prompt_fragment="old result from an earlier turn",
+    )
+    engine._cache["user-1"] = previous
+    engine._last_input["user-1"] = "a sufficiently abstract question?"
+    engine._last_run["user-1"] = time.time() - ARE_COOLDOWN_S - 1
+
+    with patch("core.llm_scheduler.llm_scheduler.is_busy", return_value=False), \
+         patch.object(engine, "_score_abstractness", return_value=0.8):
+        failed = engine.reason("user-1", "A sufficiently abstract question?")
+
+    assert failed is not None and failed.method == "failed"
+    assert engine._cache.get("user-1") is None
+    assert engine._continuity_cache.get("user-1") is previous
+
+    with patch.object(engine, "_score_abstractness", return_value=0.8):
+        retry = engine.reason("user-1", "A sufficiently abstract question?")
+
+    assert retry is not None and retry.method == "deferred"
+    assert retry.reason_code == "per_user_cooldown"
+    assert engine._cache.get("user-1") is None
+    assert len(llm.calls) == 1
 
 
 def test_busy_provider_defers_without_inventing_analogy_or_side_effects():
@@ -140,3 +180,120 @@ def test_short_social_question_does_not_start_an_abstract_reasoning_call():
 
     assert result is None
     assert llm.calls == []
+
+
+def test_llm_manager_deferred_status_reaches_are_without_a_provider_call():
+    from managers.llm_manager import LLMManager
+
+    class _Provider:
+        model = "test-model"
+
+        def generate_background_result(self, *_args, **_kwargs):
+            raise AssertionError("provider must not run while chat is active")
+
+    llm = LLMManager(_Provider())
+    llm._chat_active.set()
+    engine = AbstractReasoningEngine(_Organism(), llm)
+
+    with patch("core.llm_scheduler.llm_scheduler.is_busy", return_value=False), \
+         patch.object(engine, "_score_abstractness", return_value=0.8):
+        result = engine.reason("user-1", "A conceptual question deserving analysis")
+
+    assert result is not None
+    assert result.method == "deferred"
+    assert result.reason_code == "interactive turn active"
+    assert result.llm_call_count == 0
+
+
+def test_are_explicit_foreground_call_runs_once_during_reserved_chat_turn():
+    from managers.llm_manager import LLMManager, current_llm_call_role
+
+    response = {
+        "core_concept": "identity continuity",
+        "components": ["memory", "belief revision"],
+        "best_analogy_domain": "language",
+        "structural_mapping": "Stable grammar supports changing sentences.",
+        "confidence": 0.72,
+        "derived_insight": "Continuity can depend on preserved relations.",
+        "open_question": "Which relations should remain invariant?",
+        "causal_antecedent": "",
+        "causal_consequent": "",
+        "prompt_note": "Keep the claim provisional.",
+    }
+
+    class _Provider:
+        model = "test-model"
+
+        def __init__(self):
+            self.calls = 0
+            self.roles = []
+
+        def generate_background_result(self, *_args, **_kwargs):
+            self.calls += 1
+            self.roles.append(current_llm_call_role.get())
+            return {"text": json.dumps(response), "status": "ok"}
+
+    provider = _Provider()
+    llm = LLMManager(provider)
+    llm._chat_active.set()
+    engine = AbstractReasoningEngine(_Organism(), llm)
+
+    with patch("core.llm_scheduler.llm_scheduler.is_busy", return_value=True), \
+         patch.object(engine, "_score_abstractness", return_value=0.8):
+        result = engine.reason(
+            "user-1", "How can identity persist through change?",
+            allow_interactive_turn=True,
+        )
+
+    assert result is not None and result.method == "llm"
+    assert result.llm_call_count == 1
+    assert result.core_concept == "identity continuity"
+    assert provider.calls == 1
+    assert provider.roles == ["foreground_auxiliary"]
+
+
+def test_are_records_actual_provider_fallback_count_and_keeps_valid_result_effects():
+    from managers.llm_manager import LLMManager
+
+    response = {
+        "core_concept": "identity continuity",
+        "components": ["memory", "belief revision"],
+        "best_analogy_domain": "language",
+        "structural_mapping": "Stable grammar supports changing sentences.",
+        "confidence": 0.72,
+        "derived_insight": "Continuity can depend on preserved relations.",
+        "open_question": "Which relations should remain invariant?",
+        "causal_antecedent": "",
+        "causal_consequent": "",
+        "prompt_note": "Keep the claim provisional.",
+    }
+
+    class _Provider:
+        model = "test-model"
+
+        def generate_background_result(self, *_args, **_kwargs):
+            raise RuntimeError("native path unavailable")
+
+        def _generate_messages(self, *_args, **_kwargs):
+            return json.dumps(response)
+
+    class _Curiosity:
+        def __init__(self):
+            self.questions = []
+
+        def plant_question(self, question, priority):
+            self.questions.append((question, priority))
+
+    organism = _Organism()
+    organism.curiosity_engine = _Curiosity()
+    engine = AbstractReasoningEngine(organism, LLMManager(_Provider()))
+
+    with patch("core.llm_scheduler.llm_scheduler.is_busy", return_value=False), \
+         patch.object(engine, "_score_abstractness", return_value=0.8):
+        result = engine.reason("user-1", "How can identity persist through change?")
+
+    assert result is not None and result.method == "llm"
+    assert result.llm_call_count == 2
+    assert organism.curiosity_engine.questions == [
+        ("Which relations should remain invariant?", 0.6),
+    ]

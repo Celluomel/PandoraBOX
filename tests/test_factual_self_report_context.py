@@ -63,10 +63,35 @@ class FactualSelfReportContextTests(unittest.TestCase):
         self.assertIn('error_type=type(_architecture_query_error).__name__', source)
 
     def test_planner_self_report_suppresses_assistant_continuity_and_filters_history(self):
-        source = (_HELPER_PATH.parents[1] / "cognition" / "persona_bridge.py").read_text(encoding="utf-8")
-        self.assertIn(
-            '"" if (_architecture_query or _factual_plan_query)', source,
+        source_path = _HELPER_PATH.parents[1] / "cognition" / "persona_bridge.py"
+        source = source_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        bridge = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge")
+        lifecycle = next(
+            node for node in bridge.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_stream_with_full_lifecycle"
         )
+        closed_world_anchor_guard = next(
+            node for node in ast.walk(lifecycle)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.BoolOp)
+            and isinstance(node.test.op, ast.Or)
+            and {item.id for item in node.test.values if isinstance(item, ast.Name)}
+            == {"_architecture_query", "_factual_plan_query"}
+            and any(
+                isinstance(item, ast.Assign)
+                and any(
+                    isinstance(target, ast.Tuple)
+                    and any(isinstance(name, ast.Name) and name.id == "_recent_anchor" for name in target.elts)
+                    for target in item.targets
+                )
+                and isinstance(item.value, ast.Tuple)
+                and isinstance(item.value.elts[0], ast.Constant)
+                and item.value.elts[0].value == ""
+                for item in node.body
+            )
+        )
+        self.assertIsNotNone(closed_world_anchor_guard)
         self.assertIn('if _factual_self_report:', source)
         self.assertIn('"historical_assistant_context", "filtered"', source)
 
@@ -74,7 +99,8 @@ class FactualSelfReportContextTests(unittest.TestCase):
         source = (_HELPER_PATH.parents[1] / "cognition" / "persona_bridge.py").read_text(encoding="utf-8")
         self.assertIn('"planner_factual_snapshot", "captured"', source)
         self.assertIn('snapshot=_planner_snapshot', source)
-        self.assertIn('("turn_input", "planner_factual_snapshot")', source)
+        self.assertIn('"planner_factual_answer", "rendered"', source)
+        self.assertIn('consumes=("turn_input", "planner_factual_snapshot")', source)
 
     def test_keeps_user_context_and_excludes_prior_assistant_claims(self):
         history = [

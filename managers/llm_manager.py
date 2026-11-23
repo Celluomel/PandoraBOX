@@ -788,14 +788,17 @@ class LLMManager:
         system_prompt: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, str]:
-        """Run background inference and preserve why no text was returned.
+        """Run history-free inference and preserve its completion provenance.
 
         ``generate_bare`` historically represented both provider failures and
         deliberate contention skips as an empty string. Cognitive planners
         need that distinction so an occupied camera/chat model does not count
-        as failed reasoning.
+        as failed reasoning. ``provider_call_count`` counts provider adapter
+        invocations made at this manager boundary, including fallback paths;
+        retries internal to an adapter are outside this count.
         """
         allow_interactive_turn = bool(kwargs.pop("_allow_interactive_turn", False))
+        provider_call_count = 0
         kwargs.setdefault("max_tokens", 1000)
         messages: List[Dict] = []
         if system_prompt:
@@ -820,6 +823,7 @@ class LLMManager:
                 "text": "",
                 "status": "deferred",
                 "reason": "interactive turn active",
+                "provider_call_count": 0,
             }
         acquired = (
             self._provider_lock.acquire(timeout=5.0)
@@ -836,6 +840,7 @@ class LLMManager:
                 "text": "",
                 "status": "deferred",
                 "reason": "provider wait timed out" if allow_interactive_turn else "provider busy",
+                "provider_call_count": 0,
             }
         role_token = current_llm_call_role.set(
             "foreground_auxiliary" if allow_interactive_turn else "background"
@@ -849,6 +854,7 @@ class LLMManager:
                     "text": "",
                     "status": "deferred",
                     "reason": "interactive turn started",
+                    "provider_call_count": 0,
                 }
             structured_requested = bool(
                 kwargs.get("json_mode") or isinstance(kwargs.get("json_schema"), dict)
@@ -862,6 +868,7 @@ class LLMManager:
             # requests through chat completions so the schema is enforceable.
             if callable(background_result) and not structured_requested:
                 try:
+                    provider_call_count += 1
                     completion = background_result(messages, **kwargs)
                     if not isinstance(completion, dict):
                         completion = {"text": str(completion or ""), "status": "unverified"}
@@ -872,6 +879,7 @@ class LLMManager:
                         "falling back to chat completions",
                         type(native_error).__name__,
                     )
+                    provider_call_count += 1
                     text = self.provider._generate_messages(messages, **kwargs) or ""
             else:
                 background_generate = getattr(
@@ -879,6 +887,7 @@ class LLMManager:
                 )
                 if callable(background_generate) and not structured_requested:
                     try:
+                        provider_call_count += 1
                         text = background_generate(messages, **kwargs) or ""
                     except Exception as native_error:
                         logger.warning(
@@ -886,8 +895,10 @@ class LLMManager:
                             "falling back to chat completions",
                             type(native_error).__name__,
                         )
+                        provider_call_count += 1
                         text = self.provider._generate_messages(messages, **kwargs) or ""
                 else:
+                    provider_call_count += 1
                     text = self.provider._generate_messages(messages, **kwargs) or ""
             stripped = str(text).strip()
             if not stripped:
@@ -899,6 +910,7 @@ class LLMManager:
                 stream = getattr(self.provider, "_generate_messages_stream", None)
                 if callable(stream):
                     try:
+                        provider_call_count += 1
                         chunks = []
                         for part in stream(messages, **kwargs):
                             if isinstance(part, str):
@@ -914,9 +926,14 @@ class LLMManager:
                                 "reason": "stream_fallback",
                                 "completion_reason": "unknown",
                                 "completion_verified": False,
+                                "provider_call_count": provider_call_count,
                             }
                         if streamed_stripped.lower().startswith("error:"):
-                            return {"text": streamed, "status": "error", "reason": "provider stream error"}
+                            return {
+                                "text": streamed, "status": "error",
+                                "reason": "provider stream error",
+                                "provider_call_count": provider_call_count,
+                            }
                     except Exception as stream_error:
                         logger.warning(
                             "Background provider stream fallback failed: %s",
@@ -927,22 +944,36 @@ class LLMManager:
                     "text": "",
                     "status": "empty",
                     "reason": "provider returned no assistant content",
+                    "provider_call_count": provider_call_count,
                 }
             if stripped.lower().startswith("error"):
                 return {
                     "text": str(text),
                     "status": "error",
                     "reason": stripped[:160],
+                    "provider_call_count": provider_call_count,
                 }
             if completion is not None:
                 completion["text"] = str(text)
                 completion.setdefault("status", "ok")
                 completion.setdefault("reason", "")
+                completion["provider_call_count"] = provider_call_count
                 return completion
             return {
                 "text": str(text), "status": "ok", "reason": "",
                 "completion_reason": "unknown",
                 "completion_verified": False,
+                "provider_call_count": provider_call_count,
+            }
+        except Exception as provider_error:
+            logger.warning(
+                "Background inference failed (%s)", type(provider_error).__name__,
+            )
+            return {
+                "text": "",
+                "status": "error",
+                "reason": type(provider_error).__name__,
+                "provider_call_count": provider_call_count,
             }
         finally:
             current_llm_call_origin.reset(origin_token)

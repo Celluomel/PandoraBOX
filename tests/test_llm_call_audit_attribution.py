@@ -73,9 +73,27 @@ def test_manager_marks_bare_calls_background_even_with_inherited_turn_id():
         current_turn_id.reset(turn_token)
 
     assert result["status"] == "ok"
+    assert result["provider_call_count"] == 1
     assert observed == [("background", "test_llm_call_audit_attribution.test_manager_marks_bare_calls_background_even_with_inherited_turn_id")]
     assert current_llm_call_role.get() == ""
     assert current_llm_call_origin.get() == ""
+
+
+def test_bare_result_counts_failed_native_attempt_and_fallback():
+    class Provider:
+        model = "test-model"
+
+        def generate_background_result(self, *_args, **_kwargs):
+            raise RuntimeError("native endpoint unavailable")
+
+        def _generate_messages(self, *_args, **_kwargs):
+            raise TimeoutError("fallback timed out")
+
+    result = LLMManager(Provider()).generate_bare_result("background thought")
+
+    assert result["status"] == "error"
+    assert result["reason"] == "TimeoutError"
+    assert result["provider_call_count"] == 2
 
 
 def test_interactive_analysis_has_explicit_auxiliary_role_and_origin():

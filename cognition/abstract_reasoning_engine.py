@@ -149,11 +149,14 @@ class AbstractReasoningEngine:
     #  Primary public API
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def reason(self, user_id: str, user_text: str) -> Optional[ReasoningResult]:
+    def reason(
+        self, user_id: str, user_text: str, *, allow_interactive_turn: bool = False,
+    ) -> Optional[ReasoningResult]:
         """
         Run abstract reasoning on user_text if the topic warrants it.
         Returns None if the text is not abstract enough to trigger ARE.
-        Always fast — LLM runs are best-effort and non-blocking.
+        Background calls defer during a live turn. An explicitly authorized
+        foreground analysis uses the manager's bounded interactive path.
         """
         # ── Abstractness check ─────────────────────────────────────────────
         abstract_score = self._score_abstractness(user_text)
@@ -192,15 +195,35 @@ class AbstractReasoningEngine:
         defer_reason = "provider_busy_or_unavailable"
         try:
             from core.llm_scheduler import llm_scheduler
-            if llm_scheduler.is_busy():
+            if llm_scheduler.is_busy() and not allow_interactive_turn:
                 defer_reason = "llm_scheduler_busy"
             elif self._llm:
-                result = self._llm_reason(user_id, user_text, abstract_score)
+                result = self._llm_reason(
+                    user_id, user_text, abstract_score,
+                    allow_interactive_turn=allow_interactive_turn,
+                )
                 if result is None:
-                    previous = self._cache.pop(user_id, None)
-                    if previous is not None:
-                        self._continuity_cache[user_id] = previous
+                    with self._lock:
+                        previous = self._cache.pop(user_id, None)
+                        if previous is not None:
+                            self._continuity_cache[user_id] = previous
                     return self._deferred_result(user_id, abstract_score, "inference_unavailable")
+                if result.method != "llm":
+                    with self._lock:
+                        previous = self._cache.pop(user_id, None)
+                        if previous is not None:
+                            self._continuity_cache[user_id] = previous
+                        if result.method == "failed":
+                            # Suppress repeated malformed/truncated calls during
+                            # the normal per-user cooldown. Do not mark the new
+                            # input as successfully analyzed.
+                            self._last_run[user_id] = now
+                            # The previous successful input may have been the
+                            # same text. Clear its cache key so the exact-input
+                            # cooldown path cannot resurrect that stale result
+                            # as if it belonged to this failed analysis.
+                            self._last_input.pop(user_id, None)
+                    return result
             else:
                 defer_reason = "llm_unavailable"
         except Exception:
@@ -326,11 +349,13 @@ class AbstractReasoningEngine:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _llm_reason(
-        self, user_id: str, text: str, abstract_score: float
+        self, user_id: str, text: str, abstract_score: float, *,
+        allow_interactive_turn: bool = False,
     ) -> Optional[ReasoningResult]:
         """
         Run one structured, history-free inference for all reasoning fields.
-        Returns None on failure; the caller records an explicit deferred result.
+        Returns an explicit deferred/failed result when no usable inference
+        can be attributed to this analysis attempt.
         """
         try:
             # ── Retrieve semantic memory context ─────────────────────────────
@@ -373,11 +398,37 @@ Return only one JSON object with all of these fields:
   "prompt_note": "one concise response consideration, or empty"
 }}"""
 
-            raw = self._llm.generate_bare(
-                prompt,
-                max_tokens=420,
-                temperature=0.35,
-            )
+            generate_result = getattr(self._llm, "generate_bare_result", None)
+            if callable(generate_result):
+                completion = generate_result(
+                    prompt, max_tokens=420, temperature=0.35,
+                    _allow_interactive_turn=allow_interactive_turn,
+                )
+                completion = completion if isinstance(completion, dict) else {}
+                completion_status = str(completion.get("status") or "unverified")
+                call_count = max(0, int(completion.get("provider_call_count", 1)))
+                if completion_status == "deferred":
+                    call_count = 0
+                    return self._deferred_result(
+                        user_id, abstract_score,
+                        str(completion.get("reason") or "provider_deferred"),
+                    )
+                if completion_status not in {"ok", "unverified"}:
+                    return ReasoningResult(
+                        user_id=user_id, method="failed", abstract_score=abstract_score,
+                        reason_code=completion_status[:64], llm_call_count=call_count,
+                    )
+                raw = str(completion.get("text") or "")
+            else:
+                call_count = 1
+                raw = str(self._llm.generate_bare(
+                    prompt, max_tokens=420, temperature=0.35,
+                ) or "")
+            if not raw.strip():
+                return ReasoningResult(
+                    user_id=user_id, method="failed", abstract_score=abstract_score,
+                    reason_code="empty_provider_output", llm_call_count=call_count,
+                )
             raw = re.sub(r"```json|```", "", raw).strip()
             result_data = json.loads(raw)
 
@@ -419,12 +470,16 @@ Return only one JSON object with all of these fields:
                 method             = "llm",
                 abstract_score     = abstract_score,
                 prompt_fragment    = fragment,
-                llm_call_count     = 1,
+                llm_call_count     = call_count,
             )
 
         except Exception as e:
             logger.debug(f"ARE LLM pass failed: {e}")
-            return None
+            return ReasoningResult(
+                user_id=user_id, method="failed", abstract_score=abstract_score,
+                reason_code=type(e).__name__[:64],
+                llm_call_count=1 if "call_count" not in locals() else call_count,
+            )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Side effects — WorldModel, CuriosityEngine, SemanticMemory
@@ -435,7 +490,7 @@ Return only one JSON object with all of these fields:
         Feed reasoning results back into the cognitive architecture.
         All calls are best-effort — never raise.
         """
-        if result.method != "llm" or result.llm_call_count != 1:
+        if result.method != "llm":
             return
 
         # An analogy pair is a conceptual link, not evidence that one item

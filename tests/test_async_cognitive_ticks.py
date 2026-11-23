@@ -470,7 +470,10 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         engine._themes = []
         engine._last_attempt_cycle = None
         engine._last_error = ""
-        chapters = [SimpleNamespace(significance=0.2, title=f"chapter {i}", description="identity") for i in range(10)]
+        chapters = [SimpleNamespace(
+            significance=0.2, title=f"chapter {i}", description="identity",
+            scope="global_internal",
+        ) for i in range(10)]
         identity = SimpleNamespace(life_story=chapters, _current_arc="")
         identity._save = lambda: False
         engine._organism = SimpleNamespace(narrative_identity=identity)

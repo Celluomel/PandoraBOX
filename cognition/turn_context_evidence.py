@@ -65,7 +65,9 @@ def deterministic_reasoning_dependencies(
     if cognitive_audit_report:
         sources.append("cognitive_audit_status_report")
     if planner_snapshot:
-        sources.append("planner_factual_snapshot")
+        # The answer renderer consumes the snapshot; deterministic reasoning
+        # consumes that rendered answer, preserving the intermediate causal edge.
+        sources.append("planner_factual_answer")
     return tuple(sources)
 
 

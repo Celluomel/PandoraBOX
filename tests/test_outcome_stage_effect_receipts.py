@@ -142,6 +142,11 @@ def test_abstract_reasoning_is_run_before_prompt_build_and_peer_scoped_out():
     method_source = ast.get_source_segment(source.read_text(encoding="utf-8"), method)
     assert "if peer_name" in method_source
     assert "_are_turn_status == \"completed\"" in method_source
+    assert 'else "deferred" if _are_method == "deferred"' in method_source
+    assert 'else "failed" if _are_method == "failed"' in method_source
+    assert "allow_interactive_turn=True" in method_source
+    assert '"llm_call_count"' in method_source
+    assert '"reason_code"' in method_source
     builder = next(
         node for node in bridge.body
         if isinstance(node, ast.FunctionDef) and node.name == "_build_prompt_and_cache"
