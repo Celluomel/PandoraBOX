@@ -183,6 +183,7 @@ class NarrativeArcWriter:
                 description = desc,
                 emotion     = emotion,
                 significance= round(sig, 3),
+                scope       = "global_internal",
             )
             if persisted is False:
                 logger.warning("[NAW] Thread chapter persistence failed; will retry")
@@ -215,8 +216,6 @@ class NarrativeArcWriter:
         intensity  = getattr(event, "intensity", 0.3)
         if intensity < 0.30:   # minor dissonance — not noteworthy
             return False
-
-        self._seen_cde_ids.add(eid)
 
         ev_type    = getattr(event, "type", None)
         type_str   = ev_type.value if ev_type and hasattr(ev_type, "value") else str(ev_type)
@@ -268,12 +267,17 @@ class NarrativeArcWriter:
             desc_str += " " + " ".join(hypotheses)
 
         try:
-            narrative_identity.record_chapter(
+            persisted = narrative_identity.record_chapter(
                 title       = title_str,
                 description = desc_str,
                 emotion     = "questioning",
                 significance= sig,
+                scope       = "global_internal",
             )
+            if persisted is False:
+                logger.warning("[NAW] CDE chapter persistence failed; will retry")
+                return False
+            self._seen_cde_ids.add(eid)
             logger.debug(f"[NAW] CDE chapter: {title_str!r} sig={sig:.2f}")
 
             # ── Phase 5.5 — lesson extraction: the chapter above is prose
@@ -399,6 +403,7 @@ class NarrativeArcWriter:
                     ),
                     emotion     = "curious",
                     significance= SIG_ARC_PIVOT,
+                    scope       = "global_internal",
                 )
             except Exception:
                 pass
@@ -437,13 +442,11 @@ class NarrativeArcWriter:
         key = f"stall_{getattr(thread, 'id', '')}_{int(time.time() / 600)}"
         if key in self._seen_thread_ids:
             return False
-        self._seen_thread_ids.add(key)
-
         topic = getattr(thread, "topic", "a question")
         conf  = getattr(thread, "confidence", 0.5)
 
         try:
-            narrative_identity.record_chapter(
+            persisted = narrative_identity.record_chapter(
                 title       = f"I pushed through: {topic[:45]}",
                 description = (
                     f"I had been stuck on '{topic}'. "
@@ -453,7 +456,12 @@ class NarrativeArcWriter:
                 ),
                 emotion     = "determined",
                 significance= SIG_STALL_OVERCOME,
+                scope       = "global_internal",
             )
+            if persisted is False:
+                logger.warning("[NAW] Stall chapter persistence failed; will retry")
+                return False
+            self._seen_thread_ids.add(key)
             logger.debug(f"[NAW] Stall-overcome chapter: {topic!r}")
             return True
         except Exception as e:

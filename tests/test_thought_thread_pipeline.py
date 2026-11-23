@@ -7,6 +7,7 @@ from cognition.cognitive_dissonance_engine import (
     DissonanceEventType,
 )
 from cognition.narrative_arc_writer import NarrativeArcWriter
+from cognition.narrative_identity import NarrativeIdentity
 from cognition.thought_thread_engine import TTEContext, ThoughtThreadEngine, ThoughtThreadStatus
 from cognition.thread_lifecycle_manager import ThreadLifecycleManager
 from core.data.access import DataAccess
@@ -488,8 +489,8 @@ def test_narrative_writer_retries_terminal_thread_after_persistence_failure():
     )
     attempts = []
 
-    def record_chapter(**_chapter):
-        attempts.append(True)
+    def record_chapter(**chapter):
+        attempts.append(chapter)
         return len(attempts) > 1
 
     narrative = SimpleNamespace(record_chapter=record_chapter)
@@ -499,3 +500,49 @@ def test_narrative_writer_retries_terminal_thread_after_persistence_failure():
     assert writer.watch_thread_resolution(thread, narrative) is True
     assert "retryable" in writer._seen_thread_ids
     assert len(attempts) == 2
+    assert all(item["scope"] == "global_internal" for item in attempts)
+
+
+def test_narrative_arc_uses_internal_chapters_written_by_its_own_events(tmp_path):
+    identity = NarrativeIdentity(SimpleNamespace(), path=str(tmp_path / "identity.json"))
+    writer = NarrativeArcWriter()
+
+    for index, topic in enumerate((
+        "cognitive memory reasoning",
+        "cognitive identity reasoning",
+        "cognitive planning reasoning",
+    )):
+        thread = SimpleNamespace(
+            id=f"internal-{index}", status=ThoughtThreadStatus.COMPLETED,
+            topic=topic, goal=f"understand {topic}", confidence=0.8,
+            history=[{}, {}], source="internal", age_hours=lambda: 0.1,
+        )
+        assert writer.watch_thread_resolution(thread, identity) is True
+
+    assert len(identity.global_chapters()) == 3
+    arc = writer.synthesise_arc(identity)
+    assert arc
+    assert "cognitive" in arc
+    assert identity._current_arc == arc
+
+
+def test_narrative_writer_retries_cde_chapter_after_persistence_failure():
+    writer = NarrativeArcWriter()
+    event = SimpleNamespace(
+        id="cde-retry", resolved=True, intensity=0.8,
+        type=DissonanceEventType.BELIEF_VS_EVIDENCE,
+        belief_ref="belief", evidence_ref="observed evidence",
+        action_ref="prior action", self_question="what changed?", hypotheses=[],
+    )
+    attempts = []
+
+    def record_chapter(**chapter):
+        attempts.append(chapter)
+        return len(attempts) > 1
+
+    identity = SimpleNamespace(record_chapter=record_chapter)
+    assert writer.watch_cde_resolution(event, identity) is False
+    assert event.id not in writer._seen_cde_ids
+    assert writer.watch_cde_resolution(event, identity) is True
+    assert event.id in writer._seen_cde_ids
+    assert all(item["scope"] == "global_internal" for item in attempts)
