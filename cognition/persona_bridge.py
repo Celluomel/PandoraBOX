@@ -57,9 +57,13 @@ from cognition.turn_context_evidence import (
 )
 from cognition.factual_self_report_context import history_without_assistant_claims
 from cognition.conversation_context import (
+    CURRENT_TURN_AUTHORITY_INSTRUCTIONS,
     RECENT_DIALOGUE_INSTRUCTIONS,
+    contextual_memory_query,
+    provider_history_for_generation,
     recent_dialogue_anchor,
 )
+from cognition.stream_channels import strip_private_reasoning
 from core.turn_execution_context import (
     current_turn_id as _current_audit_turn_id,
     normalize_turn_id as _normalize_audit_turn_id,
@@ -2825,17 +2829,6 @@ class PersonaBridge:
                 and _goal_means_analysis.unique_feasible_option() is not None
             )
         )
-        system_prompt, emo_dict, cond_dict, arb_temperature, _memory_recall_result, _research_receipt = await asyncio.to_thread(
-            self._build_prompt_and_cache,
-            effective_input,
-            user_id,
-            _suppress_external_search,
-            not bool(peer_name),
-            peer_name,
-            _audit_turn_id,
-            _are_turn_status == "completed",
-            _structured_affect_status,
-        )
         _history_for_anchor = conversation_history
         _history_source = "provided_turn_context" if conversation_history is not None else "llm_manager_history"
         if conversation_history is None:
@@ -2870,6 +2863,22 @@ class PersonaBridge:
                 "role_counts": _history_role_counts,
             },
             turn_id=_audit_turn_id,
+        )
+        _memory_query, _memory_query_prior_count = contextual_memory_query(
+            _history_for_anchor if not peer_name else [], effective_input,
+        )
+        system_prompt, emo_dict, cond_dict, arb_temperature, _memory_recall_result, _research_receipt = await asyncio.to_thread(
+            self._build_prompt_and_cache,
+            effective_input,
+            user_id,
+            _suppress_external_search,
+            not bool(peer_name),
+            peer_name,
+            _audit_turn_id,
+            _are_turn_status == "completed",
+            _structured_affect_status,
+            _memory_query,
+            _memory_query_prior_count,
         )
         if not peer_name:
             _recent_anchor, _anchor_message_count = recent_dialogue_anchor(
@@ -3693,10 +3702,35 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         history_override=conversation_history or [],
                         record_history=False,
                     )
+                elif _recent_anchor:
+                    # The bounded, role-tagged recent dialogue is already in
+                    # system_prompt. Sending LLMManager.history as well repeats
+                    # old assistant claims in a second channel and can make a
+                    # prior hallucination look reinforced. Keep durable history
+                    # for persistence, but give the provider only the one
+                    # explicitly attributed context representation.
+                    _stream_kwargs["history_override"] = provider_history_for_generation(
+                        _history_for_anchor, recent_context_in_prompt=True,
+                    )
+                    self._record_turn_stage(
+                        "provider_history_context", "replaced_by_bounded_prompt_context",
+                        "Provider history omitted because the same recent dialogue is already in the prompt.",
+                        output={
+                            "provider_history_message_count": 0,
+                            "dialogue_context_message_count": _anchor_message_count,
+                            "durable_history_preserved": True,
+                        },
+                        consumes=("conversation_history", "conversation_continuity_context"),
+                        turn_id=_audit_turn_id,
+                    )
                 self._record_turn_stage(
                     "primary_generation_input", "delivered",
                     output={"user_input": _generation_input, "system_prompt": system_prompt},
-                    consumes=("generation_request",),
+                    consumes=(
+                        ("generation_request", "provider_history_context")
+                        if _recent_anchor and record_history and not _factual_self_report
+                        else ("generation_request",)
+                    ),
                     turn_id=_audit_turn_id,
                 )
                 for token in self._llm_stream_fn(_generation_input, system_prompt, **_stream_kwargs):
@@ -3887,20 +3921,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             if _orphan_close:
                 _before_close = token[:_orphan_close.start()]
                 _after_close = token[_orphan_close.end():]
-                # A dangling close marker at the end of an otherwise normal
-                # answer is formatting noise, not proof that the prefix was
-                # private reasoning. Preserve the visible text in that case.
-                if not _after_close.strip():
-                    if _before_close.strip():
-                        accumulated.append(_before_close)
-                    continue
-                # Everything emitted before this orphan marker is a candidate
-                # reasoning prefix; the UI can retract it when it receives
-                # this separate event and start the final answer after it.
+                # A close marker without its open marker is emitted by some
+                # local chat templates when hidden reasoning has been flattened
+                # into content. Never reinterpret its prefix as the answer.
                 _reasoning_prefix = "".join(accumulated) + _before_close
                 if _reasoning_prefix.strip():
                     _reasoning_seen.append(_reasoning_prefix.strip())
-                    yield {"type": "reasoning", "text": _reasoning_prefix.strip()}
                     accumulated.clear()
                 if _after_close.strip():
                     accumulated.append(_after_close)
@@ -4585,6 +4611,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         audit_turn_id: str = "",
         include_are_context: bool = True,
         debug_introspection: bool = False,
+        memory_query: str = "",
+        memory_query_prior_count: int = 0,
     ) -> tuple[str, dict, dict, float | None, dict | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -4893,9 +4921,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             rel      = s.relational_memory.get_or_create(user_id)
             sc_hints = s.self_concept.check_response_alignment(user_input)
             # Memory retrieval — bias query toward attention-dominant channel
-            _recall_query = user_input
+            _recall_query = str(memory_query or user_input).strip() or user_input
             _recall_attention_mode = "unavailable"
-            _recall_query_source = "user_input"
+            _recall_query_source = (
+                "recent_user_context" if memory_query_prior_count > 0 else "user_input"
+            )
             # ── Detect explicit memory/recall requests ─────────────────
             # When user asks "do you remember X?", extract X and search directly.
             _is_recall_request = is_explicit_memory_recall_query(user_input)
@@ -5173,7 +5203,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     explicit_recall=_is_recall_request,
                     candidate_count_before_recall_filter=_recall_candidate_count_before_filter,
                 ),
-                consumes=("turn_input",),
+                consumes=(
+                    ("turn_input", "conversation_history")
+                    if not peer_name else ("turn_input",)
+                ),
                 turn_id=audit_turn_id,
             )
 
@@ -5706,6 +5739,8 @@ There is no role to play and no depth to demonstrate: let this response be what 
 {_anchor_block}
 ━━ NATURAL CONVERSATION ━━
 Use clocks, dates, elapsed-time calculations, and internal state only when they help answer the current interlocutor's request. Do not announce a timestamp or explain that facts are anchored in the present during ordinary conversation. Prefer a direct, natural reply over narrated internal reasoning.
+━━ CURRENT-TURN AUTHORITY ━━
+{CURRENT_TURN_AUTHORITY_INSTRUCTIONS}
 {_organism_prompt_section}
 {_reflection_section}
 {_interlocutor_role_line}
@@ -9416,6 +9451,7 @@ Memory honesty — two distinct cases:
         # Local OpenAI-compatible servers sometimes escape channel markers as
         # ``\\</think>``. Normalize those before applying the normal filters.
         text = _re.sub(r"\\+\s*(<\/?(?:think|analysis|channel)>|<\|/?channel\|>)", r"\1", text, flags=_re.IGNORECASE)
+        text = strip_private_reasoning(text)
         # 1. Bare single-line channel markers (no closing tag) — strip first
         #    e.g.  <|channel|>commentary to=assistant
         text = _re.sub("<[|]channel[|]>[^\n]*", "", text, flags=_re.IGNORECASE)

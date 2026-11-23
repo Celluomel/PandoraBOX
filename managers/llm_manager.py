@@ -1151,11 +1151,8 @@ class LLMManager:
         full_response = "".join(accumulated)
         # Native reasoning events are excluded above. Remove tagged private
         # channels from the persisted fallback as well.
-        import re
-        full_response = re.sub(
-            r"<think>[\s\S]*?(?:</think>|$)|<analysis>[\s\S]*?(?:</analysis>|$)",
-            "", full_response, flags=re.IGNORECASE,
-        ).strip()
+        from cognition.stream_channels import strip_private_reasoning
+        full_response = strip_private_reasoning(full_response)
         if record_history:
             self.history.extend([
                 # The generation prompt may include private response contracts
