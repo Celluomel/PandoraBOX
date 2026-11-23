@@ -209,7 +209,16 @@ class SemanticExtractor:
         }
         try:
             t0 = time.time()
-            parsed = self._parse(user_input, response)
+            # The queue worker runs on a fresh thread, so ContextVars from the
+            # response turn do not propagate automatically. Re-establish the
+            # opaque turn ID while calling the provider; the LLM-call audit
+            # records it as a causal parent for this post-response analysis.
+            from core.turn_execution_context import current_turn_id, set_current_turn_id
+            turn_context_token = set_current_turn_id(turn_id)
+            try:
+                parsed = self._parse(user_input, response)
+            finally:
+                current_turn_id.reset(turn_context_token)
             if len(parsed) >= 5:
                 concepts, relations, topic, cog_load, turn_kind = parsed[:5]
             else:
@@ -406,12 +415,15 @@ class SemanticExtractor:
             relations = self._ground_relations(data.get("relations", []), concepts, input_source)
             topic_value = data.get("dominant_topic", "")
             topic = self._normalize_concept(topic_value)
-            if topic not in concepts:
-                topic = ""
             turn_kind = str(data.get("turn_kind") or "").strip().casefold()
             if turn_kind not in _TURN_KINDS:
                 turn_kind = "unclassified"
-            if turn_kind != "topic":
+            if turn_kind == "topic" and topic not in concepts and len(concepts) == 1:
+                # A single grounded concept is an unambiguous dominant topic;
+                # tolerate a formatting mismatch in the model's duplicate
+                # dominant_topic field without promoting any new text.
+                topic = concepts[0]
+            elif topic not in concepts or turn_kind != "topic":
                 topic = ""
             raw_load = float(data.get("cognitive_load", 0.3))
             cog_load = max(0.0, min(1.0, raw_load)) if math.isfinite(raw_load) else 0.3

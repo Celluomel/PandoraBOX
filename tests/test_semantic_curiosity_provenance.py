@@ -102,13 +102,55 @@ def test_user_semantic_curiosity_uses_grounding_not_word_filter(tmp_path: Path):
     topic_filter.assert_not_called()
 
 
+def test_single_grounded_concept_resolves_missing_or_mismatched_dominant_topic():
+    one_concept = SemanticExtractor(
+        _Memory(),
+        llm_fn=lambda _prompt: json.dumps({
+            "turn_kind": "topic",
+            "concepts": [{"name": "nomic embeddings", "evidence": "Nomic embeddings"}],
+            "relations": [],
+            "dominant_topic": "embedding model",
+            "cognitive_load": 0.2,
+        }),
+    )
+    concepts, _, topic, _, kind = one_concept._parse(
+        "Explain Nomic embeddings.", "",
+    )
+    assert concepts == ["nomic embeddings"]
+    assert topic == "nomic embeddings"
+    assert kind == "topic"
+
+    ambiguous = SemanticExtractor(
+        _Memory(),
+        llm_fn=lambda _prompt: json.dumps({
+            "turn_kind": "topic",
+            "concepts": [
+                {"name": "nomic embeddings", "evidence": "Nomic embeddings"},
+                {"name": "goal scoring", "evidence": "goal scoring"},
+            ],
+            "relations": [],
+            "dominant_topic": "unrelated topic",
+            "cognitive_load": 0.2,
+        }),
+    )
+    concepts, _, topic, _, kind = ambiguous._parse(
+        "Explain Nomic embeddings and goal scoring.", "",
+    )
+    assert len(concepts) == 2
+    assert topic == ""
+    assert kind == "topic"
+
+
 def test_retrieval_turn_does_not_persist_or_promote_concepts():
     memory = Mock()
     curiosity = Mock()
     runtime_state = SimpleNamespace(acc=Mock())
-    extractor = SemanticExtractor(
-        memory,
-        llm_fn=lambda _prompt: json.dumps({
+    provider_turn_ids = []
+
+    def classify_retrieval(_prompt):
+        from core.turn_execution_context import current_turn_id
+        provider_turn_ids.append(current_turn_id.get())
+        return json.dumps({
             "turn_kind": "retrieval",
             "concepts": [{
                 "name": "dernier objectif cognitif",
@@ -117,7 +159,11 @@ def test_retrieval_turn_does_not_persist_or_promote_concepts():
             "relations": [],
             "dominant_topic": "dernier objectif cognitif",
             "cognitive_load": 0.2,
-        }),
+        })
+
+    extractor = SemanticExtractor(
+        memory,
+        llm_fn=classify_retrieval,
         organism=SimpleNamespace(curiosity=curiosity),
     )
 
@@ -136,3 +182,4 @@ def test_retrieval_turn_does_not_persist_or_promote_concepts():
     assert receipt["turn_kind"] == "retrieval"
     assert receipt["learning_status"] == "skipped_non_topic_turn"
     assert receipt["persistence_status"] == "not_needed"
+    assert provider_turn_ids == ["turn-retrieval-1"]
