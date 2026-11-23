@@ -93,3 +93,37 @@ def test_conversation_context_helper_is_imported_and_callable():
 def test_local_camera_fallback_guard_resolves_at_runtime():
     assert PersonaBridge._may_route_to_local_camera("Can you see me through the camera?")
     assert not PersonaBridge._may_route_to_local_camera("How are you doing today?")
+
+
+def test_history_source_and_continuity_are_linked_into_final_prompt():
+    tree = ast.parse((ROOT / "cognition" / "persona_bridge.py").read_text(encoding="utf-8"))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_record_turn_stage"
+    ]
+    history_source = next(
+        node for node in calls
+        if node.args and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "conversation_history"
+    )
+    continuity = next(
+        node for node in calls
+        if node.args and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "conversation_continuity_context"
+    )
+    final_prompt = next(
+        node for node in calls
+        if node.args and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "prompt_assembly"
+    )
+    continuity_consumes = next(
+        kw.value for kw in continuity.keywords if kw.arg == "consumes"
+    )
+    prompt_consumes = next(
+        kw.value for kw in final_prompt.keywords if kw.arg == "consumes"
+    )
+    assert "conversation_history" in ast.unparse(continuity_consumes)
+    assert "conversation_continuity_context" in ast.unparse(prompt_consumes)
+    assert history_source.lineno < continuity.lineno < final_prompt.lineno

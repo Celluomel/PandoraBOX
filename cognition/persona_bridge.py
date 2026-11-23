@@ -2833,11 +2833,42 @@ class PersonaBridge:
             _are_turn_status == "completed",
             _structured_affect_status,
         )
-        if not peer_name:
-            _history_for_anchor = conversation_history
-            if not _history_for_anchor:
+        _history_for_anchor = conversation_history
+        _history_source = "provided_turn_context" if conversation_history is not None else "llm_manager_history"
+        if conversation_history is None:
+            if peer_name:
+                _history_for_anchor = []
+                _history_source = "peer_history_not_provided"
+            else:
                 _history_manager = getattr(self._llm_stream_fn, "__self__", None)
                 _history_for_anchor = getattr(_history_manager, "history", [])
+        _history_messages = [
+            item for item in (_history_for_anchor or [])
+            if isinstance(item, dict)
+            and str(item.get("role") or "").casefold().strip() in {"user", "assistant"}
+            and isinstance(item.get("content"), str)
+            and item.get("content", "").strip()
+        ]
+        _history_role_counts = {
+            role: sum(
+                1 for item in _history_messages
+                if str(item.get("role") or "").casefold().strip() == role
+            )
+            for role in ("user", "assistant")
+        }
+        self._record_turn_stage(
+            "conversation_history",
+            "available" if _history_messages else "empty",
+            "Selected role-tagged history for bounded follow-up context; text remains private.",
+            output={
+                "source": _history_source,
+                "message_count": len(_history_messages),
+                "character_count": sum(len(item["content"]) for item in _history_messages),
+                "role_counts": _history_role_counts,
+            },
+            turn_id=_audit_turn_id,
+        )
+        if not peer_name:
             _recent_anchor, _anchor_message_count = recent_dialogue_anchor(
                 _history_for_anchor, effective_input,
             )
@@ -2871,6 +2902,14 @@ class PersonaBridge:
                     consumes=("conversation_history",),
                     turn_id=_audit_turn_id,
                 )
+        else:
+            self._record_turn_stage(
+                "conversation_continuity_context", "skipped_by_scope",
+                "Peer dialogue context stays isolated from the human chat history.",
+                output={"source": "peer_scope_policy", "injected": False},
+                consumes=("conversation_history",),
+                turn_id=_audit_turn_id,
+            )
         _deterministic_affect_report = False
         _affect_direct_response = ""
         if _structured_affect_status:
@@ -3341,6 +3380,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             consumes=(
                 "turn_input", "memory_prompt_context", "user_profile_context",
                 "cognitive_prompt_context", "dominant_thought_context",
+                "conversation_continuity_context",
             ),
             turn_id=_audit_turn_id,
         )
