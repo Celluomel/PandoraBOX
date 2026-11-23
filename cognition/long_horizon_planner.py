@@ -964,6 +964,20 @@ class LongHorizonPlanner:
         )
         if any(re.search(pattern, text) for pattern in ownership_patterns):
             return True
+        # A direct question can request a recorded self-report without a
+        # possessive pronoun (notably in French: "l'objectif actuellement
+        # enregistré"). Classify the grammatical relation: interrogative +
+        # planner object + recorded/current next-step state. This avoids
+        # requiring one canned wording or routing ordinary project questions.
+        recorded_plan_report = re.search(
+            r"\b(?:what|which|quel(?:le)?s?)\b.{0,100}"
+            r"\b(?:goals?|plans?|planning|objectifs?|planifications?|buts?)\b"
+            r".{0,160}\b(?:recorded|registered|next\s+step|current\s+step|"
+            r"enregistr\w*|prochaine\s+étape|étape\s+suivante)\b",
+            text,
+        )
+        if recorded_plan_report:
+            return True
         phrases = (
             "your capability", "your capabilities", "your goal", "your goals",
             "your plan", "your planning", "your reasoning", "how do you reason",

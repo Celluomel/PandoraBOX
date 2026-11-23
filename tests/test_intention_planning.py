@@ -1306,6 +1306,14 @@ class IntentionPlanningTests(unittest.TestCase):
             "What is the current active goal in the user's project?"
         ))
 
+    def test_recorded_goal_and_next_step_question_without_possessive_routes_to_snapshot(self):
+        question = (
+            "Quel est l’objectif de développement actif actuellement enregistré "
+            "et quelle est sa prochaine étape ?"
+        )
+        self.assertTrue(LongHorizonPlanner.is_self_report_query(question))
+        self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
+
     def test_count_question_about_owned_goals_routes_to_live_self_report(self):
         question = "For this audit, how many active goals do you currently have?"
         self.assertTrue(LongHorizonPlanner.is_self_report_query(question))
