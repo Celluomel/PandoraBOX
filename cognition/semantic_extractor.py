@@ -210,6 +210,29 @@ class SemanticExtractor:
             receipt["concepts_parsed"] = len(concepts)
             receipt["dominant_topic_selected"] = bool(topic and topic in concepts)
 
+            # Curiosity receives only the dominant concept selected from, and
+            # grounded in, this human-authored turn. The old organism cycle
+            # guessed a topic from the first long tokens before semantic
+            # extraction, which promoted prompt fragments into goals.
+            if observation_role == "user_topic" and topic and topic in concepts:
+                curiosity = getattr(self._organism, "curiosity", None)
+                if curiosity is None:
+                    receipt["curiosity_status"] = "unavailable"
+                else:
+                    try:
+                        curiosity.stimulate(
+                            topic, amount=0.15, source="user_semantic",
+                        )
+                        receipt["curiosity_status"] = "stimulated"
+                        receipt["curiosity_topic"] = topic
+                    except Exception as curiosity_error:
+                        receipt["curiosity_status"] = "failed"
+                        receipt["curiosity_error_type"] = type(curiosity_error).__name__
+            elif observation_role == "peer_topic":
+                receipt["curiosity_status"] = "skipped_peer_source"
+            else:
+                receipt["curiosity_status"] = "no_grounded_dominant_topic"
+
             # CAG receives the concepts this extractor already grounded in the
             # incoming message. This avoids its former independent heuristic
             # pass over the concatenated user + assistant text.

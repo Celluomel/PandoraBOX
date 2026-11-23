@@ -179,7 +179,12 @@ class CuriosityEngine:
         # v50: gate check — suppress new topic generation when attention or
         # cognitive_energy is critically low.  Immune counterfactual topics
         # bypass this (source="immune_counterfactual") — they serve recovery.
-        if source != "immune_counterfactual":
+        # A user_semantic topic is already selected and grounded by the
+        # SemanticExtractor against the originating user turn. Recording that
+        # evidence is not autonomous topic generation, so it must not be
+        # silently dropped by a generation-energy gate.
+        trusted_semantic_source = source == "user_semantic"
+        if source != "immune_counterfactual" and not trusted_semantic_source:
             try:
                 from core.state import state as _st
                 _org  = getattr(getattr(_st, 'persona', None), '_organism', None)
@@ -190,10 +195,12 @@ class CuriosityEngine:
                 pass
 
         topic = topic.lower().strip()
-        # Reject low-quality topics using statistical IDF filter
-        # (TopicQualityFilter uses WorldModel's live corpus — language agnostic)
-        _tqf = get_topic_filter()
-        if not _tqf.is_valid(topic):
+        # User-semantic topics have already passed concept selection and exact
+        # evidence grounding in SemanticExtractor. Do not reclassify them with
+        # a lexical/IDF word filter here; goal admission has its own semantic
+        # quality contract. Other legacy/internal sources retain their current
+        # topic-quality check until their provenance is migrated.
+        if not trusted_semantic_source and not get_topic_filter().is_valid(topic):
             return self._global   # silently reject bad topic
         with self._lock:
             if topic not in self._topics:

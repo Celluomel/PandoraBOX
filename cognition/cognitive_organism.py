@@ -540,28 +540,12 @@ class CognitiveOrganism:
         contradiction_count = self._get_contradiction_count()
         goal_satisfaction = self._get_goal_satisfaction()
 
-        # ── Stimulate curiosity from user input ───────────────────────────────
-        if len(user_input) > 15:
-            _CURIOSITY_STOP = {
-                "just","this","inner","that","with","from","some","more","other","any",
-                "all","each","very","here","there","now","only","also","even","still",
-                "such","both","same","then","than","when","about","thing","things",
-                "sentence","speak","response","user","okay","lumina","system",
-                "j'ai","besoin","t'en","c'est","qu'il","qu'est","n'est","d'un",
-                "what","have","does","will","would","could","should","said","tell",
-                "want","like","know","make","take","come","look","feel","need",
-            }
-            words = [w.lower().strip(".,?!;:\"'()[]") for w in user_input.split()]
-            content_words = [
-                w for w in words
-                if len(w) > 4
-                and w not in _CURIOSITY_STOP
-                and not w.startswith(("j'","l'","d'","t'","c'","n'","s'","m'"))
-                and sum(1 for c in w if c.isalpha()) >= 4
-            ]
-            if len(content_words) >= 1:
-                topic = " ".join(content_words[:2])
-                self.curiosity.stimulate(topic, amount=0.15, source="user_signal")
+        # User prose is not itself a curiosity topic. The post-response
+        # SemanticExtractor is the single user-topic path: it selects a
+        # dominant concept, grounds it in this user's exact message, and
+        # records a turn-scoped receipt before stimulating curiosity.
+        # Keeping token selection out of the cycle prevents prompt fragments
+        # from becoming durable interests or autonomous goals.
 
         # ── Update curiosity engine ───────────────────────────────────────────
         self.curiosity.decay_all()
