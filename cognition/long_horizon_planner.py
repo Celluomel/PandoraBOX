@@ -548,12 +548,14 @@ class LongHorizonPlanner:
         result_summary = str(result).strip()[:160] or "no result detail"
         if success and plan.status == "completed":
             current_decision = (
-                f"{action_type} succeeded ({result_summary}). Decision: the plan is complete."
+                f"{action_type} execution completed ({result_summary}); all planned operations "
+                "are complete, but the objective effect remains unverified."
             )
         elif success:
             current_decision = (
-                f"{action_type} succeeded ({result_summary}). Decision: preserve the sequence "
-                f"and proceed with {next_step.operation if next_step else 'the next pending step'}."
+                f"{action_type} execution completed ({result_summary}); its objective effect "
+                "remains unverified. Preserve the sequence and proceed with "
+                f"{next_step.operation if next_step else 'the next pending step'}."
             )
         elif revised:
             current_decision = (
