@@ -9,7 +9,7 @@ JSON extraction of concepts + relations from the exchange.
 Design constraints
 ------------------
   - Must complete in < 1s  (non-blocking, runs in background thread)
-  - LLM call is optional  (falls back to keyword extraction if LLM busy)
+  - LLM call is optional; lexical fallback is unclassified and not persisted
   - Durable concepts and relations are grounded in the incoming message
   - Assistant response text is context, never evidence for its own claims
 """
@@ -90,6 +90,7 @@ Assistant response (context only; never use it as evidence): {response_summary}
 
 Return exactly this structure:
 {{
+  "turn_kind": "topic",
   "concepts": [{{"name": "concept1", "evidence": "exact words from the incoming message"}}],
   "relations": [
     {{"from": "concept1", "to": "concept2", "type": "leads_to", "evidence": "exact words from the incoming message supporting this relation"}}
@@ -99,6 +100,7 @@ Return exactly this structure:
 }}
 
 Rules:
+- Classify the incoming message's primary conversational act as exactly one of: topic, retrieval, social, instruction, feedback, other. Use "topic" for a substantive subject the user asks to explain, investigate, or discuss. Use "retrieval" when they ask what was said, decided, or observed earlier. Use "social" for greetings, thanks, and small talk. Use "instruction" for operational commands to the assistant/system. Use "feedback" for evaluation of a prior response. Use "other" when none fits. Classify the user's intent, not the assistant response.
 - Persist only concepts and relations grounded in the incoming message. Assistant wording is not evidence of an interlocutor's belief, fact, preference, or intent.
 - concepts: 0-8 lowercase nouns or noun phrases, max 3 words each; every concept needs an exact evidence phrase from the incoming message
 - relations: max 5, both endpoints must be concepts; evidence must directly support the relation in the incoming message
@@ -108,6 +110,7 @@ Rules:
 - NO extra keys, NO explanation"""
 
 _RELATION_TYPES = {"leads_to", "related_to", "part_of", "causes", "contradicts", "enables"}
+_TURN_KINDS = {"topic", "retrieval", "social", "instruction", "feedback", "other"}
 
 
 class SemanticExtractor:
@@ -206,9 +209,39 @@ class SemanticExtractor:
         }
         try:
             t0 = time.time()
-            concepts, relations, topic, cog_load = self._parse(user_input, response)
+            parsed = self._parse(user_input, response)
+            if len(parsed) >= 5:
+                concepts, relations, topic, cog_load, turn_kind = parsed[:5]
+            else:
+                # Preserve compatibility for integrations that provide the
+                # pre-turn-kind four-value parser contract. The production
+                # parser always returns an explicit classification.
+                concepts, relations, topic, cog_load = parsed
+                turn_kind = "topic"
+            if turn_kind not in _TURN_KINDS:
+                turn_kind = "unclassified"
+            receipt["turn_kind"] = turn_kind
             receipt["concepts_parsed"] = len(concepts)
             receipt["dominant_topic_selected"] = bool(topic and topic in concepts)
+
+            if turn_kind != "topic":
+                receipt.update({
+                    "status": "completed",
+                    "learning_status": "skipped_non_topic_turn",
+                    "persistence_status": "not_needed",
+                    "cag_status": "skipped_non_topic_turn",
+                    "workspace_status": "not_requested",
+                    "curiosity_status": "skipped_non_topic_turn",
+                    "curiosity_topic_selected": False,
+                })
+                receipt["duration_ms"] = round((time.time() - t0) * 1000, 3)
+                logger.info(
+                    "[SemanticExtractor] skipped durable learning for %s turn %s",
+                    turn_kind, str(turn_id or "")[:48],
+                )
+                return receipt
+
+            receipt["learning_status"] = "accepted_topic_turn"
 
             # Curiosity receives only the dominant concept selected from, and
             # grounded in, this human-authored turn. The old organism cycle
@@ -339,7 +372,7 @@ class SemanticExtractor:
         return receipt
 
     def _parse(self, user_input: str, response: str
-               ) -> Tuple[List[str], List[Dict], str, float]:
+               ) -> Tuple[List[str], List[Dict], str, float, str]:
         """Try LLM extraction, fall back to keyword extraction."""
 
         # Durable graph evidence comes only from the authored input. If
@@ -352,7 +385,7 @@ class SemanticExtractor:
             # Lexical fallback can suggest concepts but cannot reliably select
             # a dominant semantic topic. Leave topic arbitration to a later
             # stage instead of promoting the first surface token.
-            return kw_concepts, kw_relations, "", 0.3
+            return kw_concepts, kw_relations, "", 0.3, "unclassified"
 
         try:
             prompt = _EXTRACTION_PROMPT.format(
@@ -375,17 +408,22 @@ class SemanticExtractor:
             topic = self._normalize_concept(topic_value)
             if topic not in concepts:
                 topic = ""
+            turn_kind = str(data.get("turn_kind") or "").strip().casefold()
+            if turn_kind not in _TURN_KINDS:
+                turn_kind = "unclassified"
+            if turn_kind != "topic":
+                topic = ""
             raw_load = float(data.get("cognitive_load", 0.3))
             cog_load = max(0.0, min(1.0, raw_load)) if math.isfinite(raw_load) else 0.3
 
             # A valid empty extraction means this message did not yield a
             # grounded topic. Do not turn lexical leftovers into a semantic
             # topic merely to force a workspace update.
-            return concepts, relations, topic, cog_load
+            return concepts, relations, topic, cog_load, turn_kind
 
         except Exception as e:
             logger.debug(f"[SemanticExtractor] LLM parse failed ({e}), using keywords")
-            return kw_concepts, kw_relations, "", 0.3
+            return kw_concepts, kw_relations, "", 0.3, "unclassified"
 
     def _keyword_extract(self, text: str) -> List[str]:
         """Lightweight keyword extraction — nouns and noun phrases only."""

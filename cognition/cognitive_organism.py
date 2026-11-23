@@ -88,21 +88,6 @@ from cognition.semantic_extractor  import SemanticExtractor
 from cognition.aspirational_self   import AspirationalSelf
 
 
-def _semantic_topic_learning_policy(user_input: str) -> tuple[bool, str]:
-    """Keep source-recall requests from becoming durable topic-interest signals.
-
-    The memory router already distinguishes requests to retrieve prior user
-    statements from ordinary topical conversation. Reuse that intent instead
-    of maintaining a second lexical filter here.
-    """
-    try:
-        from cognition.memory_retrieval import is_explicit_memory_recall_query
-        if is_explicit_memory_recall_query(str(user_input or "")):
-            return False, "explicit_source_recall"
-    except Exception as exc:
-        logger.debug("Semantic topic policy unavailable; retaining default learning: %s", exc)
-    return True, "ordinary_turn"
-
 # ── Consciousness-level binding layer (v34) ───────────────────────────────────
 from cognition.phenomenal_binder      import PhenomenalBinder
 from cognition.metacognitive_interrupt import MetacognitiveInterrupt
@@ -1484,32 +1469,23 @@ class CognitiveOrganism:
             "status": "not_attempted",
             "turn_id": str(turn_id or "") or None,
         }
-        should_extract_topics, semantic_topic_reason = _semantic_topic_learning_policy(
-            user_input or ""
-        )
-        if should_extract_topics:
-            try:
-                self._semantic_extractor.extract_async(
-                    user_input=user_input or "",
-                    response=response or "",
-                    workspace=self.workspace,
-                    observation_role=("user_topic" if human_interaction else "peer_topic"),
-                    turn_id=turn_id,
-                    completion_callback=semantic_topic_callback,
-                )
-                semantic_topic_receipt.update({
-                    "status": "queued",
-                    "reason": semantic_topic_reason,
-                })
-            except Exception as exc:
-                semantic_topic_receipt.update({
-                    "status": "failed",
-                    "reason": type(exc).__name__,
-                })
-        else:
+        try:
+            self._semantic_extractor.extract_async(
+                user_input=user_input or "",
+                response=response or "",
+                workspace=self.workspace,
+                observation_role=("user_topic" if human_interaction else "peer_topic"),
+                turn_id=turn_id,
+                completion_callback=semantic_topic_callback,
+            )
             semantic_topic_receipt.update({
-                "status": "skipped_by_intent",
-                "reason": semantic_topic_reason,
+                "status": "queued",
+                "reason": "semantic_intent_classification",
+            })
+        except Exception as exc:
+            semantic_topic_receipt.update({
+                "status": "failed",
+                "reason": type(exc).__name__,
             })
 
         # ── Emit identity events via EventBus ───────────────────────────────

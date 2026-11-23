@@ -184,6 +184,8 @@ def test_effect_receipt_summary_preserves_only_bounded_non_text_evidence():
 def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
     summary = audit_safe_turn_summary({
         "type": "semantic_extraction_receipt",
+        "turn_kind": "topic",
+        "learning_status": "accepted_topic_turn",
         "status": "completed",
         "persistence_status": "confirmed",
         "cag_status": "completed",
@@ -204,6 +206,8 @@ def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
         "curiosity_topic": "private topic text",
     })
     assert summary["type"] == "semantic_extraction_receipt"
+    assert summary["turn_kind"] == "topic"
+    assert summary["learning_status"] == "accepted_topic_turn"
     assert summary["persistence_status"] == "confirmed"
     assert summary["concepts_persisted"] == 2
     assert summary["dominant_topic_selected"] is True
@@ -213,6 +217,27 @@ def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
     assert "concepts" not in summary
     assert "curiosity_topic" not in summary
     assert "private topic text" not in str(summary)
+
+
+def test_semantic_extraction_summary_preserves_non_topic_skip_reason():
+    summary = audit_safe_turn_summary({
+        "type": "semantic_extraction_receipt",
+        "turn_kind": "retrieval",
+        "learning_status": "skipped_non_topic_turn",
+        "status": "completed",
+        "persistence_status": "not_needed",
+        "cag_status": "skipped_non_topic_turn",
+        "workspace_status": "not_requested",
+        "curiosity_status": "skipped_non_topic_turn",
+        "curiosity_topic_selected": False,
+        "concept_upsert_calls_returned": 0,
+        "observations_persisted": 0,
+    })
+    assert summary["turn_kind"] == "retrieval"
+    assert summary["learning_status"] == "skipped_non_topic_turn"
+    assert summary["curiosity_status"] == "skipped_non_topic_turn"
+    assert summary["concept_upsert_calls_returned"] == 0
+    assert summary["observations_persisted"] == 0
 
 
 def test_app_state_resolves_relational_memory_from_its_actual_owner():

@@ -22,7 +22,7 @@ def _organism_stub():
     return organism
 
 
-def test_explicit_source_recall_does_not_become_a_semantic_topic():
+def test_source_recall_is_classified_by_semantic_extractor_not_a_lexical_gate():
     organism = _organism_stub()
 
     receipt = CognitiveOrganism._post_interaction(
@@ -37,11 +37,11 @@ def test_explicit_source_recall_does_not_become_a_semantic_topic():
         turn_id="recall-control-turn",
     )
 
-    organism._semantic_extractor.extract_async.assert_not_called()
+    organism._semantic_extractor.extract_async.assert_called_once()
     assert receipt["semantic_topic_learning"] == {
-        "status": "skipped_by_intent",
+        "status": "queued",
         "turn_id": "recall-control-turn",
-        "reason": "explicit_source_recall",
+        "reason": "semantic_intent_classification",
     }
 
 
@@ -66,4 +66,4 @@ def test_ordinary_topic_turn_still_queues_semantic_learning():
         completion_callback=None,
     )
     assert receipt["semantic_topic_learning"]["status"] == "queued"
-    assert receipt["semantic_topic_learning"]["reason"] == "ordinary_turn"
+    assert receipt["semantic_topic_learning"]["reason"] == "semantic_intent_classification"

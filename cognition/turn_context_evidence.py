@@ -379,6 +379,12 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "cag_status": str(value.get("cag_status") or "unknown")[:24],
             "workspace_status": str(value.get("workspace_status") or "unknown")[:24],
         }
+        turn_kind = str(value.get("turn_kind") or "")[:24]
+        if turn_kind in {"topic", "retrieval", "social", "instruction", "feedback", "other", "unclassified"}:
+            receipt["turn_kind"] = turn_kind
+        learning_status = str(value.get("learning_status") or "")[:32]
+        if learning_status in {"accepted_topic_turn", "skipped_non_topic_turn"}:
+            receipt["learning_status"] = learning_status
         for key in (
             "concepts_parsed", "concept_upsert_calls_returned", "concepts_persisted",
             "observation_calls_returned", "observations_persisted",
@@ -392,7 +398,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         curiosity_status = str(value.get("curiosity_status") or "")[:32]
         if curiosity_status in {
             "stimulated", "unavailable", "failed", "skipped_peer_source",
-            "no_grounded_dominant_topic",
+            "no_grounded_dominant_topic", "skipped_non_topic_turn",
         }:
             receipt["curiosity_status"] = curiosity_status
         if isinstance(value.get("curiosity_topic_selected"), bool):

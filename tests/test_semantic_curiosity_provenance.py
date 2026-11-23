@@ -24,6 +24,7 @@ def test_grounded_user_topic_is_the_only_semantic_path_to_curiosity():
     extractor = SemanticExtractor(
         _Memory(),
         llm_fn=lambda _prompt: json.dumps({
+            "turn_kind": "topic",
             "concepts": [{
                 "name": "robot locomotion",
                 "evidence": "robot locomotion",
@@ -59,6 +60,7 @@ def test_peer_topic_does_not_stimulate_human_curiosity():
     extractor = SemanticExtractor(
         _Memory(),
         llm_fn=lambda _prompt: json.dumps({
+            "turn_kind": "topic",
             "concepts": [{"name": "robot locomotion", "evidence": "robot locomotion"}],
             "relations": [],
             "dominant_topic": "robot locomotion",
@@ -98,3 +100,39 @@ def test_user_semantic_curiosity_uses_grounding_not_word_filter(tmp_path: Path):
 
     assert engine.top_interests(1)[0][0] == "robot locomotion"
     topic_filter.assert_not_called()
+
+
+def test_retrieval_turn_does_not_persist_or_promote_concepts():
+    memory = Mock()
+    curiosity = Mock()
+    runtime_state = SimpleNamespace(acc=Mock())
+    extractor = SemanticExtractor(
+        memory,
+        llm_fn=lambda _prompt: json.dumps({
+            "turn_kind": "retrieval",
+            "concepts": [{
+                "name": "dernier objectif cognitif",
+                "evidence": "dernier objectif cognitif",
+            }],
+            "relations": [],
+            "dominant_topic": "dernier objectif cognitif",
+            "cognitive_load": 0.2,
+        }),
+        organism=SimpleNamespace(curiosity=curiosity),
+    )
+
+    with patch("core.state.state", runtime_state):
+        receipt = extractor._extract(
+            "Rappelle-moi le dernier objectif cognitif.",
+            "It was the audit objective.", None, None, "user_topic",
+            "turn-retrieval-1",
+        )
+
+    memory.upsert_concept.assert_not_called()
+    memory.record_observation.assert_not_called()
+    memory.upsert_relation.assert_not_called()
+    runtime_state.acc.update_semantic_topics.assert_not_called()
+    curiosity.stimulate.assert_not_called()
+    assert receipt["turn_kind"] == "retrieval"
+    assert receipt["learning_status"] == "skipped_non_topic_turn"
+    assert receipt["persistence_status"] == "not_needed"

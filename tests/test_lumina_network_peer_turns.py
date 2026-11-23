@@ -102,8 +102,8 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         organism.energy.temperature_hint.return_value = 0.4
         organism._post_interaction.return_value = {
             "semantic_topic_learning": {
-                "status": "skipped_by_intent",
-                "reason": "explicit_source_recall",
+                "status": "queued",
+                "reason": "semantic_intent_classification",
                 "turn_id": "peer-semantic-turn",
             },
             "pcm_outcome": {"status": "no_pending_transition"},
@@ -127,7 +127,7 @@ class PeerHistoryIsolationTests(unittest.TestCase):
             "completed",
         )
         semantic_stage = bridge._last_turn_trace["stages"]["semantic_topic_learning_handoff"]
-        self.assertEqual(semantic_stage["status"], "skipped_by_intent")
+        self.assertEqual(semantic_stage["status"], "queued")
         self.assertEqual(semantic_stage["output_summary"]["type"], "dict")
         self.assertEqual(len(semantic_stage["output_fingerprint"]), 64)
         self.assertEqual(semantic_stage["consumes"][0], {

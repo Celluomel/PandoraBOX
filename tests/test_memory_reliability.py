@@ -241,6 +241,7 @@ class MemoryReliabilityTests(unittest.TestCase):
 
     def test_llm_extraction_never_persists_response_only_concepts_or_relations(self):
         extractor = SemanticExtractor(_Memory(), llm_fn=lambda _prompt: json.dumps({
+            "turn_kind": "topic",
             "concepts": [
                 {"name": "camera movement", "evidence": "camera movement"},
                 {"name": "future embodiment", "evidence": "future embodiment"},
@@ -253,16 +254,18 @@ class MemoryReliabilityTests(unittest.TestCase):
             "cognitive_load": 0.4,
         }))
 
-        concepts, _, topic, _ = extractor._parse(
+        concepts, _, topic, _, turn_kind = extractor._parse(
             "I am.",
             "Camera movement enables future embodiment. " * 20,
         )
 
         self.assertEqual(concepts, [])
         self.assertEqual(topic, "")
+        self.assertEqual(turn_kind, "topic")
 
     def test_llm_semantics_are_not_unionized_with_surface_keyword_candidates(self):
         extractor = SemanticExtractor(_Memory(), llm_fn=lambda _prompt: json.dumps({
+            "turn_kind": "topic",
             "concepts": [
                 {"name": "semantic extractor", "evidence": "semantic extractor"},
                 {"name": "profil utilisateur", "evidence": "profil utilisateur"},
@@ -273,7 +276,7 @@ class MemoryReliabilityTests(unittest.TestCase):
             "cognitive_load": 0.3,
         }))
 
-        concepts, relations, topic, _ = extractor._parse(
+        concepts, relations, topic, _, turn_kind = extractor._parse(
             "Décris le rôle du semantic extractor et du profil utilisateur dans le harnais cognitif.",
             "",
         )
@@ -283,6 +286,7 @@ class MemoryReliabilityTests(unittest.TestCase):
         ])
         self.assertEqual(relations, [])
         self.assertEqual(topic, "harnais cognitif")
+        self.assertEqual(turn_kind, "topic")
         self.assertNotIn("décris", concepts)
         self.assertNotIn("rôle", concepts)
 
@@ -324,6 +328,7 @@ class MemoryReliabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
             response = json.dumps({
+                "turn_kind": "topic",
                 "concepts": [
                     {"name": "robot cognition", "evidence": "robot cognition"},
                     {"name": "semantic memory", "evidence": "semantic memory"},
