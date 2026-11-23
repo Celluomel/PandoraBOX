@@ -962,38 +962,86 @@ class GoalActionExecutor:
         ai_sys = getattr(self._o, 'ai_system', None)
         ms = getattr(ai_sys, 'memory_system', None)
         if ms and keywords:
-            if callable(progress_callback):
-                progress_callback("faiss_lookup", "started")
-            try:
-                # Query with full topic for richer episodic match
-                query = goal.topic.replace('_', ' ')
-                context = ms.get_context(query, top_k=3)
-                faiss_chars = len(context.strip()) if isinstance(context, str) else 0
-                if context and context.strip() and len(context.strip()) > 20:
-                    parts.append(f"episodic: {context.strip()[:120]}")
-                    logger.info(
-                        f"[GoalActionExecutor] memory_recall ✅ FAISS "
-                        f"'{query[:25]}': {len(context)} chars"
-                    )
-                    try:
-                        from cognition.emergence_metrics import get_collector
-                        c = get_collector()
-                        if c: c.record_memory_recall('faiss')
-                    except Exception:
-                        pass
+            query = goal.topic.replace('_', ' ')
+            owner_user_id = str(
+                getattr(ai_sys, "_active_user_id", None) or ""
+            ).strip() or None
+            if not owner_user_id:
                 if callable(progress_callback):
                     progress_callback(
-                        "faiss_lookup", "completed",
-                        result_present=bool(faiss_chars), result_chars=faiss_chars,
+                        "episodic_retrieval", "skipped",
+                        reason="active_user_unavailable", owner_scoped=False,
                     )
-            except Exception as e:
-                logger.debug(f"[GoalActionExecutor] FAISS recall error: {e}")
+            else:
                 if callable(progress_callback):
-                    progress_callback(
-                        "faiss_lookup", "failed", error_type=type(e).__name__
+                    progress_callback("episodic_retrieval", "started")
+                try:
+                    # EnhancedMemorySystem exposes retrieve_memories(), not
+                    # get_context(). The old call silently failed on the real
+                    # provider and tests hid it behind a context-only fake.
+                    from cognition.ai_system import retrieve_memories_for_user
+
+                    retrieval_query = query
+                    retrieval_receipt = None
+                    retrieve_with_receipt = getattr(
+                        ms, "retrieve_memories_with_receipt", None
                     )
+                    if callable(retrieve_with_receipt):
+                        memories, retrieval_receipt = retrieve_with_receipt(
+                            retrieval_query, limit=3, owner_user_id=owner_user_id,
+                        )
+                    else:
+                        memories = retrieve_memories_for_user(
+                            ms, retrieval_query, owner_user_id, limit=3,
+                        )
+                        retrieval_receipt = {
+                            "backend": "provider_unspecified",
+                            "fallback_reason": None,
+                            "vector_candidate_count": None,
+                            "returned_count": len(memories or []),
+                        }
+                    memories = memories if isinstance(memories, list) else []
+                    memory_texts = [
+                        " ".join(str(memory.get("text") or "").split())[:120]
+                        for memory in memories if isinstance(memory, dict)
+                    ]
+                    memory_texts = [text for text in memory_texts if len(text) > 20]
+                    memory_chars = sum(len(text) for text in memory_texts)
+                    if memory_texts:
+                        parts.append("episodic: " + " | ".join(memory_texts[:3]))
+                        logger.info(
+                            "[GoalActionExecutor] memory_recall ✅ %s '%s': %d memories",
+                            str(retrieval_receipt.get("backend") or "unknown"),
+                            query[:25], len(memory_texts),
+                        )
+                        try:
+                            from cognition.emergence_metrics import get_collector
+                            c = get_collector()
+                            if c:
+                                c.record_memory_recall(
+                                    str(retrieval_receipt.get("backend") or "unknown")
+                                )
+                        except Exception:
+                            pass
+                    if callable(progress_callback):
+                        progress_callback(
+                            "episodic_retrieval", "completed" if memories else "empty",
+                            backend=str(retrieval_receipt.get("backend") or "unknown"),
+                            fallback_reason=str(retrieval_receipt.get("fallback_reason") or ""),
+                            vector_candidate_count=retrieval_receipt.get("vector_candidate_count"),
+                            returned_count=len(memories),
+                            result_present=bool(memory_texts), result_chars=memory_chars,
+                            owner_scoped=True,
+                        )
+                except Exception as e:
+                    logger.debug("[GoalActionExecutor] episodic recall error: %s", e)
+                    if callable(progress_callback):
+                        progress_callback(
+                            "episodic_retrieval", "failed", error_type=type(e).__name__,
+                            owner_scoped=True,
+                        )
         elif callable(progress_callback):
-            progress_callback("faiss_lookup", "skipped", reason="provider_unavailable")
+            progress_callback("episodic_retrieval", "skipped", reason="provider_unavailable")
 
         if parts:
             thought = (

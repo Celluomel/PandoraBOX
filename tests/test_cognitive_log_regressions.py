@@ -1023,6 +1023,49 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                 self.assertFalse(changed)
                 self.assertEqual(profile.characteristics, [])
 
+    def test_profile_quarantine_migration_rolls_back_when_save_is_not_confirmed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "users.json"
+            manager = UserManager(path)
+            profile = manager.create("Fred")
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            persisted["users"][profile.id]["characteristics"] = [
+                "curious to understand a question"
+            ]
+            path.write_text(json.dumps(persisted), encoding="utf-8")
+
+            with patch.object(UserManager, "_save", lambda self: None):
+                loaded = UserManager(path)
+
+            loaded_profile = loaded.get(profile.id)
+            self.assertEqual(
+                loaded_profile.characteristics,
+                ["curious to understand a question"],
+            )
+            self.assertEqual(loaded_profile.profile_provenance_quarantine, [])
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["users"][profile.id]["characteristics"],
+                ["curious to understand a question"],
+            )
+
+    def test_profile_learning_stops_when_ephemeral_migration_persistence_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "users.json"
+            manager = UserManager(path)
+            profile = manager.create("Fred")
+            profile.characteristics.append("curious to understand a question")
+
+            with patch.object(UserManager, "_save", lambda self: None):
+                receipt = manager.learn_from_message(
+                    profile.id, "I prefer practical examples.", return_receipt=True,
+                )
+
+            self.assertEqual(receipt["status"], "persistence_failed")
+            self.assertFalse(receipt["persisted"])
+            self.assertEqual(profile.characteristics, ["curious to understand a question"])
+            self.assertEqual(profile.preferences, [])
+            self.assertEqual(profile.profile_provenance_quarantine, [])
+
     def test_attention_decay_returns_effect_and_persistence_receipts(self):
         with tempfile.TemporaryDirectory() as directory:
             engine = CognitiveAttentionEngine.__new__(CognitiveAttentionEngine)

@@ -111,7 +111,7 @@ class EmergenceMetricsCollector:
             pass
 
     def record_memory_recall(self, source: str) -> None:
-        """Called by GAE _try_memory_recall. source: 'faiss' or 'sqlite'."""
+        """Record a GAE recall backend; FAISS use is counted separately."""
         try:
             self._csis_total += 1
             if source == 'faiss':

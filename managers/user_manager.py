@@ -20,6 +20,7 @@ Profile fields:
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import logging
 import os
@@ -639,9 +640,24 @@ class UserManager:
             receipt = {"status": "skipped_empty_message", "changed": False}
             return receipt if return_receipt else False
         with self._lock:
+            previous_characteristics = list(profile.characteristics)
+            previous_quarantine = copy.deepcopy(profile.profile_provenance_quarantine)
             migrated = self._quarantine_ephemeral_characteristics(profile)
             if migrated:
                 self._save()
+                if not self._state_is_persisted():
+                    profile.characteristics = previous_characteristics
+                    profile.profile_provenance_quarantine = previous_quarantine
+                    self._prompt_cache.pop(profile.id, None)
+                    receipt = {
+                        "status": "persistence_failed",
+                        "changed": False,
+                        "persisted": False,
+                        "categories_updated": [],
+                        "extracted_count": 0,
+                        "quarantined_count": 0,
+                    }
+                    return receipt if return_receipt else False
         text = " ".join(str(message).strip().split())
         try:
             from managers.settings_manager import get_persona_name
@@ -761,12 +777,7 @@ class UserManager:
                 self._prompt_cache.pop(profile.id, None)
                 profile.touch()
                 self._save()
-                try:
-                    persisted = json.loads(self._path.read_text(encoding="utf-8"))
-                    persisted_profile = persisted.get("users", {}).get(profile.id)
-                    persistence_verified = persisted_profile == profile.to_dict()
-                except Exception:
-                    persistence_verified = False
+                persistence_verified = self._state_is_persisted()
                 if not persistence_verified:
                     for kind, values in previous_values.items():
                         setattr(profile, profile_fields[kind], values)
@@ -796,6 +807,20 @@ class UserManager:
         return receipt if return_receipt else changed
 
     # ── Persistence ──────────────────────────────────────────────────────────
+
+    def _state_is_persisted(self) -> bool:
+        """Confirm the on-disk profile set matches the current in-memory set."""
+        try:
+            persisted = json.loads(self._path.read_text(encoding="utf-8"))
+            expected_users = {
+                uid: profile.to_dict() for uid, profile in self._users.items()
+            }
+            return (
+                persisted.get("active_id", self.GUEST_ID) == self._active_id
+                and persisted.get("users") == expected_users
+            )
+        except Exception:
+            return False
 
     def _save(self):
         temporary_path = None
@@ -829,16 +854,32 @@ class UserManager:
                 return
             data = json.loads(self._path.read_text(encoding="utf-8"))
             migrated_profiles = False
+            migration_snapshots = {}
             for uid, pd in data.get("users", {}).items():
                 profile = UserProfile.from_dict(pd)
+                previous_characteristics = list(profile.characteristics)
+                previous_quarantine = copy.deepcopy(profile.profile_provenance_quarantine)
                 if self._quarantine_ephemeral_characteristics(profile):
                     migrated_profiles = True
+                    migration_snapshots[uid] = (
+                        previous_characteristics, previous_quarantine,
+                    )
                 self._users[uid] = profile
             saved_active = data.get("active_id", self.GUEST_ID)
             if saved_active in self._users:
                 self._active_id = saved_active
             if migrated_profiles:
                 self._save()
+                if not self._state_is_persisted():
+                    for uid, (characteristics, quarantine) in migration_snapshots.items():
+                        profile = self._users.get(uid)
+                        if profile is not None:
+                            profile.characteristics = characteristics
+                            profile.profile_provenance_quarantine = quarantine
+                    logger.error(
+                        "UserManager profile migration was not persisted; "
+                        "restored the pre-migration in-memory values"
+                    )
             logger.info(f"👥 Loaded {len(self._users)} users (active: {self._active_id})")
         except Exception as e:
             logger.error(f"UserManager load error: {e}")
