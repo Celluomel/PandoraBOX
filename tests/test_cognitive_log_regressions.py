@@ -942,6 +942,66 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertIn("Frequently referenced concept", goal["topic_history"][0]["topic"])
         self.assertEqual(len(dal.saved), 1)
 
+    def test_goal_quality_filter_does_not_report_failed_write_as_durable_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            goal = {
+                "id": "goal-write-fail", "name": "noisy topic",
+                "status": "active", "priority": 0.7,
+                "quality_score": 0.72, "quality_reasons": ["previous durable score"],
+                "quality_evaluated_at": "previous-evaluation",
+            }
+
+            class _Dal:
+                def get_goals(self):
+                    return [goal]
+
+                def get_tensions(self):
+                    return {}
+
+                def save_goal(self, _record):
+                    return False
+
+            quality_filter = GoalQualityFilter(directory)
+            engine = SimpleNamespace(reload_from_disk=lambda: None)
+            with patch("core.data.access.DataAccess", return_value=_Dal()), \
+                 patch.object(quality_filter, "_load_emotions", return_value={}), \
+                 patch.object(quality_filter, "_score_goal", return_value=(
+                     0.0, ["lexical-noise topic 'noisy topic'"]
+                 )), \
+                 patch.object(quality_filter, "_repair_legacy_semantic_hub_topics", return_value=0), \
+                 patch.object(quality_filter, "_generate_tension_goals", return_value=[]):
+                report = quality_filter.run(goal_engine=engine)
+
+        self.assertEqual(goal["status"], "active")
+        self.assertEqual(goal["quality_score"], 0.72)
+        self.assertEqual(goal["quality_reasons"], ["previous durable score"])
+        self.assertEqual(goal["quality_evaluated_at"], "previous-evaluation")
+        self.assertEqual(report["marked_noise"], [])
+        self.assertEqual(report["goal_write_failed"], ["goal-write-fail"])
+        self.assertEqual(report["summary"]["goal_write_failed"], 1)
+        self.assertEqual(report["summary"]["goal_writes_succeeded"], 0)
+
+    def test_legacy_identity_topic_repair_reverts_when_persistence_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            goal = {
+                "id": "repair-fails", "name": "clarify_identity_and_values",
+                "origin": "goal_quality_filter", "status": "active",
+                "tension_source": "identity_stress",
+                "topic": "I keep telling myself 'Frequently referenced concept: calme (20 uses)' "
+                         "but my actual behavior doesn't back that up",
+            }
+
+            class _Dal:
+                def save_goal(self, _record):
+                    return False
+
+            quality_filter = GoalQualityFilter(directory)
+            repaired = quality_filter._repair_legacy_semantic_hub_topics([goal], _Dal())
+
+        self.assertEqual(repaired, 0)
+        self.assertIn("Frequently referenced concept", goal["topic"])
+        self.assertNotIn("topic_history", goal)
+
     def test_epistemic_lead_in_is_not_saved_as_a_durable_user_characteristic(self):
         examples = (
             "Je suis curieux de savoir comment ton moteur fonctionne.",

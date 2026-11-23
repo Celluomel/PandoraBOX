@@ -89,6 +89,8 @@ class GoalQualityFilter:
             'generated': [],
             'topics_repaired_by_provenance': 0,
             'completion_write_failed': [],
+            'goal_write_failed': [],
+            'goal_writes_succeeded': 0,
         }
 
         report['topics_repaired_by_provenance'] = self._repair_legacy_semantic_hub_topics(
@@ -114,6 +116,14 @@ class GoalQualityFilter:
             logger.info(f"[GQF] embeddings unavailable; using DICT fallback for tension alignment")
 
         for goal in goals:
+            persisted_fields = {
+                key: goal.get(key)
+                for key in (
+                    'status', 'priority', 'low_quality_reason',
+                    'quality_score', 'quality_reasons', 'quality_evaluated_at',
+                )
+                if key in goal
+            }
             _name = goal.get("name", "")
             semantic_align = sem_align.get(_name) if sem_align is not None else None
             score, reasons = self._score_goal(goal, tensions, emotions, semantic_align=semantic_align)
@@ -154,7 +164,31 @@ class GoalQualityFilter:
                     logger.info(f"[GQF] Boosted: {goal.get('name','')} {old_pri:.2f}→{new_pri:.2f}")
 
             goal['quality_evaluated_at'] = _now()
-            dal.save_goal(goal)
+            if dal.save_goal(goal) is False:
+                goal_id = str(goal.get('id') or '')
+                report['goal_write_failed'].append(goal_id)
+                # Do not let an unpersisted quality decision influence later
+                # phases in this same pass as if it were durable.
+                for field in (
+                    'status', 'priority', 'low_quality_reason',
+                    'quality_score', 'quality_reasons', 'quality_evaluated_at',
+                ):
+                    if field in persisted_fields:
+                        goal[field] = persisted_fields[field]
+                    elif field in goal:
+                        goal.pop(field, None)
+                report['marked_noise'] = [
+                    value for value in report['marked_noise'] if value != goal_id
+                ]
+                report['boosted'] = [
+                    value for value in report['boosted']
+                    if value.get('id') != goal_id
+                ]
+                logger.warning(
+                    "[GQF] Goal quality update was not persisted: %s", goal_id,
+                )
+            else:
+                report['goal_writes_succeeded'] += 1
 
         # Completion semantics (A): retroactive settlement.
         # A goal that has already done real work (B: took a world-facing
@@ -210,6 +244,8 @@ class GoalQualityFilter:
             'boosted':        len(report['boosted']),
             'settled':        len(report.get('settled', [])),
             'completion_write_failed': len(report.get('completion_write_failed', [])),
+            'goal_write_failed': len(report.get('goal_write_failed', [])),
+            'goal_writes_succeeded': report.get('goal_writes_succeeded', 0),
             'generated':      len(report['generated']),
             'high_quality':   sum(1 for s in report['scored'] if s['score'] >= self.boost_threshold),
         }
@@ -343,6 +379,10 @@ class GoalQualityFilter:
             replacement = generate_identity_topic(self.persona_dir)
             if not replacement or replacement == topic:
                 continue
+            had_history = 'topic_history' in goal
+            previous_history = list(goal.get('topic_history') or [])
+            had_repair_timestamp = 'topic_provenance_repaired_at' in goal
+            previous_repair_timestamp = goal.get('topic_provenance_repaired_at')
             history = goal.setdefault('topic_history', [])
             history.append({
                 'topic': topic,
@@ -351,7 +391,21 @@ class GoalQualityFilter:
             })
             goal['topic'] = replacement
             goal['topic_provenance_repaired_at'] = _now()
-            dal.save_goal(goal)
+            if dal.save_goal(goal) is False:
+                goal['topic'] = topic
+                if had_history:
+                    goal['topic_history'] = previous_history
+                else:
+                    goal.pop('topic_history', None)
+                if had_repair_timestamp:
+                    goal['topic_provenance_repaired_at'] = previous_repair_timestamp
+                else:
+                    goal.pop('topic_provenance_repaired_at', None)
+                logger.warning(
+                    "[GQF] Semantic topic repair was not persisted: %s",
+                    goal.get('id', ''),
+                )
+                continue
             repaired += 1
             logger.info(
                 "[GQF] Repaired generated identity topic from semantic-concept provenance: %s",

@@ -83,7 +83,8 @@ def summarize_output(value: Any) -> dict[str, Any]:
         # downstream effects without exposing those records or their text.
         aggregate_count_fields = (
             "noise_marked", "boosted", "settled",
-            "completion_write_failed", "generated", "high_quality",
+            "completion_write_failed", "goal_write_failed",
+            "goal_writes_succeeded", "generated", "high_quality",
         )
         nested_summary = value.get("summary")
         if isinstance(nested_summary, dict):

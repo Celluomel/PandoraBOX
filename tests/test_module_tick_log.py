@@ -48,6 +48,8 @@ class ModuleTickLogTests(unittest.TestCase):
                 "boosted": 1,
                 "settled": 0,
                 "completion_write_failed": 1,
+                "goal_write_failed": 2,
+                "goal_writes_succeeded": 7,
                 "generated": 3,
                 "high_quality": 4,
                 "private_detail": "do not expose",
@@ -59,6 +61,8 @@ class ModuleTickLogTests(unittest.TestCase):
             "boosted": 1,
             "settled": 0,
             "completion_write_failed": 1,
+            "goal_write_failed": 2,
+            "goal_writes_succeeded": 7,
             "generated": 3,
             "high_quality": 4,
         })
