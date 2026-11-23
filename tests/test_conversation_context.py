@@ -1,4 +1,7 @@
-from cognition.conversation_context import recent_dialogue_anchor
+from cognition.conversation_context import (
+    RECENT_DIALOGUE_INSTRUCTIONS,
+    recent_dialogue_anchor,
+)
 
 
 def test_anchor_keeps_three_recent_exchanges_for_elliptical_followups():
@@ -51,3 +54,9 @@ def test_anchor_omits_a_duplicate_current_user_message():
 
     assert count == 2
     assert anchor.count("User:") == 1
+
+
+def test_continuity_contract_resolves_ordinal_alternatives_semantically():
+    assert "latest explicit set of alternatives" in RECENT_DIALOGUE_INSTRUCTIONS
+    assert "do not repeat the immediately previous alternative by default" in RECENT_DIALOGUE_INSTRUCTIONS
+    assert "ask one concise clarification" in RECENT_DIALOGUE_INSTRUCTIONS

@@ -5,6 +5,19 @@ from __future__ import annotations
 from typing import Any
 
 
+RECENT_DIALOGUE_INSTRUCTIONS = (
+    "When the latest user message is a fragment, correction, pronoun, or continuation, "
+    "resolve it against these messages and the role-tagged conversation history before answering. "
+    "If its intended referent is clear, answer directly instead of asking the user to repeat it. "
+    "For ordinal or contrastive references to multiple cases, map the reference to the latest "
+    "explicit set of alternatives in the preceding messages; do not repeat the immediately "
+    "previous alternative by default, and name the alternative you understood. If multiple "
+    "referents remain equally plausible, ask one concise clarification. When the user corrects "
+    "your framing, acknowledge the correction and continue from it; do not reset to a greeting "
+    "or generic overview."
+)
+
+
 def recent_dialogue_anchor(
     history: Any,
     current_input: str,
