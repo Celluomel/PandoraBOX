@@ -102,16 +102,17 @@ def contextual_memory_query(
     history: Any,
     current_input: str,
     *,
-    max_prior_user_messages: int = 2,
+    max_prior_user_messages: int = 0,
     max_chars: int = 1800,
     max_message_chars: int = 600,
 ) -> tuple[str, int]:
-    """Build a memory-search query from recent user wording and this turn.
+    """Build a memory-search query scoped to the current user turn by default.
 
-    Assistant replies are deliberately excluded: a generated claim must not
-    steer retrieval as though it were the user's intended topic.  The current
-    turn remains last and is never duplicated if the caller already included
-    it in history.
+    The recent role-tagged dialogue has a separate prompt path for resolving
+    pronouns and follow-ups. Mixing that whole context into every FAISS query
+    lets an unrelated previous topic dominate a complete new request. Callers
+    may opt in to a bounded number of prior user messages when they explicitly
+    need historical retrieval. Assistant replies are never included.
     """
     current_input = str(current_input or "").strip()
     if not current_input:

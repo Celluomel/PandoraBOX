@@ -74,6 +74,7 @@ def test_memory_query_uses_recent_user_context_but_never_assistant_claims():
             {"role": "assistant", "content": "Case B is an internal Lumina parameter."},
         ],
         "And how does the second case act?",
+        max_prior_user_messages=2,
     )
 
     assert prior_count == 1
@@ -90,11 +91,28 @@ def test_memory_query_does_not_duplicate_a_current_user_message_in_history():
             {"role": "user", "content": " AND HOW DOES CASE B ACT? "},
         ],
         "And how does case B act?",
+        max_prior_user_messages=2,
     )
 
     assert prior_count == 1
     assert query.count("Current user message:") == 1
     assert query.count("And how does case B act?") == 1
+
+
+def test_default_memory_query_does_not_mix_prior_topics_into_a_new_turn():
+    query, prior_count = contextual_memory_query(
+        [
+            {"role": "user", "content": "Compare case A saturation and case B contrast."},
+            {"role": "assistant", "content": "Case B is an internal Lumina parameter."},
+        ],
+        "For this audit, remember marker LUMINA-MEMORY-8B2R.",
+    )
+
+    assert prior_count == 0
+    assert "Current user message: For this audit, remember marker LUMINA-MEMORY-8B2R." in query
+    assert "saturation" not in query
+    assert "contrast" not in query
+    assert "internal Lumina parameter" not in query
 
 
 def test_provider_history_is_not_duplicated_when_dialogue_is_in_system_prompt():

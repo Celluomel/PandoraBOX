@@ -2866,6 +2866,10 @@ class PersonaBridge:
         )
         _memory_query, _memory_query_prior_count = contextual_memory_query(
             _history_for_anchor if not peer_name else [], effective_input,
+            # Conversation continuity is already injected separately below.
+            # Keep episodic retrieval scoped to this turn so unrelated prior
+            # topics cannot contaminate a new answer through FAISS neighbors.
+            max_prior_user_messages=0,
         )
         system_prompt, emo_dict, cond_dict, arb_temperature, _memory_recall_result, _research_receipt = await asyncio.to_thread(
             self._build_prompt_and_cache,
