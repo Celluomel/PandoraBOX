@@ -4856,6 +4856,18 @@ La lecture en mode non mutatif du fichier réel reproduit la séparation attendu
 
 **Décision d’ingénierie :** ne pas remplacer l’actuel routeur par un nouvel appel modèle et ne pas confondre Nomic, un encodeur de similarité, avec un décideur typé. Le prochain essai local doit comparer Laya spécialisé ou un score local d’embeddings aux cas de routage réellement représentatifs, inclure « aucun outil », mesurer précision/abstention, permutation des libellés, latence et charge mémoire, puis laisser le modèle conversationnel répondre. Aucun routeur local n’est encore intégré ni validé. Cela reste une piste d’évaluation dans l’audit principal, pas une piste clôturée.
 
+### 23 novembre — attribution des appels soumis par l’executor asyncio
+
+**Réexamen de l’appel « anonyme » :** dans `logs/llm_call_audit.jsonl`, l’événement `call_id=7` utilise `generate_background_result` sur `asyncio_0`, mais son caller est seulement `concurrent.futures.thread.run`, sans `turn_id` ni parent causal. Il commence à `1795470150.72`; l’appel principal de chat commence à `1795470180.57`, environ 30 secondes plus tard, et l’extraction sémantique à `1795470185.99`. Ce journal ne prouve donc pas que l’appel 7 appartient à cette question. Le compter parmi « trois appels pour la réponse » aurait été une attribution injustifiée.
+
+**Cause démontrée de la perte d’attribution :** le script d’audit enveloppait le point d’arrivée du provider, mais ne suivait pas la soumission `asyncio` vers le thread. `run_in_executor()` ne copie pas automatiquement les `ContextVar`; dans le worker, la trace voyait le runner générique au lieu du point de soumission, et perdait aussi l’identifiant de tour parent.
+
+**Correction locale du dispositif d’audit :** `scripts/audit_llm_calls.py` capture maintenant le module/fonction qui soumet le travail, copie le contexte vers le worker et écrit séparément `executor_submission_origin`. Le caller du provider ne reprend ce site que si la seule attribution disponible est le runner générique. Le comportement applicatif et les prompts ne changent pas; les journaux restent expurgés du contenu des prompts et réponses.
+
+**Vérification locale :** le test d’executor asynchrone vérifie que le worker reçoit l’identifiant causal et le site exact de soumission; le test de reçu provider vérifie le remplacement contrôlé du caller générique. Avec les tests de sémantique et régressions de logs, **67 tests passent, 4 sous-tests**, 9 avertissements historiques; compilation et `git diff --check` passent.
+
+**Validation live à faire :** le dernier état du PC ne présente aucun listener sur les ports Lumina et aucun processus Python actif. Le lancement audit doit être fait une fois après regroupement des correctifs. Sur les tours alors rejoués, distinguer les appels avant la question, les appels réellement causés par son tour et les traitements post-réponse; le numéro temporel seul n’établit pas la causalité. L’extraction SemanticExtractor restante est attendue pour les tours thématiques; elle doit être absente pour les tours `social` déterministes et les rappels explicitement reconnus. Score global maintenu à **3/10** jusqu’aux replays live et à la vérification des effets aval.
+
 ### 23 novembre — rappel générique par proposition relative
 
 **Cause du faux négatif :** le routeur source-backed reconnaissait quelques formulations explicites, dont « on a parlé » et « what have we discussed about », mais pas la structure française courante « rappelle-moi [sujet] dont nous avons parlé ». `explicit_recall=false` laissait donc la recherche de souvenirs dans son parcours générique; le modèle pouvait recevoir des épisodes voisins sans le contrat de rappel exact.

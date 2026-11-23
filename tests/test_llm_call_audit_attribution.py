@@ -1,6 +1,7 @@
 """Provider audit events must separate chat calls from inherited background work."""
 
 import importlib.util
+import asyncio
 from pathlib import Path
 import sys
 
@@ -113,3 +114,48 @@ def test_interactive_analysis_has_explicit_auxiliary_role_and_origin():
     assert observed == [("foreground_auxiliary", "test_llm_call_audit_attribution.test_interactive_analysis_has_explicit_auxiliary_role_and_origin")]
     assert current_llm_call_role.get() == ""
     assert current_llm_call_origin.get() == ""
+
+
+def test_audit_executor_wrapper_preserves_turn_and_submission_provenance():
+    loop_type = asyncio.BaseEventLoop
+    original = loop_type.run_in_executor
+    audit._install_executor_provenance()
+    observed = []
+
+    def provider_probe():
+        observed.append((
+            current_turn_id.get(),
+            audit._executor_submission_origin.get(),
+        ))
+
+    async def run_probe():
+        token = current_turn_id.set("turn-executor-parent")
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, provider_probe)
+        finally:
+            current_turn_id.reset(token)
+
+    try:
+        asyncio.run(run_probe())
+    finally:
+        loop_type.run_in_executor = original
+
+    assert observed == [(
+        "turn-executor-parent",
+        "test_llm_call_audit_attribution.run_probe",
+    )]
+
+
+def test_provider_event_uses_executor_submission_for_generic_worker_origin():
+    token = audit._executor_submission_origin.set("cognition.persona_bridge._stream")
+    try:
+        event = _event(
+            "background", "concurrent.futures.thread.run", "turn-dispatched",
+        )
+    finally:
+        audit._executor_submission_origin.reset(token)
+
+    assert event["caller"] == "cognition.persona_bridge._stream"
+    assert event["caller_file"] == "cognition/persona_bridge.py"
+    assert event["executor_submission_origin"] == "cognition.persona_bridge._stream"
+    assert event["causal_parent_turn_id"] == "turn-dispatched"

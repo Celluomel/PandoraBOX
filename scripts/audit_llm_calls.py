@@ -17,6 +17,7 @@ import runpy
 import sys
 import threading
 import time
+from contextvars import ContextVar, copy_context
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,9 @@ _lock = threading.Lock()
 _sequence: dict[str, int] = {}
 _call_id = 0
 _PATCHED = "__lumina_audit_wrapped__"
+_executor_submission_origin: ContextVar[str] = ContextVar(
+    "lumina_audit_executor_submission_origin", default="",
+)
 
 
 def _turn_id(kwargs: dict[str, Any]) -> str:
@@ -58,6 +62,59 @@ def _prompt_material(args: tuple[Any, ...]) -> str:
     return str(value)
 
 
+def _application_submission_site() -> str:
+    """Find the Lumina caller that submitted a function to asyncio's executor."""
+    frame = inspect.currentframe()
+    try:
+        frame = frame.f_back if frame else None
+        while frame:
+            module = str(frame.f_globals.get("__name__", ""))
+            if not (
+                module == __name__
+                or module.startswith("asyncio.")
+                or module == "asyncio"
+                or module.startswith("concurrent.futures.")
+            ):
+                return f"{module}.{frame.f_code.co_name}"[:180]
+            frame = frame.f_back
+    finally:
+        del frame
+    return "unknown"
+
+
+def _install_executor_provenance() -> None:
+    """Preserve turn context and submission site across run_in_executor().
+
+    asyncio.to_thread already copies ContextVars. run_in_executor does not;
+    this diagnostic wrapper makes its provider calls attributable without
+    changing application logic or recording prompt/response contents.
+    """
+    import asyncio
+
+    loop_type = asyncio.BaseEventLoop
+    original = loop_type.run_in_executor
+    if getattr(original, _PATCHED, False):
+        return
+
+    def wrapped(loop, executor, function, *args):
+        site = _application_submission_site()
+        context = copy_context()
+
+        def invoke():
+            token = _executor_submission_origin.set(site)
+            try:
+                return function(*args)
+            finally:
+                _executor_submission_origin.reset(token)
+
+        return original(loop, executor, context.run, invoke)
+
+    wrapped.__name__ = original.__name__
+    wrapped.__doc__ = original.__doc__
+    setattr(wrapped, _PATCHED, True)
+    loop_type.run_in_executor = wrapped
+
+
 def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: dict[str, Any]):
     global _call_id
     inherited_turn_id = _turn_id(kwargs)
@@ -72,6 +129,7 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
         call_origin = str(origin_var.get() or "") if origin_var is not None else ""
     except Exception:
         call_origin = ""
+    dispatch_origin = str(_executor_submission_origin.get() or "")
     # A ContextVar turn ID can flow into background work. Keep it as a
     # parent reference, but only number the call as a turn call when the
     # manager explicitly marks the provider operation foreground.
@@ -85,6 +143,13 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
             _sequence[turn_id] = _sequence.get(turn_id, 0) + 1
         turn_call_number = _sequence.get(turn_id, 0) if turn_id else None
     caller = call_origin or "unknown"
+    generic_executor_callers = {
+        "concurrent.futures.thread.run",
+        "asyncio.threads.to_thread",
+        "unknown",
+    }
+    if dispatch_origin and caller in generic_executor_callers:
+        caller = dispatch_origin
     caller_origin_present = bool(call_origin)
     caller_file = ""
     invocation_chain: list[str] = []
@@ -112,8 +177,11 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
             frame = frame.f_back
     finally:
         del frame
-    if call_origin:
+    if call_origin and caller == call_origin:
         origin_module = call_origin.rsplit(".", 1)[0]
+        caller_file = origin_module.replace(".", "/") + ".py"
+    elif dispatch_origin and caller == dispatch_origin:
+        origin_module = dispatch_origin.rsplit(".", 1)[0]
         caller_file = origin_module.replace(".", "/") + ".py"
     prompt = _prompt_material(args)
     return {
@@ -128,6 +196,7 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
         "provider_method": method,
         "caller": caller[:180],
         "caller_file": caller_file[:120],
+        "executor_submission_origin": dispatch_origin or None,
         "invocation_chain": invocation_chain,
         "execution": call_role or ("foreground_turn" if turn_id else "background_or_unattributed"),
         "thread": threading.current_thread().name[:80],
@@ -272,6 +341,7 @@ def main() -> int:
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     os.environ.setdefault("LUMINA_MODULE_EXECUTION_AUDIT", "1")
     sys.path.insert(0, str(ROOT))
+    _install_executor_provenance()
     _install_provider_instrumentation()
     print(f"[audit] provider call log: {LOG_PATH}")
     _run_with_module_profiler(target)
