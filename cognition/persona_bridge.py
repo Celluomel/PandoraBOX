@@ -74,6 +74,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_semantic_extractor_llm_fn(ai_system, external_llm_fn=None):
+    """Choose the configured history-free LLM callable for semantic learning."""
+    candidate = getattr(ai_system, "_simple_llm_fn", None)
+    if not callable(candidate):
+        candidate = external_llm_fn
+    return candidate if callable(candidate) else None
+
 _TURN_OUTPUT_UNSET = object()
 _SEARCH_CLASSIFIER_MAX_TOKENS = 48
 
@@ -510,10 +518,19 @@ class PersonaBridge:
                 self._organism = CognitiveOrganism(self._system, data_dir=_data_dir)
                 # Give ai_system a back-reference to organism for dream cycle
                 self._system._organism = self._organism
-                # Wire LLM fn into semantic extractor
+                # Wire the already configured history-free provider into
+                # semantic extraction. The fallback matters when optional
+                # EnhancedAISystem setup did not create _simple_llm_fn.
                 if hasattr(self._organism, '_semantic_extractor'):
+                    semantic_llm_fn = _resolve_semantic_extractor_llm_fn(
+                        self._system, external_llm_fn,
+                    )
                     self._organism._semantic_extractor.set_llm(
-                        getattr(self._system, '_simple_llm_fn', None)
+                        semantic_llm_fn
+                    )
+                    logger.info(
+                        "[SemanticExtractor] LLM %s",
+                        "wired" if semantic_llm_fn else "unavailable; durable semantic learning will be skipped",
                     )
                 self._organism.start()
                 # Wire sleep_cycle reference into ai_system for task gating

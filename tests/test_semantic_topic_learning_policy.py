@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from cognition.cognitive_organism import CognitiveOrganism
+from cognition.persona_bridge import _resolve_semantic_extractor_llm_fn
 
 
 def _organism_stub():
@@ -20,6 +21,19 @@ def _organism_stub():
     organism.workspace = object()
     organism._semantic_extractor = Mock()
     return organism
+
+
+def test_semantic_extractor_uses_external_history_free_llm_when_simple_fn_missing():
+    configured = lambda prompt: f"configured:{prompt}"
+    fallback = lambda prompt: f"fallback:{prompt}"
+
+    assert _resolve_semantic_extractor_llm_fn(
+        SimpleNamespace(_simple_llm_fn=configured), fallback,
+    ) is configured
+    assert _resolve_semantic_extractor_llm_fn(
+        SimpleNamespace(), fallback,
+    ) is fallback
+    assert _resolve_semantic_extractor_llm_fn(SimpleNamespace(), None) is None
 
 
 def test_source_recall_is_classified_by_semantic_extractor_not_a_lexical_gate():
