@@ -35,11 +35,12 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         api._turn_lock = asyncio.Lock()
         api._events.clear()
         self.user_turns = []
+        self.deferred_turns = []
         self.runtime = SimpleNamespace(
             ready=True, persona=Persona(), vision=None, llm=None,
             get_uptime=lambda: 120,
             notify_user_turn=lambda text, user_id: self.user_turns.append((text, user_id)),
-            schedule_deferred_cognitive_stages=lambda *args, **kwargs: None,
+            schedule_deferred_cognitive_stages=lambda *args, **kwargs: self.deferred_turns.append((args, kwargs)),
         )
         self.modules = {
             'managers.settings_manager': SimpleNamespace(
@@ -306,7 +307,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['values']['AFFECT_EMBEDDING_MODEL'], selected)
 
-    async def test_stream_has_ids_order_and_terminal_event(self):
+    async def test_stream_keeps_api_turn_id_for_deferred_receipts_without_meta_id(self):
         async with self.client() as client:
             response = await client.post('/api/interface/chat', json={'text': 'Hello'})
             events = [json.loads(line) for line in response.text.splitlines()]
@@ -317,6 +318,9 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 self.runtime.persona.stream_kwargs['turn_id'], events[0]['turn_id']
             )
+            self.assertEqual(len(self.deferred_turns), 1)
+            self.assertEqual(self.deferred_turns[0][1]['turn_id'], events[0]['turn_id'])
+            self.assertEqual(self.deferred_turns[0][0][2], 'test-user')
             self.assertFalse(api._turn_lock.locked())
 
     async def test_debug_introspection_is_an_explicit_structured_capability(self):

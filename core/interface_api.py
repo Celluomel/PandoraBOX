@@ -2106,7 +2106,18 @@ async def chat(payload: Turn, request: Request):
                         break
                     if isinstance(chunk, dict):
                         if chunk.get('__meta__'):
-                            completed_turn_id = str(chunk.get('turn_id') or '')
+                            reported_turn_id = str(chunk.get('turn_id') or '').strip()
+                            if reported_turn_id and reported_turn_id != turn_id:
+                                logger.error(
+                                    'Persona stream turn ID mismatch: api=%s persona=%s',
+                                    turn_id, reported_turn_id,
+                                )
+                            # The API created this ID and passed it into the
+                            # PersonaBridge. Keep it as the canonical parent
+                            # even if terminal metadata is incomplete; an
+                            # empty ID would make deferred stages fall back to
+                            # whichever trace happens to be newest.
+                            completed_turn_id = turn_id
                             semantic_validation_post_response = bool(
                                 chunk.get('semantic_validation_post_response')
                             )
