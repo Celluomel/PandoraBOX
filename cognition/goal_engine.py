@@ -1219,6 +1219,13 @@ class GoalEngine:
         source_thought_id = str(proposal.get("origin_thought") or "").strip()
         hypothesis = " ".join(str(proposal.get("hypothesis") or "").split())[:500]
         goal_type = str(proposal.get("goal_type") or proposal_type)
+        if goal_type == "test_hypothesis" and not hypothesis:
+            return {
+                "created": False,
+                "verified": False,
+                "topic": concept,
+                "reason": "hypothesis_required",
+            }
         origin = f"thought_evaluator:{goal_type}"
         if proposal_type == "tension" and hypothesis:
             origin = "thought_evaluator:test_hypothesis"

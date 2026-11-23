@@ -191,6 +191,77 @@ def test_high_priority_tension_defers_llm_synthesis_until_selected(tmp_path):
     assert result["goal_type"] == "test_hypothesis"
 
 
+def test_test_hypothesis_goal_requires_a_persistable_hypothesis(tmp_path):
+    persistence_file = tmp_path / "goals.json"
+    engine = GoalEngine(SimpleNamespace(), persistence_file=str(persistence_file))
+
+    result = engine.commit_selected_thought_proposal(
+        {
+            "type": "test_hypothesis",
+            "goal_type": "test_hypothesis",
+            "concept": "cognitive_execution_flow",
+            "origin_thought": "thought-truncated-hypothesis",
+            "hypothesis": "",
+        },
+        cycle=13,
+    )
+
+    assert result["created"] is False
+    assert result["verified"] is False
+    assert result["reason"] == "hypothesis_required"
+    assert not persistence_file.exists()
+
+
+def test_hypothesis_synthesis_requires_verified_provider_completion(monkeypatch, tmp_path):
+    from core.state import state
+
+    class _LLM:
+        def generate_bare_result(self, prompt, **kwargs):
+            assert "testable hypothesis" in prompt
+            assert kwargs["max_tokens"] == 128
+            return {
+                "text": "If the selected route is used, then the goal stays linked to its source.",
+                "status": "ok",
+                "completion_verified": True,
+                "completion_reason": "stop",
+                "output_tokens": 19,
+                "max_output_tokens": 128,
+            }
+
+    monkeypatch.setattr(state, "llm", _LLM())
+    result = SimpleThoughtEvaluator(tmp_path)._generate_hypothesis_result(
+        "A recurring tension needs a test.", "cognitive_execution_flow",
+    )
+
+    assert result["status"] == "completed"
+    assert result["reason_code"] == "provider_completion_verified"
+    assert result["hypothesis"].startswith("If the selected route")
+
+
+def test_truncated_hypothesis_is_not_returned_as_complete(monkeypatch, tmp_path):
+    from core.state import state
+
+    class _LLM:
+        def generate_bare_result(self, *_args, **_kwargs):
+            return {
+                "text": "If the selected route is used, then the goal might",
+                "status": "truncated",
+                "reason": "output_token_limit_reached",
+                "completion_verified": False,
+                "output_tokens": 60,
+                "max_output_tokens": 60,
+            }
+
+    monkeypatch.setattr(state, "llm", _LLM())
+    result = SimpleThoughtEvaluator(tmp_path)._generate_hypothesis_result(
+        "A recurring tension needs a test.", "cognitive_execution_flow",
+    )
+
+    assert result["status"] == "truncated"
+    assert result["reason_code"] == "provider_completion_not_usable"
+    assert result["hypothesis"] == ""
+
+
 def test_thought_evaluator_prefers_existing_structured_topic():
     evaluator = SimpleThoughtEvaluator(Path("."))
     evaluator._compute_priority = lambda *_args: 0.7
@@ -257,6 +328,13 @@ def test_structured_thought_reaches_persisted_workspace_goal_end_to_end(tmp_path
     selected = competition["winner"]["source_data"].get("_goal_proposal")
     assert competition["winner"]["id"] == proposal_candidate["id"]
     assert selected == proposal
+
+    # Model the selected synthesis boundary explicitly: a test_hypothesis
+    # proposal reaches persistence only after a completed hypothesis exists.
+    selected["hypothesis"] = (
+        "If the selected goal is routed directly, then its source remains attached."
+    )
+    selected["hypothesis_pending"] = False
 
     goals_file = persona_dir / "goals.json"
     engine = GoalEngine(SimpleNamespace(), persistence_file=str(goals_file))

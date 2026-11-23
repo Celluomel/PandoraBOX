@@ -2100,25 +2100,69 @@ class InternalThoughtLoop:
                     if isinstance(_winner_source, dict):
                         _selected_proposal = _winner_source.get("_goal_proposal")
                     if isinstance(_selected_proposal, dict):
+                        _hypothesis_ready = True
                         if _selected_proposal.get("hypothesis_pending"):
                             _evaluator = getattr(self._phase1, "components", {}).get("thought_evaluator")
                             try:
-                                _hypothesis = _evaluator._generate_hypothesis(
+                                _hypothesis_result = _evaluator._generate_hypothesis_result(
                                     str(_selected_proposal.get("origin_content") or ""),
                                     str(_selected_proposal.get("concept") or ""),
-                                ) if _evaluator else ""
+                                ) if _evaluator and callable(getattr(_evaluator, "_generate_hypothesis_result", None)) else {
+                                    "status": "unavailable",
+                                    "reason_code": "hypothesis_generator_unavailable",
+                                    "hypothesis": "",
+                                }
                             except Exception as _hypothesis_error:
                                 logger.debug(
                                     "[InternalLoop] selected proposal hypothesis synthesis failed: %s",
                                     _hypothesis_error,
                                 )
-                                _hypothesis = ""
-                            _selected_proposal["hypothesis"] = _hypothesis
-                            _selected_proposal["hypothesis_pending"] = False
+                                _hypothesis_result = {
+                                    "status": "error",
+                                    "reason_code": "hypothesis_generation_exception",
+                                    "hypothesis": "",
+                                }
+                            _hypothesis = str(_hypothesis_result.get("hypothesis") or "").strip()
+                            _hypothesis_ready = (
+                                _hypothesis_result.get("status") == "completed"
+                                and bool(_hypothesis)
+                            )
+                            if _hypothesis_ready:
+                                _selected_proposal["hypothesis"] = _hypothesis
+                                _selected_proposal["hypothesis_pending"] = False
+                            else:
+                                # Keep the source proposal retryable. A selected
+                                # but unverified hypothesis is not a completed
+                                # cognitive action and must not create a generic
+                                # goal in the GoalEngine.
+                                _selected_proposal["hypothesis_pending"] = True
+                                _commit_result = {
+                                    "created": False,
+                                    "verified": False,
+                                    "reason": "hypothesis_not_verified",
+                                    "hypothesis_status": str(_hypothesis_result.get("status") or "unknown")[:48],
+                                }
+                            self._record_cycle_stage(
+                                "selected_hypothesis_synthesis",
+                                "completed" if _hypothesis_ready else "deferred_or_unverified",
+                                inputs={
+                                    "selected_proposal_ref": self._evidence_fingerprint(
+                                        _selected_proposal.get("proposal_id")
+                                    ),
+                                },
+                                output={
+                                    "status": str(_hypothesis_result.get("status") or "unknown")[:48],
+                                    "reason_code": str(_hypothesis_result.get("reason_code") or "unknown")[:80],
+                                    "completion_reason": str(_hypothesis_result.get("completion_reason") or "")[:80],
+                                    "hypothesis_chars": len(_hypothesis),
+                                    "output_tokens": _hypothesis_result.get("output_tokens"),
+                                    "max_output_tokens": _hypothesis_result.get("max_output_tokens"),
+                                },
+                            )
                         _selected_goal_engine = getattr(
                             getattr(o, "ai_system", None), "goal_engine", None
                         )
-                        if _selected_goal_engine is not None:
+                        if _hypothesis_ready and _selected_goal_engine is not None:
                             try:
                                 _commit = _selected_goal_engine.commit_selected_thought_proposal(
                                     _selected_proposal, self._slow_cycle_count
@@ -2231,6 +2275,8 @@ class InternalThoughtLoop:
                         output=(
                             {"created": bool(_commit_result.get("created")),
                              "verified": bool(_commit_result.get("verified")),
+                             "reason_code": str(_commit_result.get("reason") or "")[:80],
+                             "hypothesis_status": str(_commit_result.get("hypothesis_status") or "not_required")[:48],
                              "goal_id_ref": self._evidence_fingerprint(_commit_result.get("id")),
                              "topic_ref": self._evidence_fingerprint(_commit_result.get("topic")),
                              "proposal_source_thought_ref": (

@@ -595,38 +595,79 @@ class SimpleThoughtEvaluator:
         using the LLM. This upgrades the action from 'resolve_tension' to
         'test_hypothesis' — active simulation rather than passive tension-holding.
 
-        Returns the hypothesis string, or empty string if LLM unavailable.
+        Returns text only when the provider confirms a complete response.
+        """
+        return str(self._generate_hypothesis_result(text, concept).get("hypothesis") or "")
+
+    def _generate_hypothesis_result(self, text: str, concept: str) -> Dict[str, Any]:
+        """Generate one hypothesis and retain completion evidence for the caller.
+
+        An unverified or truncated fragment must not be promoted into a
+        persistent ``test_hypothesis`` goal. In particular, do not discard the
+        provider's completion status by calling the legacy string-only helper.
         """
         try:
             from core.state import state as _state
             llm = getattr(_state, 'llm', None)
-            if not llm or not hasattr(llm, 'generate_bare'):
-                return ""
+            if not llm or not callable(getattr(llm, "generate_bare_result", None)):
+                return {"status": "unavailable", "reason_code": "completion_evidence_unavailable", "hypothesis": ""}
             prompt = (
                 f"A cognitive tension has been identified around: '{concept.replace('_', ' ')}'.\n"
                 f"Context: {text[:200]}\n\n"
                 f"Generate ONE concrete, testable hypothesis that could resolve this tension. "
                 f"Format: 'If [action], then [expected outcome].' One sentence only."
             )
-            response = llm.generate_bare(prompt, max_tokens=60, temperature=0.75)
-            if response and len(response.strip()) > 15:
-                hyp = response.strip()
-                import logging as _lg
-                _lg.getLogger(__name__).info(
-                    f"[ThoughtEvaluator] 🔬 Hypothesis for '{concept}': {hyp[:80]}"
-                )
-                # Record for emergence metrics
-                try:
-                    from cognition.emergence_metrics import get_collector
-                    c = get_collector()
-                    if c:
-                        c.record_hypothesis(hyp)
-                except Exception:
-                    pass
-                return hyp
-        except Exception:
-            pass
-        return ""
+            completion = llm.generate_bare_result(
+                prompt, max_tokens=128, temperature=0.35,
+            )
+            if not isinstance(completion, dict):
+                return {"status": "unverified", "reason_code": "invalid_completion_receipt", "hypothesis": ""}
+            completion_status = str(completion.get("status") or "unknown").strip().casefold()
+            if completion_status != "ok":
+                return {
+                    "status": completion_status if completion_status in {"truncated", "deferred", "error", "empty"} else "unverified",
+                    "reason_code": "provider_completion_not_usable",
+                    "hypothesis": "",
+                    "completion_reason": str(completion.get("reason") or completion.get("completion_reason") or "")[:80],
+                }
+            if completion.get("completion_verified") is not True:
+                return {
+                    "status": "unverified",
+                    "reason_code": "provider_did_not_confirm_completion",
+                    "hypothesis": "",
+                    "completion_reason": str(completion.get("completion_reason") or "unknown")[:80],
+                }
+            hyp = str(completion.get("text") or "").strip()
+            if len(hyp) <= 15:
+                return {"status": "empty", "reason_code": "hypothesis_too_short", "hypothesis": ""}
+            import logging as _lg
+            _lg.getLogger(__name__).info(
+                "[ThoughtEvaluator] 🔬 Verified hypothesis for '%s': %s",
+                concept, hyp[:80],
+            )
+            # Record for emergence metrics only after completion is verified.
+            try:
+                from cognition.emergence_metrics import get_collector
+                c = get_collector()
+                if c:
+                    c.record_hypothesis(hyp)
+            except Exception:
+                pass
+            return {
+                "status": "completed",
+                "reason_code": "provider_completion_verified",
+                "hypothesis": hyp,
+                "completion_reason": str(completion.get("completion_reason") or "completed_response")[:80],
+                "output_tokens": completion.get("output_tokens"),
+                "max_output_tokens": completion.get("max_output_tokens"),
+            }
+        except Exception as exc:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "[ThoughtEvaluator] Hypothesis generation failed (%s)",
+                type(exc).__name__,
+            )
+            return {"status": "error", "reason_code": "generation_exception", "hypothesis": ""}
 
     def _has_existing_goal(self, goals_data: Dict, concept: str) -> bool:
         """
