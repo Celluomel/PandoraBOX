@@ -39,6 +39,33 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertNotIn("private user text", repr(summary))
         self.assertNotIn("custom_status", summary["receipt_fields"])
 
+    def test_output_summary_exposes_safe_goal_quality_aggregate_counts(self):
+        summary = summarize_output({
+            "scored": [{"id": "private-goal-1", "name": "private goal"}],
+            "completion_write_failed": ["private-goal-2"],
+            "summary": {
+                "noise_marked": 2,
+                "boosted": 1,
+                "settled": 0,
+                "completion_write_failed": 1,
+                "generated": 3,
+                "high_quality": 4,
+                "private_detail": "do not expose",
+            },
+        })
+
+        self.assertEqual(summary["summary_counts"], {
+            "noise_marked": 2,
+            "boosted": 1,
+            "settled": 0,
+            "completion_write_failed": 1,
+            "generated": 3,
+            "high_quality": 4,
+        })
+        self.assertNotIn("private-goal-1", repr(summary))
+        self.assertNotIn("private-goal-2", repr(summary))
+        self.assertNotIn("do not expose", repr(summary))
+
     def test_output_summary_retains_contradiction_effect_statuses_only(self):
         summary = summarize_output({
             "event_status": "handlers_called",

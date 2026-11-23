@@ -77,6 +77,23 @@ def summarize_output(value: Any) -> dict[str, Any]:
                 receipt_fields[key] = value[key]
         if receipt_fields:
             result["receipt_fields"] = receipt_fields
+        # Some cognitive modules return a compact `summary` mapping alongside
+        # detailed, potentially identifying records (for example goal IDs).
+        # Preserve only known aggregate counts so the audit can evaluate
+        # downstream effects without exposing those records or their text.
+        aggregate_count_fields = (
+            "noise_marked", "boosted", "settled",
+            "completion_write_failed", "generated", "high_quality",
+        )
+        nested_summary = value.get("summary")
+        if isinstance(nested_summary, dict):
+            aggregate_counts = {
+                key: count for key in aggregate_count_fields
+                if isinstance((count := nested_summary.get(key)), int)
+                and not isinstance(count, bool) and count >= 0
+            }
+            if aggregate_counts:
+                result["summary_counts"] = aggregate_counts
         numeric = {}
         non_finite = []
         for key, item in list(value.items())[:64]:
