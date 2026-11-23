@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from managers.llm_manager import LLMManager
 from managers.session_manager import SessionManager
+from core.state import _create_llm_with_restored_session
 
 
 class _Provider:
@@ -120,6 +121,47 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
             {"role": "user", "content": "resume the audit"},
             {"role": "assistant", "content": "completed answer"},
         ])
+
+    def test_application_llm_startup_restores_persisted_dialogue(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "session.json"
+            summary_path = Path(folder) / "summary.json"
+            with patch("managers.session_manager.SESSION_PATH", str(raw_path)), patch(
+                "managers.session_manager.SUMMARY_PATH", str(summary_path)
+            ):
+                previous_session = SessionManager()
+                previous_session.on_exchange_complete([
+                    {"role": "user", "content": "we are discussing synthetic emotions"},
+                    {"role": "assistant", "content": "They are computational state variables."},
+                ])
+
+                restarted_session = SessionManager()
+                restarted_llm = SimpleNamespace(history=[], generate_bare=lambda *_a, **_k: "")
+                with patch("core.state.create_llm_manager", return_value=restarted_llm), patch(
+                    "core.state.get_session_manager", return_value=restarted_session
+                ):
+                    llm, receipt = _create_llm_with_restored_session()
+
+        self.assertIs(llm, restarted_llm)
+        self.assertTrue(receipt["restored"])
+        self.assertEqual(llm.history[-2:], [
+            {"role": "user", "content": "we are discussing synthetic emotions"},
+            {"role": "assistant", "content": "They are computational state variables."},
+        ])
+        self.assertIs(restarted_session._llm_fn, llm.generate_bare)
+
+    def test_session_restore_failure_does_not_block_llm_startup(self):
+        llm = SimpleNamespace(history=[], generate_bare=lambda *_a, **_k: "")
+        session = Mock()
+        session.load_on_boot.side_effect = OSError("session unavailable")
+        with patch("core.state.create_llm_manager", return_value=llm), patch(
+            "core.state.get_session_manager", return_value=session
+        ):
+            started_llm, receipt = _create_llm_with_restored_session()
+
+        self.assertIs(started_llm, llm)
+        self.assertFalse(receipt["restored"])
+        self.assertEqual(started_llm.history, [])
 
     def test_fallback_compression_keeps_both_sides_as_unverified_history(self):
         session = SessionManager.__new__(SessionManager)

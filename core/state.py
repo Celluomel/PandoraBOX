@@ -16,6 +16,7 @@ from managers.memory_manager import create_memory_manager
 from managers.audio_manager import create_audio_manager
 from managers.conversational_audio import ConversationalAudioManager
 from managers.vision_manager import StreamingVisionManager
+from managers.session_manager import get_session_manager
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,31 @@ def _persona_relational_memory(persona, organism):
         memory = getattr(persona, "relational_memory", None)
     return memory
 
+
+def _create_llm_with_restored_session():
+    """Create the chat manager and restore its persisted dialogue on cold boot.
+
+    SessionManager already checkpoints every completed exchange. Without this
+    startup hook, a process restart leaves LLMManager.history empty even though
+    session.json and the compressed summary are present.
+    """
+    llm = create_llm_manager()
+    try:
+        session = get_session_manager()
+        boot_receipt = session.load_on_boot(llm)
+        llm_fn = getattr(llm, "generate_bare", None) or getattr(llm, "generate", None)
+        if callable(llm_fn):
+            session.set_llm_fn(llm_fn)
+    except Exception as exc:
+        # A damaged or inaccessible session must not prevent Lumina from
+        # starting. Keep the failure visible while preserving the LLM path.
+        logger.warning(
+            "Session context restore unavailable at boot: %s",
+            type(exc).__name__,
+        )
+        boot_receipt = {"restored": False, "turns": 0, "has_summary": False}
+    return llm, boot_receipt
+
 class AppState:
     def __init__(self):
         self.llm        = None
@@ -75,8 +101,14 @@ class AppState:
         self.initializing = True
         
         try:
-            self.llm = create_llm_manager()
+            self.llm, session_boot = _create_llm_with_restored_session()
             logger.info(f"✅ LLM: {_cfg().LLM_PROVIDER}/{_cfg().LLM_MODEL}")
+            logger.info(
+                "Session context boot: restored=%s exchanges=%s summary=%s",
+                bool(session_boot.get("restored")),
+                int(session_boot.get("turns", 0) or 0),
+                bool(session_boot.get("has_summary")),
+            )
         except Exception as e:
             logger.error(f"LLM init failed: {e}")
 
