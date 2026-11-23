@@ -229,6 +229,9 @@ class GoalEngine:
         # acquires this same lock on the same thread.
         self._lock = RLock()
         self._goals: Dict[str, Goal] = {}
+        # Terminal history remains queryable for outcome review, but does not
+        # consume the bounded pool used for live goal admission/execution.
+        self._goal_history: Dict[str, Goal] = {}
         # Records managed by DataAccess (e.g. GQF low-quality/archive records)
         # can be intentionally absent from the live Goal object pool. Preserve
         # them on writes unless the engine explicitly recycles their IDs.
@@ -477,6 +480,7 @@ class GoalEngine:
     
     def _load_goals(self):
         """Load goals from disk."""
+        self._goal_history = getattr(self, "_goal_history", {})
         if not self._persistence_file.exists():
             return
 
@@ -507,6 +511,28 @@ class GoalEngine:
 
                 for gid, gdata in goals_data.items():
                     try:
+                        # Archived and merged records are durable history, not
+                        # live GoalEngine work items.  Loading them into the
+                        # bounded runtime pool lets old history exhaust
+                        # MAX_TOTAL_GOALS and permanently reject new goals.
+                        # _save_goals() preserves these records from the
+                        # existing JSON payload, so excluding them here does
+                        # not delete or rewrite their history.
+                        persisted_status = str(gdata.get("status", "active")).casefold()
+                        if persisted_status in {"archived", "merged"}:
+                            history = {
+                                key: value for key, value in gdata.items()
+                                if key in Goal.__dataclass_fields__
+                            }
+                            history.setdefault("id", str(gid))
+                            history.setdefault("topic", str(gdata.get("name", "")))
+                            history.setdefault("origin", "persisted_history")
+                            history.setdefault("priority", 0.0)
+                            history.setdefault("energy", 0.0)
+                            history.setdefault("created_cycle", self._cycle_counter)
+                            history.setdefault("last_active", self._cycle_counter)
+                            self._goal_history[gid] = Goal(**history)
+                            continue
                         self._goals[gid] = Goal(**gdata)
                     except Exception as _ge:
                         # Schema bridge: DAL/GQF goals use "name" not "topic".
@@ -545,8 +571,15 @@ class GoalEngine:
                                 "created_at":    str(gdata.get("created_at",
                                                      gdata.get("created_cycle", ""))),
                             }
-                            # Only load active/dormant goals — skip completed/abandoned
-                            if _bridged["status"] not in ("completed", "abandoned", "low_quality"):
+                            # Only load runtime-relevant bridged goals. Terminal
+                            # records remain in the persisted history and are
+                            # intentionally excluded from the bounded live pool.
+                            bridged_status = str(_bridged["status"]).casefold()
+                            if bridged_status in {"archived", "merged"}:
+                                self._goal_history[gid] = Goal(**_bridged)
+                            elif bridged_status not in {
+                                "completed", "abandoned", "low_quality", "archived", "merged",
+                            }:
                                 self._goals[gid] = Goal(**_bridged)
                                 logger.debug(
                                     f"[GoalEngine] Bridged DAL goal {gid!r}: "
@@ -570,6 +603,7 @@ class GoalEngine:
         with self._lock:
             before = len(self._goals)
             self._goals.clear()
+            self._goal_history.clear()
             self._load_goals()
             self._retire_interaction_echo_goals()
             self._retire_external_task_goals()
@@ -1085,7 +1119,7 @@ class GoalEngine:
                         victim.topic, goal.topic,
                     )
                 else:
-                    logger.debug(
+                    logger.warning(
                         "GoalEngine: total goal cap (%d) reached; not adding '%s'",
                         self.MAX_TOTAL_GOALS, goal.topic,
                     )
@@ -1483,7 +1517,7 @@ class GoalEngine:
         ArbitrationLearningTracker (Phase 5.4) to check the outcome of a
         past arbitration decision.
         """
-        return self._goals.get(goal_id)
+        return self._goals.get(goal_id) or getattr(self, "_goal_history", {}).get(goal_id)
 
     # ── Observatory Metrics ────────────────────────────────────────────────
     

@@ -80,6 +80,41 @@ def test_goal_engine_explicit_recycle_removes_only_the_selected_record(tmp_path)
     assert persisted["archived-1"]["quality_score"] == 0.0
 
 
+def test_archived_and_merged_history_does_not_exhaust_live_goal_capacity(tmp_path):
+    path = tmp_path / "goals.json"
+    history = {
+        "archived-1": {
+            "id": "archived-1", "name": "historical archived goal",
+            "topic": "historical archived goal", "quality_score": 0.73,
+            "status": "archived", "origin": "test", "priority": 0.2,
+            "energy": 0.1, "created_cycle": 1, "last_active": 1,
+        },
+        "merged-1": {
+            "id": "merged-1", "topic": "historical merged goal",
+            "status": "merged", "origin": "test", "priority": 0.2,
+            "energy": 0.1, "created_cycle": 1, "last_active": 1,
+        },
+    }
+    path.write_text(json.dumps({"cycle_counter": 1, "goals": history}), encoding="utf-8")
+
+    engine = GoalEngine(None, persistence_file=str(path))
+    engine.MAX_TOTAL_GOALS = 1
+    assert engine.get_metrics()["total_goals"] == 0
+    assert engine.get_goal_by_id("archived-1").status == "archived"
+    assert engine.get_goal_by_id("merged-1").status == "merged"
+
+    candidate = Goal(
+        id="new-1", topic="investigate current cognitive pipeline",
+        origin="test", priority=0.7, energy=0.7, created_cycle=2, last_active=2,
+    )
+    assert engine.add_goal(candidate)
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))["goals"]
+    assert persisted["archived-1"] == history["archived-1"]
+    assert persisted["merged-1"] == history["merged-1"]
+    assert "new-1" in persisted
+
+
 def test_quality_filter_submits_new_tension_goal_through_goal_engine(tmp_path):
     submissions = []
 
