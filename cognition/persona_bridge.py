@@ -4543,6 +4543,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 self._run_full_post_turn_lifecycle,
                 effective_input, user_id, raw_response,
                 emo_dict, cond_dict, _organism, not bool(peer_name), _audit_turn_id,
+                (
+                    "retrieval" if _explicit_memory_recall
+                    else "social" if _deterministic_affect_report
+                    else ""
+                ),
             )))
 
         # Learn explicit profile statements after the visible response. This
@@ -6837,6 +6842,7 @@ Memory honesty — two distinct cases:
         organism=None,
         human_interaction: bool = True,
         audit_turn_id: str = "",
+        semantic_turn_kind_hint: str = "",
     ) -> bool:
         """
         Mirrors everything get_response() does AFTER _generate_response().
@@ -6877,6 +6883,7 @@ Memory honesty — two distinct cases:
                         _decision,
                         human_interaction=False,
                         turn_id=audit_turn_id,
+                        semantic_turn_kind_hint=semantic_turn_kind_hint,
                         semantic_topic_callback=lambda receipt: self._record_semantic_topic_extraction(
                             receipt, audit_turn_id,
                         ),
@@ -7057,6 +7064,7 @@ Memory honesty — two distinct cases:
                     _post_receipt = organism._post_interaction(
                         user_input, response, {"emo_values": emo_dict}, _decision,
                         turn_id=audit_turn_id,
+                        semantic_turn_kind_hint=semantic_turn_kind_hint,
                         semantic_topic_callback=lambda receipt: self._record_semantic_topic_extraction(
                             receipt, audit_turn_id,
                         ),

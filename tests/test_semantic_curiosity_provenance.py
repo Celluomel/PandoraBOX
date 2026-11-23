@@ -183,3 +183,31 @@ def test_retrieval_turn_does_not_persist_or_promote_concepts():
     assert receipt["learning_status"] == "skipped_non_topic_turn"
     assert receipt["persistence_status"] == "not_needed"
     assert provider_turn_ids == ["turn-retrieval-1"]
+
+
+def test_trusted_upstream_act_skips_redundant_semantic_llm_and_learning():
+    for turn_kind in ("retrieval", "social"):
+        memory = Mock()
+        curiosity = Mock()
+        llm_fn = Mock(side_effect=AssertionError("unexpected semantic LLM call"))
+        extractor = SemanticExtractor(
+            memory,
+            llm_fn=llm_fn,
+            organism=SimpleNamespace(curiosity=curiosity),
+        )
+
+        with patch("core.state.state", SimpleNamespace(acc=Mock())):
+            receipt = extractor._extract(
+                "How are you?", "I am doing well.", None, None,
+                "user_topic", f"turn-{turn_kind}-hint", None, turn_kind,
+            )
+
+        llm_fn.assert_not_called()
+        memory.upsert_concept.assert_not_called()
+        memory.record_observation.assert_not_called()
+        memory.upsert_relation.assert_not_called()
+        curiosity.stimulate.assert_not_called()
+        assert receipt["status"] == "completed"
+        assert receipt["classification_source"] == "upstream_turn_contract"
+        assert receipt["turn_kind"] == turn_kind
+        assert receipt["learning_status"] == "skipped_non_topic_turn"

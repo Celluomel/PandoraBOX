@@ -81,6 +81,32 @@ def test_ordinary_topic_turn_still_queues_semantic_learning():
         observation_role="user_topic",
         turn_id="ordinary-topic-turn",
         completion_callback=None,
+        turn_kind_hint="",
     )
     assert receipt["semantic_topic_learning"]["status"] == "queued"
     assert receipt["semantic_topic_learning"]["reason"] == "semantic_intent_classification"
+
+
+def test_upstream_turn_kind_is_forwarded_without_disabling_topic_learning():
+    organism = _organism_stub()
+
+    receipt = CognitiveOrganism._post_interaction(
+        organism,
+        user_input="How are you?",
+        response="I am doing well.",
+        cycle_data={"emo_values": {}},
+        decision=None,
+        turn_id="deterministic-social-turn",
+        semantic_turn_kind_hint="social",
+    )
+
+    organism._semantic_extractor.extract_async.assert_called_once_with(
+        user_input="How are you?",
+        response="I am doing well.",
+        workspace=organism.workspace,
+        observation_role="user_topic",
+        turn_id="deterministic-social-turn",
+        completion_callback=None,
+        turn_kind_hint="social",
+    )
+    assert receipt["semantic_topic_learning"]["status"] == "queued"

@@ -140,6 +140,7 @@ class SemanticExtractor:
         observation_role: str = "user_topic",
         turn_id: str = "",
         completion_callback=None,
+        turn_kind_hint: str = "",
     ):
         """Queue a completed turn for semantic extraction.
 
@@ -153,6 +154,7 @@ class SemanticExtractor:
         item = (
             user_input, response, None, workspace, role,
             str(turn_id or ""), completion_callback,
+            str(turn_kind_hint or "").strip().casefold(),
         )
         with self._lock:
             self._queue.put_nowait(item)
@@ -190,7 +192,8 @@ class SemanticExtractor:
                 self._queue.task_done()
 
     def _extract(self, user_input, response, meta_scores, workspace,
-                 observation_role="user_topic", turn_id="", completion_callback=None):
+                 observation_role="user_topic", turn_id="", completion_callback=None,
+                 turn_kind_hint=""):
         receipt = {
             "type": "semantic_extraction_receipt",
             "status": "failed",
@@ -209,16 +212,25 @@ class SemanticExtractor:
         }
         try:
             t0 = time.time()
-            # The queue worker runs on a fresh thread, so ContextVars from the
-            # response turn do not propagate automatically. Re-establish the
-            # opaque turn ID while calling the provider; the LLM-call audit
-            # records it as a causal parent for this post-response analysis.
-            from core.turn_execution_context import current_turn_id, set_current_turn_id
-            turn_context_token = set_current_turn_id(turn_id)
-            try:
-                parsed = self._parse(user_input, response)
-            finally:
-                current_turn_id.reset(turn_context_token)
+            # Some upstream stages already know the conversational act from
+            # the route that produced the answer (e.g. a deterministic affect
+            # report or a source-backed memory recall). Preserve that evidence
+            # instead of spending another LLM call to rediscover it.
+            trusted_hint = str(turn_kind_hint or "").strip().casefold()
+            if trusted_hint in {"retrieval", "social", "instruction", "feedback", "other"}:
+                parsed = ([], [], "", 0.3, trusted_hint)
+                receipt["classification_source"] = "upstream_turn_contract"
+            else:
+                # The queue worker runs on a fresh thread, so ContextVars from
+                # the response turn do not propagate automatically. Restore its
+                # opaque turn ID so the provider event has a causal parent.
+                from core.turn_execution_context import current_turn_id, set_current_turn_id
+                turn_context_token = set_current_turn_id(turn_id)
+                try:
+                    parsed = self._parse(user_input, response)
+                finally:
+                    current_turn_id.reset(turn_context_token)
+                receipt["classification_source"] = "semantic_llm"
             if len(parsed) >= 5:
                 concepts, relations, topic, cog_load, turn_kind = parsed[:5]
             else:

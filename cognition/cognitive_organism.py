@@ -1328,6 +1328,7 @@ class CognitiveOrganism:
         attention_feedback_context: Optional[Dict[str, Any]] = None,
         turn_id: str = "",
         semantic_topic_callback=None,
+        semantic_turn_kind_hint: str = "",
     ) -> Dict[str, Any]:
         """Post-response processing: evaluate, learn, update state."""
         self._last_interaction_ts = time.time()
@@ -1477,6 +1478,7 @@ class CognitiveOrganism:
                 observation_role=("user_topic" if human_interaction else "peer_topic"),
                 turn_id=turn_id,
                 completion_callback=semantic_topic_callback,
+                turn_kind_hint=semantic_turn_kind_hint,
             )
             semantic_topic_receipt.update({
                 "status": "queued",
