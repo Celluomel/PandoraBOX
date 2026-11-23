@@ -78,7 +78,16 @@ class FAISSMemoryBackend(BaseMemoryBackend):
             _faiss_path = (_sc.MEMORY_FAISS_PATH or "").strip() or "data/persona/faiss_index.bin"
         except Exception:
             _faiss_path = "data/persona/faiss_index.bin"
-        self.INDEX_PATH = Path(_faiss_path)
+        # EnhancedMemorySystem owns MEMORY_FAISS_PATH and stores an
+        # IndexIDMap whose IDs are tied to SQLite. This lightweight app/vision
+        # backend stores positional IndexFlat vectors plus a JSON document
+        # list. Sharing the binary path lets either writer corrupt the other's
+        # index, so keep the auxiliary interaction memory in a sibling file.
+        cognitive_path = Path(_faiss_path)
+        self.LEGACY_META_PATH = cognitive_path.with_suffix('.meta.json')
+        self.INDEX_PATH = cognitive_path.with_name(
+            f"{cognitive_path.stem}_interaction{cognitive_path.suffix}"
+        )
         self.META_PATH  = self.INDEX_PATH.with_suffix('.meta.json')
         self.INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -288,15 +297,63 @@ class FAISSMemoryBackend(BaseMemoryBackend):
             logger.warning(f"FAISS persist error: {e}")
 
     def _load_persisted(self):
+        """Load an isolated index or migrate the old auxiliary document list.
+
+        The old ``faiss_index.meta.json`` file is the auxiliary backend's
+        document list; the cognitive index has its own ``.bin.meta.json``
+        manifest. Preserve the old files and rebuild only the new interaction
+        index from that document list, never by reading/writing the shared
+        cognitive binary.
+        """
         try:
-            if self.INDEX_PATH.exists():
-                self._index = self._faiss.read_index(str(self.INDEX_PATH))
-                if self.META_PATH.exists():
-                    with open(self.META_PATH) as f:
-                        self._docs = json.load(f)
-                logger.info(f"Loaded {self._index.ntotal} memories from disk")
+            if self.INDEX_PATH.exists() and self.META_PATH.exists():
+                index = self._faiss.read_index(str(self.INDEX_PATH))
+                with open(self.META_PATH, encoding='utf-8') as handle:
+                    docs = json.load(handle)
+                if (
+                    isinstance(docs, list)
+                    and int(index.ntotal) == len(docs)
+                    and int(index.d) == int(self._dim)
+                ):
+                    self._index = index
+                    self._docs = docs
+                    logger.info("Loaded %d isolated interaction memories", len(docs))
+                    return
+                logger.warning("Interaction FAISS index/document count mismatch; rebuilding from preserved documents")
+
+            docs = []
+            for metadata_path in (self.META_PATH, self.LEGACY_META_PATH):
+                if not metadata_path.exists():
+                    continue
+                try:
+                    with open(metadata_path, encoding='utf-8') as handle:
+                        candidate = json.load(handle)
+                    if isinstance(candidate, list):
+                        docs = [
+                            item for item in candidate
+                            if isinstance(item, dict) and isinstance(item.get('content'), str)
+                        ]
+                        if docs:
+                            break
+                except (OSError, ValueError, TypeError) as exc:
+                    logger.warning("Could not read preserved interaction metadata: %s", exc)
+
+            if docs:
+                texts = [item['content'] for item in docs]
+                vectors = self._np.asarray(
+                    self._model.encode(texts, batch_size=128, show_progress_bar=False),
+                    dtype='float32',
+                )
+                if vectors.shape != (len(docs), self._dim) or not self._np.isfinite(vectors).all():
+                    raise ValueError("legacy interaction embeddings have invalid shape or values")
+                rebuilt = self._faiss.IndexFlatL2(self._dim)
+                rebuilt.add(vectors)
+                self._index = rebuilt
+                self._docs = docs
+                self._persist()
+                logger.info("Migrated %d interaction memories to isolated FAISS files", len(docs))
         except Exception as e:
-            logger.warning(f"FAISS load error (starting fresh): {e}")
+            logger.warning(f"FAISS load error (starting fresh without modifying legacy files): {e}")
 
 
 # ─────────────────────────────────────────────
