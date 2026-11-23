@@ -2928,6 +2928,12 @@ class PersonaBridge:
                 self._record_turn_stage(
                     "conversation_continuity_context", "empty",
                     "No preceding human-chat exchange was available to anchor.",
+                    output={
+                        "injected": False,
+                        "reason_code": "no_preceding_exchange",
+                        "message_count": 0,
+                        "source": "conversation_history",
+                    },
                     consumes=("conversation_history",),
                     turn_id=_audit_turn_id,
                 )
@@ -2935,7 +2941,12 @@ class PersonaBridge:
             self._record_turn_stage(
                 "conversation_continuity_context", "skipped_by_scope",
                 "Peer dialogue context stays isolated from the human chat history.",
-                output={"source": "peer_scope_policy", "injected": False},
+                output={
+                    "injected": False,
+                    "reason_code": "peer_scope_isolation",
+                    "message_count": 0,
+                    "source": "peer_scope_policy",
+                },
                 consumes=("conversation_history",),
                 turn_id=_audit_turn_id,
             )

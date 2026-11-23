@@ -962,6 +962,37 @@ def test_cognitive_context_is_linked_to_prompt_assembly_on_its_own_turn():
     assert bridge._last_turn_trace["stages"] == {}
 
 
+def test_empty_continuity_context_is_auditable_as_an_absence_receipt():
+    bridge = _bridge()
+    bridge._record_turn_stage(
+        "conversation_continuity_context", "empty",
+        "No preceding human-chat exchange was available to anchor.",
+        output={
+            "injected": False,
+            "reason_code": "no_preceding_exchange",
+            "message_count": 0,
+            "source": "conversation_history",
+        },
+        consumes=("conversation_history",),
+        turn_id="turn-evidence-1",
+    )
+    bridge._record_turn_stage(
+        "prompt_assembly", "completed", output="assembled prompt",
+        consumes=("conversation_continuity_context",),
+        turn_id="turn-evidence-1",
+    )
+
+    stages = bridge._last_turn_trace["stages"]
+    absence = stages["conversation_continuity_context"]
+    edge = stages["prompt_assembly"]["consumes"][0]
+    assert absence["status"] == "empty"
+    assert absence["output_summary"]["quality"] == "present"
+    assert edge == {
+        "stage": "conversation_continuity_context",
+        "fingerprint": absence["output_fingerprint"],
+    }
+
+
 def test_memory_and_profile_receipts_can_be_attached_to_their_originating_turn():
     bridge = _bridge()
     previous = {"turn_id": "turn-memory-profile", "stages": {}}
