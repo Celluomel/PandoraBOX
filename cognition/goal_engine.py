@@ -486,6 +486,16 @@ class GoalEngine:
             with open(self._persistence_file) as f:
                 data = json.load(f)
                 self._cycle_counter = data.get('cycle_counter', 0)
+                cooldowns = data.get('topic_cooldowns', {})
+                if isinstance(cooldowns, dict):
+                    loaded_cooldowns: Dict[str, float] = {}
+                    for topic, timestamp in cooldowns.items():
+                        try:
+                            if str(topic).strip():
+                                loaded_cooldowns[str(topic).casefold()] = float(timestamp)
+                        except (TypeError, ValueError):
+                            continue
+                    self._recently_abandoned = loaded_cooldowns
                 goals_data = data.get('goals', {})
 
                 # Defensive: goals_data may be a list if saved by an older schema version.
@@ -608,6 +618,7 @@ class GoalEngine:
                 goals_payload[str(goal_id)] = record
             data = {
                 'cycle_counter': self._cycle_counter,
+                'topic_cooldowns': self._recently_abandoned,
                 'goals': goals_payload,
                 'saved_at': datetime.now().isoformat()
             }
@@ -798,7 +809,13 @@ class GoalEngine:
         # seen_topics tracks both existing goals AND candidates generated in
         # this batch — without this, the same topic can appear in multiple
         # candidates before any are added to self._goals.
-        seen_topics = {g.topic.lower() for g in self._goals.values()}
+        # Terminal history is not a permanent duplicate lock. Cooldowns govern
+        # when a completed/abandoned topic may return; only live work and
+        # dormant work should suppress a new candidate indefinitely.
+        seen_topics = {
+            g.topic.casefold() for g in self._goals.values()
+            if g.status in {"active", "dormant"}
+        }
 
         logged_noise_topics = set()
         for motive in motivations:
@@ -809,7 +826,9 @@ class GoalEngine:
                 if len(candidates) >= limit:
                     break
 
-                t_lower = topic.lower().strip()
+                t_lower = topic.casefold().strip()
+                if time.time() - self._recently_abandoned.get(t_lower, 0.0) < self.TOPIC_COOLDOWN_SECS:
+                    continue
                 if len(t_lower) < 4:      # skip noise words
                     continue
                 if self._is_lexical_noise_topic(t_lower):
@@ -970,15 +989,15 @@ class GoalEngine:
             _now = time.time()
             for g in self._goals.values():
                 if g.status == "abandoned":
-                    self._recently_abandoned[g.topic.lower()] = _now
+                    self._recently_abandoned[g.topic.casefold()] = _now
                 # Fix: completed topics also enter cooldown (set once) so
                 # generate_candidates can't immediately respawn them — without
                 # this, high-priority goals complete then reappear within the
                 # same session because only "abandoned" status was cooled down.
                 elif g.status in ("completed", "archived"):
-                    _existing = self._recently_abandoned.get(g.topic.lower(), 0.0)
+                    _existing = self._recently_abandoned.get(g.topic.casefold(), 0.0)
                     if _existing == 0.0:
-                        self._recently_abandoned[g.topic.lower()] = _now
+                        self._recently_abandoned[g.topic.casefold()] = _now
             # Evict stale cooldown entries (older than 2× TOPIC_COOLDOWN_SECS)
             _stale_cutoff = _now - self.TOPIC_COOLDOWN_SECS * 2
             self._recently_abandoned = {
@@ -1039,7 +1058,7 @@ class GoalEngine:
 
     def add_goal(self, goal: Goal) -> bool:
         """Add and persist a goal; return True only after the write is confirmed."""
-        topic = goal.topic.strip().lower()
+        topic = goal.topic.strip().casefold()
 
         if self._is_external_task_topic(topic):
             logger.info("GoalEngine: rejected user-owned task topic %r", goal.topic)
@@ -1081,8 +1100,11 @@ class GoalEngine:
 
         with self._lock:
             # Also reject if we already have this topic (near-duplicate)
-            existing_topics = {g.topic.lower() for g in self._goals.values()}
-            if topic in existing_topics:
+            existing_topics = {
+                g.topic.casefold() for g in self._goals.values()
+                if g.status in {"active", "dormant"}
+            }
+            if topic.casefold() in existing_topics:
                 logger.debug(f"GoalEngine: duplicate topic '{goal.topic}'")
                 return False
 
@@ -1506,9 +1528,9 @@ class GoalEngine:
     
     def get_goal_by_topic(self, topic: str) -> Optional[Goal]:
         """Find goal matching topic."""
-        topic_lower = topic.lower()
+        topic_lower = topic.casefold()
         for goal in self._goals.values():
-            if goal.topic.lower() == topic_lower:
+            if goal.topic.casefold() == topic_lower:
                 return goal
         return None
 
@@ -1685,6 +1707,13 @@ class GoalEngine:
             logger.debug(f"[GoalEngine] tick skipped (cooldown: {_now-_last:.0f}s)")
             return
         self._last_tick_time = _now
+        # Rebuild cooldown state from terminal records after process restart.
+        # This preserves the existing cooldown policy without treating old
+        # completed/archived goals as permanent duplicates.
+        self._recently_abandoned = getattr(self, "_recently_abandoned", {})
+        for goal in self._goals.values():
+            if goal.status in {"completed", "abandoned", "archived", "merged", "low_quality"}:
+                self._recently_abandoned.setdefault(goal.topic.casefold(), _now)
         metrics = {}
         filtered_topics = []
         motivations = []
