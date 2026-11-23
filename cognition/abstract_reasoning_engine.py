@@ -6,10 +6,9 @@ Abstract Reasoning Engine (ARE) — PandoraBOX's second priority skill.
 Fills the gap between "reasoning about internal state" (existing) and
 "reasoning with abstract concepts outward" (this module).
 
-What it does per conversation turn:
-  Pass 1 — Decompose   : break the concept into structural components
-  Pass 2 — Map         : find analogies in semantic memory + world model
-  Pass 3 — Synthesize  : derive something not explicitly stated
+What it does per applicable conversation turn:
+  One structured inference jointly decomposes the concept, maps an analogy,
+  and synthesizes an insight from semantic memory + world model context.
 
 Side effects:
   → open_question      planted as curiosity seed in CuriosityEngine
@@ -35,7 +34,7 @@ Design principles:
     ARE feeds INTO the system prompt; IME shapes the expression pass.
   • LLM calls are bare (no history pollution).
   • Graceful degradation — heuristic fallback if LLM busy.
-  • Capped at 3 LLM calls per turn total (decompose + map + synthesize).
+  • Uses at most one LLM call per reasoning result.
 """
 
 from __future__ import annotations
@@ -301,14 +300,14 @@ class AbstractReasoningEngine:
         return min(1.0, score)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    #  LLM three-pass reasoning
+    #  Single-call structured reasoning
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _llm_reason(
         self, user_id: str, text: str, abstract_score: float
     ) -> Optional[ReasoningResult]:
         """
-        Run all three passes via LLM. Each pass is a bare call (no history).
+        Run one structured, history-free inference for all reasoning fields.
         Returns None on failure so heuristic fallback can take over.
         """
         try:
@@ -326,99 +325,58 @@ class AbstractReasoningEngine:
             except Exception:
                 pass
 
-            # ── PASS 1: Decompose ─────────────────────────────────────────────
-            decompose_prompt = f"""Analyze the abstract concept in this message and break it down.
-
-Message: "{text}"
-
-Respond ONLY with JSON, no other text:
-{{
-  "core_concept": "<the central abstract idea in 1-5 words>",
-  "components": ["<component 1>", "<component 2>", "<component 3>"],
-  "domain": "<what field or area does this primarily belong to>",
-  "is_cross_domain": true | false
-}}"""
-
-            raw1 = self._llm.generate_bare(
-                decompose_prompt,
-                max_tokens=120,
-                temperature=0.25,
-            )
-            raw1 = re.sub(r"```json|```", "", raw1).strip()
-            d1   = json.loads(raw1)
-
-            core_concept = d1.get("core_concept", "")
-            components   = d1.get("components", [])[:4]
-
-            # ── PASS 2: Analogy mapping ───────────────────────────────────────
             seed_list = "\n".join(
                 f"  {domain}: {pattern}"
                 for domain, pattern in self._analogy_seeds
             )
-            map_prompt = f"""Find the best structural analogy for this concept.
+            prompt = f"""Analyze this abstract/conceptual message in one pass. Keep every claim tied to the message and supplied context; an analogy is illustrative, not evidence of causality.
 
-Core concept: {core_concept}
-Components: {components}
-Memory context: {mem_context[:300] if mem_context else 'none'}
-World model: {wm_context[:200] if wm_context else 'none'}
-
-Candidate analogy domains:
+Message: "{text}"
+Semantic memory context: {mem_context[:500] if mem_context else 'none'}
+World model context: {wm_context[:300] if wm_context else 'none'}
+Candidate analogy domains and patterns:
 {seed_list}
 
-Respond ONLY with JSON:
+Return only one JSON object with all of these fields:
 {{
-  "best_analogy_domain": "<domain name from the list, or a new one>",
-  "structural_mapping": "<how the two things are structurally similar, 1-2 sentences>",
-  "confidence": 0.0-1.0,
-  "what_it_reveals": "<what the analogy reveals that wasn't obvious, 1 sentence>"
+  "core_concept": "central idea in 1-5 words",
+  "components": ["up to four structural components"],
+  "best_analogy_domain": "best fitting listed or new domain",
+  "structural_mapping": "brief analogy mapping, or empty if none fits",
+  "confidence": 0.0,
+  "derived_insight": "one grounded insight, or empty if none follows",
+  "open_question": "one useful unresolved question, or empty",
+  "causal_antecedent": "empty unless the message/context provides causal evidence",
+  "causal_consequent": "empty unless the message/context provides causal evidence",
+  "prompt_note": "one concise response consideration, or empty"
 }}"""
 
-            raw2 = self._llm.generate_bare(
-                map_prompt,
-                max_tokens=150,
-                temperature=0.45,
+            raw = self._llm.generate_bare(
+                prompt,
+                max_tokens=420,
+                temperature=0.35,
             )
-            raw2 = re.sub(r"```json|```", "", raw2).strip()
-            d2   = json.loads(raw2)
+            raw = re.sub(r"```json|```", "", raw).strip()
+            result_data = json.loads(raw)
 
-            best_analogy      = d2.get("structural_mapping", "")
-            analogy_domain    = d2.get("best_analogy_domain", "")
-            analogy_confidence = float(d2.get("confidence", 0.5))
-            what_it_reveals   = d2.get("what_it_reveals", "")
-
-            # ── PASS 3: Synthesize ────────────────────────────────────────────
-            synth_prompt = f"""Synthesize a novel insight from this conceptual analysis.
-
-Original message: "{text}"
-Core concept: {core_concept}
-Components: {components}
-Best analogy: {best_analogy} (domain: {analogy_domain})
-What the analogy reveals: {what_it_reveals}
-
-Respond ONLY with JSON:
-{{
-  "derived_insight": "<something true and non-obvious that follows from the analysis, 1-2 sentences>",
-  "open_question": "<the most interesting unresolved question this raises, 1 sentence>",
-  "causal_antecedent": "<a short cause phrase, e.g. 'prolonged focus on abstract problems'>",
-  "causal_consequent": "<a short effect phrase, e.g. 'increased need for external grounding'>",
-  "prompt_note": "<1 sentence for how PandoraBOX should hold this in her response — not to quote, just to inform>"
-}}"""
-
-            raw3 = self._llm.generate_bare(
-                synth_prompt,
-                max_tokens=180,
-                temperature=0.55,
-            )
-            raw3 = re.sub(r"```json|```", "", raw3).strip()
-            d3   = json.loads(raw3)
-
-            derived_insight = d3.get("derived_insight", "")
-            open_question   = d3.get("open_question", "")
+            core_concept = str(result_data.get("core_concept", "") or "")[:120]
+            components = result_data.get("components", [])
+            if not isinstance(components, list):
+                components = []
+            components = [str(item)[:120] for item in components[:4] if item]
+            best_analogy = str(result_data.get("structural_mapping", "") or "")[:600]
+            analogy_domain = str(result_data.get("best_analogy_domain", "") or "")[:120]
+            try:
+                analogy_confidence = max(0.0, min(1.0, float(result_data.get("confidence", 0.0))))
+            except (TypeError, ValueError):
+                analogy_confidence = 0.0
+            derived_insight = str(result_data.get("derived_insight", "") or "")[:600]
+            open_question = str(result_data.get("open_question", "") or "")[:400]
             causal_pair     = (
-                d3.get("causal_antecedent", "")[:80],
-                d3.get("causal_consequent", "")[:80],
+                str(result_data.get("causal_antecedent", "") or "")[:80],
+                str(result_data.get("causal_consequent", "") or "")[:80],
             )
-            prompt_note     = d3.get("prompt_note", "")
+            prompt_note = str(result_data.get("prompt_note", "") or "")[:300]
 
             # ── Build prompt fragment ─────────────────────────────────────────
             fragment = self._build_fragment(
