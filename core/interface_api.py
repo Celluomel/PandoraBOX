@@ -1058,7 +1058,7 @@ _SETTING_FIELDS = {
     'LLM_PROVIDER', 'LLM_MODEL', 'TEXT_MODEL', 'FAST_ROUND_ENABLED', 'FAST_ROUND_MODEL',
     'FAST_ROUND_MAX_TOKENS', 'FAST_ROUND_TIMEOUT_SECONDS', 'QUALITY_EMBED_MODEL', 'EMBED_API_BASE_URL',
     'AFFECT_EMBEDDING_MODEL', 'LLM_BASE_URL',
-    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'RESEARCH_SEARCH_BACKEND',
+    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'WEB_SEARCH_MODE', 'RESEARCH_SEARCH_BACKEND',
     'BRAVE_SEARCH_KEY', 'SERPAPI_KEY', 'MEMORY_BACKEND', 'MEMORY_DB_PATH',
     'MEMORY_FAISS_PATH', 'MEMORY_WORLD_PATH', 'MEMORY_PERSONA_PATH',
     'MEMORY_COGNEE_PATH', 'MEMORY_COGNEE_EMBED_MODEL', 'TTS_PROVIDER',
@@ -1594,6 +1594,19 @@ async def update_settings(payload: SettingsUpdate):
         state = _runtime()
         if state.audio is not None:
             await asyncio.to_thread(state.reload_audio)
+    research_fields = {'RESEARCH_SEARCH_BACKEND', 'ANTHROPIC_API_KEY', 'BRAVE_SEARCH_KEY', 'SERPAPI_KEY'}
+    research_changed = bool(research_fields.intersection(changed))
+    if research_changed:
+        try:
+            from cognition.research_mcp.web_agent import set_search_backend
+            set_search_backend(
+                backend=getattr(config, 'RESEARCH_SEARCH_BACKEND', 'auto'),
+                anthropic_key=getattr(config, 'ANTHROPIC_API_KEY', ''),
+                brave_key=getattr(config, 'BRAVE_SEARCH_KEY', ''),
+                serpapi_key=getattr(config, 'SERPAPI_KEY', ''),
+            )
+        except Exception as exc:
+            logger.warning('Could not apply search backend live: %s', exc)
     state = _runtime()
     if {'UNIVERSAL_CONNECTOR_ENABLED', 'BODY_RUNTIME_ENABLED', 'BODY_PLUGIN_HOME_ASSISTANT_ENABLED',
         'HOME_ASSISTANT_ENABLED', 'HOME_ASSISTANT_PRESENCE_ENABLED', 'HOME_ASSISTANT_URL',
@@ -1612,7 +1625,7 @@ async def update_settings(payload: SettingsUpdate):
         'audio_applied': audio_changed and active_audio is not None,
         'active_tts': (active_audio.tts_engine or {}).get('type') if active_audio else None,
         'active_stt': (active_audio.stt_engine or {}).get('type') if active_audio else None,
-        'restart_recommended': bool(set(changed) - audio_fields),
+        'restart_recommended': bool(set(changed) - audio_fields - research_fields - {'WEB_SEARCH_MODE'}),
     }
 
 

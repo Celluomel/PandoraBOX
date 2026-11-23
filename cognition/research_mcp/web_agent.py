@@ -275,14 +275,17 @@ class WebAgent:
         return pages
 
 
-# ── Compatibility stub ────────────────────────────────────────────────────────
-# Added for persona_bridge import compatibility
+# ── Live search configuration ─────────────────────────────────────────────────
 _search_backend = 'auto'
 
 def set_search_backend(backend: str = 'auto', **kwargs) -> None:
-    """Set the active search backend. Stub for compatibility — accepts any kwargs."""
-    global _search_backend
-    _search_backend = backend
+    """Apply search provider settings to the shared config used by WebAgent."""
+    global _search_backend, _CFG
+    _search_backend = str(backend or 'auto')
+    _CFG.backend = _search_backend
+    for name in ('anthropic_key', 'brave_key', 'serpapi_key'):
+        if name in kwargs:
+            setattr(_CFG, name, str(kwargs[name] or ''))
 
 def get_search_backend() -> str:
     return _search_backend
