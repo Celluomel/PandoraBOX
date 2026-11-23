@@ -4,6 +4,8 @@ import json
 import requests
 import threading
 import time
+from contextvars import ContextVar
+from functools import wraps
 from typing import Optional, List, Dict, Iterator, Any
 from abc import ABC, abstractmethod
 from managers.codex_app_server_provider import CodexAppServerProvider
@@ -13,6 +15,45 @@ logger = logging.getLogger(__name__)
 # Max conversation history entries kept in memory (each entry = 1 message).
 # Older messages are dropped to keep requests small and fast.
 _HISTORY_MAX = 20  # 10 user + 10 assistant turns
+
+# Provider-call provenance is deliberately separate from the conversation
+# turn ContextVar: background tasks may inherit a turn ID without being a
+# foreground inference for that turn.
+current_llm_call_role: ContextVar[str] = ContextVar("lumina_llm_call_role", default="")
+current_llm_call_origin: ContextVar[str] = ContextVar("lumina_llm_call_origin", default="")
+
+
+def _llm_call_origin() -> str:
+    """Return the first non-LLM-manager call site for provider provenance."""
+    import inspect
+
+    frame = inspect.currentframe()
+    try:
+        frame = frame.f_back if frame else None
+        while frame:
+            module = str(frame.f_globals.get("__name__", ""))
+            if module and module != __name__ and not module.startswith("managers.llm_manager."):
+                return f"{module}.{frame.f_code.co_name}"[:180]
+            frame = frame.f_back
+    finally:
+        del frame
+    return "unknown"
+
+
+def _audit_llm_call_role(role: str):
+    """Attach explicit foreground provenance to an interactive helper call."""
+    def decorate(function):
+        @wraps(function)
+        def wrapped(self, *args, **kwargs):
+            role_token = current_llm_call_role.set(role)
+            origin_token = current_llm_call_origin.set(_llm_call_origin())
+            try:
+                return function(self, *args, **kwargs)
+            finally:
+                current_llm_call_origin.reset(origin_token)
+                current_llm_call_role.reset(role_token)
+        return wrapped
+    return decorate
 
 
 def _structured_response_format(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -796,6 +837,10 @@ class LLMManager:
                 "status": "deferred",
                 "reason": "provider wait timed out" if allow_interactive_turn else "provider busy",
             }
+        role_token = current_llm_call_role.set(
+            "foreground_auxiliary" if allow_interactive_turn else "background"
+        )
+        origin_token = current_llm_call_origin.set(_llm_call_origin())
         try:
             # Close the race where a user turn starts between the first marker
             # check and acquiring the provider lock.
@@ -900,8 +945,11 @@ class LLMManager:
                 "completion_verified": False,
             }
         finally:
+            current_llm_call_origin.reset(origin_token)
+            current_llm_call_role.reset(role_token)
             self._provider_lock.release()
 
+    @_audit_llm_call_role("foreground_auxiliary")
     def generate_interactive_analysis(
         self,
         prompt: str,
@@ -1074,6 +1122,8 @@ class LLMManager:
             logger.info("Interactive stream waited %.0fms for an in-flight provider call", lock_wait * 1000)
         provider_stream_started = time.perf_counter()
         first_visible_chunk_logged = False
+        role_token = current_llm_call_role.set("foreground_primary")
+        origin_token = current_llm_call_origin.set(_llm_call_origin())
         try:
             for token in self.provider.generate_with_history_stream(
                 prompt, conversation_history, system_prompt, model=model, **kwargs
@@ -1093,6 +1143,8 @@ class LLMManager:
                 accumulated.append(token)
                 yield token
         finally:
+            current_llm_call_origin.reset(origin_token)
+            current_llm_call_role.reset(role_token)
             self._provider_lock.release()
             if owns_chat_marker:
                 self._chat_active.clear()

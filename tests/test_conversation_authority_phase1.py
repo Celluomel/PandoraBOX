@@ -32,6 +32,77 @@ def _bridge_for_review(manager):
 
 
 class ConversationAuthorityPhase1Tests(unittest.TestCase):
+    def test_chat_marker_covers_prompt_building_and_is_cleared_after_turn(self):
+        class Provider:
+            def __init__(self):
+                self.model = "stub"
+                self.calls = 0
+
+            def generate_background_result(self, *_args, **_kwargs):
+                self.calls += 1
+                return {"text": "background result", "status": "ok"}
+
+            def generate_with_history_stream(self, *_args, **_kwargs):
+                yield "unused"
+
+        from managers.llm_manager import LLMManager
+        provider = Provider()
+        manager = LLMManager(provider)
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._llm_stream_fn = manager.generate_stream
+        bridge._response_turn_lock = asyncio.Lock()
+        bridge._turn_sequence = 0
+        bridge._last_turn_trace = {"turn_id": "", "cognitive_scope_id": "fred"}
+
+        async def implementation(*_args, **_kwargs):
+            assert manager._chat_active.is_set()
+            deferred = manager.generate_bare_result("background thought")
+            assert deferred["status"] == "deferred"
+            assert provider.calls == 0
+            yield "answer"
+            yield {"__meta__": True, "status": "completed"}
+
+        bridge._get_response_stream_impl = implementation
+
+        async def exercise():
+            chunks = [chunk async for chunk in bridge.get_response_stream("hello")]
+            self.assertEqual(chunks, ["answer", {"__meta__": True, "status": "completed", "turn_id": "", "cognitive_scope_id": "fred"}])
+            self.assertFalse(manager._chat_active.is_set())
+
+        asyncio.run(exercise())
+
+    def test_chat_marker_is_cleared_when_consumer_cancels_stream(self):
+        class Provider:
+            def __init__(self):
+                self.model = "stub"
+
+            def generate_with_history_stream(self, *_args, **_kwargs):
+                yield "unused"
+
+        from managers.llm_manager import LLMManager
+        manager = LLMManager(Provider())
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._llm_stream_fn = manager.generate_stream
+        bridge._response_turn_lock = asyncio.Lock()
+        bridge._turn_sequence = 0
+        bridge._last_turn_trace = {"turn_id": "", "cognitive_scope_id": "fred"}
+
+        async def implementation(*_args, **_kwargs):
+            assert manager._chat_active.is_set()
+            yield "first token"
+            await asyncio.sleep(60)
+
+        bridge._get_response_stream_impl = implementation
+
+        async def exercise():
+            stream = bridge.get_response_stream("hello")
+            self.assertEqual(await anext(stream), "first token")
+            self.assertTrue(manager._chat_active.is_set())
+            await stream.aclose()
+            self.assertFalse(manager._chat_active.is_set())
+
+        asyncio.run(exercise())
+
     def test_post_response_review_is_advisory_and_records_followup_without_replacing_answer(self):
         manager = _ReviewManager({
             "relevant": False,

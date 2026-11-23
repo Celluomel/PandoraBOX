@@ -664,59 +664,76 @@ class PersonaBridge:
         debug_introspection: bool = False,
     ):
         _terminal_meta = None
-        async with self._response_turn_lock:
-            # Generate the stable trace ID before entering any cognitive
-            # modules so the opt-in profiler can attribute their calls to
-            # this turn. ContextVar propagation also covers asyncio.to_thread.
-            audit_turn_id = _normalize_audit_turn_id(turn_id) or (
-                f"lumina-{time.time_ns()}-{self._turn_sequence + 1}"
-            )
-            implementation = self._get_response_stream_impl(
-                user_text,
-                user_id=user_id,
-                vision_context=vision_context,
-                voice_mode=voice_mode,
-                displayed_cognitive_trace=displayed_cognitive_trace,
-                allow_body_actions=allow_body_actions,
-                record_history=record_history,
-                conversation_history=conversation_history,
-                peer_name=peer_name,
-                max_tokens_override=max_tokens_override,
-                cognitive_scope_id=cognitive_scope_id,
-                turn_id=audit_turn_id,
-                debug_introspection=debug_introspection,
-            ).__aiter__()
+        llm_manager = getattr(getattr(self, "_llm_stream_fn", None), "__self__", None)
+        chat_marker = getattr(llm_manager, "_chat_active", None)
+        owns_chat_marker = False
+        try:
+            async with self._response_turn_lock:
+                owns_chat_marker = chat_marker is not None and not chat_marker.is_set()
+                if owns_chat_marker:
+                    # Suppress ordinary background inference from the start of
+                    # prompt assembly, not only when visible streaming begins.
+                    # Explicit foreground analyses use their separately
+                    # authorized API.
+                    chat_marker.set()
+                # Generate the stable trace ID before entering any cognitive
+                # modules so the opt-in profiler can attribute their calls to
+                # this turn. ContextVar propagation also covers asyncio.to_thread.
+                audit_turn_id = _normalize_audit_turn_id(turn_id) or (
+                    f"lumina-{time.time_ns()}-{self._turn_sequence + 1}"
+                )
+                implementation = self._get_response_stream_impl(
+                    user_text,
+                    user_id=user_id,
+                    vision_context=vision_context,
+                    voice_mode=voice_mode,
+                    displayed_cognitive_trace=displayed_cognitive_trace,
+                    allow_body_actions=allow_body_actions,
+                    record_history=record_history,
+                    conversation_history=conversation_history,
+                    peer_name=peer_name,
+                    max_tokens_override=max_tokens_override,
+                    cognitive_scope_id=cognitive_scope_id,
+                    turn_id=audit_turn_id,
+                    debug_introspection=debug_introspection,
+                ).__aiter__()
 
-            async def next_chunk_with_turn_context():
-                # Some ASGI consumers advance an async generator from a new
-                # task for every chunk. A ContextVar token cannot be reset in
-                # a different task, so scope the ID to each generator advance
-                # and reset it before yielding control to the consumer.
-                context_token = _set_audit_turn_id(audit_turn_id)
-                try:
-                    return await implementation.__anext__()
-                finally:
-                    _current_audit_turn_id.reset(context_token)
+                async def next_chunk_with_turn_context():
+                    # Some ASGI consumers advance an async generator from a new
+                    # task for every chunk. A ContextVar token cannot be reset in
+                    # a different task, so scope the ID to each generator advance
+                    # and reset it before yielding control to the consumer.
+                    context_token = _set_audit_turn_id(audit_turn_id)
+                    try:
+                        return await implementation.__anext__()
+                    finally:
+                        _current_audit_turn_id.reset(context_token)
 
-            while True:
-                try:
-                    chunk = await next_chunk_with_turn_context()
-                except StopAsyncIteration:
-                    break
-                if isinstance(chunk, dict) and chunk.get("__meta__"):
-                    chunk.setdefault("turn_id", self._last_turn_trace.get("turn_id", ""))
-                    chunk.setdefault(
-                        "cognitive_scope_id",
-                        self._last_turn_trace.get("cognitive_scope_id", user_id),
-                    )
-                    _terminal_meta = chunk
-                    continue
-                yield chunk
-        # Release the per-turn lock before handing out the terminal event.
-        # Consumers commonly stop at metadata; they must not hold the lock
-        # while a suspended generator waits to be closed by garbage collection.
-        if _terminal_meta is not None:
-            yield _terminal_meta
+                while True:
+                    try:
+                        chunk = await next_chunk_with_turn_context()
+                    except StopAsyncIteration:
+                        break
+                    if isinstance(chunk, dict) and chunk.get("__meta__"):
+                        chunk.setdefault("turn_id", self._last_turn_trace.get("turn_id", ""))
+                        chunk.setdefault(
+                            "cognitive_scope_id",
+                            self._last_turn_trace.get("cognitive_scope_id", user_id),
+                        )
+                        _terminal_meta = chunk
+                        continue
+                    yield chunk
+            # Release the per-turn lock before handing out the terminal event.
+            # Consumers commonly stop at metadata; they must not hold the lock
+            # while a suspended generator waits to be closed by garbage collection.
+            if owns_chat_marker:
+                chat_marker.clear()
+                owns_chat_marker = False
+            if _terminal_meta is not None:
+                yield _terminal_meta
+        finally:
+            if owns_chat_marker:
+                chat_marker.clear()
 
     def _start_turn_trace(
         self, user_id: str, peer_name: str = "", cognitive_scope_id: str = "",

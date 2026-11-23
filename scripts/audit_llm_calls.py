@@ -60,13 +60,32 @@ def _prompt_material(args: tuple[Any, ...]) -> str:
 
 def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: dict[str, Any]):
     global _call_id
-    turn_id = _turn_id(kwargs)
+    inherited_turn_id = _turn_id(kwargs)
+    manager = sys.modules.get("managers.llm_manager")
+    role_var = getattr(manager, "current_llm_call_role", None) if manager else None
+    origin_var = getattr(manager, "current_llm_call_origin", None) if manager else None
+    try:
+        call_role = str(role_var.get() or "") if role_var is not None else ""
+    except Exception:
+        call_role = ""
+    try:
+        call_origin = str(origin_var.get() or "") if origin_var is not None else ""
+    except Exception:
+        call_origin = ""
+    # A ContextVar turn ID can flow into background work. Keep it as a
+    # parent reference, but only number the call as a turn call when the
+    # manager explicitly marks the provider operation foreground.
+    turn_id = inherited_turn_id if call_role.startswith("foreground_") else (
+        "" if call_role == "background" else inherited_turn_id
+    )
     with _lock:
         _call_id += 1
         call_id = _call_id
-        _sequence[turn_id] = _sequence.get(turn_id, 0) + 1
-        turn_call_number = _sequence[turn_id]
-    caller = "unknown"
+        if turn_id:
+            _sequence[turn_id] = _sequence.get(turn_id, 0) + 1
+        turn_call_number = _sequence.get(turn_id, 0) if turn_id else None
+    caller = call_origin or "unknown"
+    caller_origin_present = bool(call_origin)
     caller_file = ""
     invocation_chain: list[str] = []
     infrastructure_modules = {
@@ -83,7 +102,7 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
                 site = f"{module}.{frame.f_code.co_name}"
                 if len(invocation_chain) < 4:
                     invocation_chain.append(site[:180])
-                if caller == "unknown":
+                if not caller_origin_present and caller == "unknown":
                     caller = site
                 caller_file = str(Path(frame.f_code.co_filename).resolve())
                 try:
@@ -93,18 +112,24 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
             frame = frame.f_back
     finally:
         del frame
+    if call_origin:
+        origin_module = call_origin.rsplit(".", 1)[0]
+        caller_file = origin_module.replace(".", "/") + ".py"
     prompt = _prompt_material(args)
     return {
         "call_id": call_id,
         "turn_id": turn_id or None,
-        "turn_call_number": turn_call_number if turn_id else None,
+        "causal_parent_turn_id": (
+            inherited_turn_id or None if call_role == "background" else None
+        ),
+        "turn_call_number": turn_call_number,
         "provider": type(instance).__name__,
         "model": str(kwargs.get("model") or getattr(instance, "model", "unknown"))[:120],
         "provider_method": method,
         "caller": caller[:180],
         "caller_file": caller_file[:120],
         "invocation_chain": invocation_chain,
-        "execution": "foreground_turn" if turn_id else "background_or_unattributed",
+        "execution": call_role or ("foreground_turn" if turn_id else "background_or_unattributed"),
         "thread": threading.current_thread().name[:80],
         "prompt_chars": len(prompt),
         "prompt_sha256": hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest(),
