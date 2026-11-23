@@ -405,28 +405,40 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             memory.record_observation("visual odometry", "conversation", "user_topic", 0.8)
             self.assertIn("visual odometry", memory.recent_user_topics())
 
-    def test_goal_admission_rejects_log_fragments_but_keeps_real_phrases(self):
-        for noise in (
-            "toujours", "quelles", "arxchiv", "assez", "sois",
-            "module", "modules", "cognitifs",
-        ):
-            self.assertTrue(GoalEngine._is_lexical_noise_topic(noise), noise)
-        self.assertFalse(GoalEngine._is_lexical_noise_topic("cognitive architecture"))
+    def test_goal_admission_uses_semantic_verdict_not_token_dictionary(self):
+        engine = GoalEngine.__new__(GoalEngine)
+        engine._topic_quality_cache = {}
+        engine._lock = threading.RLock()
+        scores = {
+            "module": (0.40, 0.50, False),
+            "cognitive architecture": (0.62, 0.49, True),
+        }
+        with patch("cognition.goal_semantics.batch_topic_quality",
+                   side_effect=lambda topics: {topic: scores[topic] for topic in topics}):
+            self.assertFalse(engine._is_valid_goal_topic("module"))
+            self.assertTrue(engine._is_valid_goal_topic("cognitive architecture"))
 
-    def test_goal_quality_filter_cannot_preserve_goal_engine_lexical_noise(self):
+    def test_goal_quality_filter_uses_semantic_verdict_without_lexical_veto(self):
         quality = GoalQualityFilter.__new__(GoalQualityFilter)
-        score, reasons = quality._score_goal(
-            {"name": "soory", "origin": "thought_goal_linker", "priority": 0.95,
-             "origin_thoughts": ["supporting thought", "another thought"]},
-            tensions={"curiosity_drive": 1.0}, emotions={"curiosity": 1.0},
-        )
+        quality_verdicts = {
+            "soory": (0.40, 0.51, False),
+            "improve cognitive architecture": (0.62, 0.49, True),
+        }
+        with patch("cognition.goal_semantics.batch_topic_quality",
+                   side_effect=lambda topics: {
+                       topic: quality_verdicts[topic] for topic in topics
+                   }):
+            score, reasons = quality._score_goal(
+                {"name": "soory", "origin": "thought_goal_linker", "priority": 0.95,
+                 "origin_thoughts": ["supporting thought", "another thought"]},
+                tensions={"curiosity_drive": 1.0}, emotions={"curiosity": 1.0},
+            )
+            real_score, _ = quality._score_goal(
+                {"name": "improve cognitive architecture", "origin": "manual", "priority": 0.5},
+                tensions={}, emotions={},
+            )
         self.assertEqual(score, 0.0)
-        self.assertTrue(reasons[0].startswith("lexical-noise topic"))
-
-        real_score, _ = quality._score_goal(
-            {"name": "improve cognitive architecture", "origin": "manual", "priority": 0.5},
-            tensions={}, emotions={},
-        )
+        self.assertTrue(reasons[0].startswith("semantic topic-quality gate rejected"))
         self.assertGreater(real_score, score)
 
     def test_tte_migrates_iteration_count_and_keeps_valid_records(self):
@@ -966,7 +978,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             with patch("core.data.access.DataAccess", return_value=_Dal()), \
                  patch.object(quality_filter, "_load_emotions", return_value={}), \
                  patch.object(quality_filter, "_score_goal", return_value=(
-                     0.0, ["lexical-noise topic 'noisy topic'"]
+                     0.0, ["semantic topic-quality gate rejected topic"]
                  )), \
                  patch.object(quality_filter, "_repair_legacy_semantic_hub_topics", return_value=0), \
                  patch.object(quality_filter, "_generate_tension_goals", return_value=[]):

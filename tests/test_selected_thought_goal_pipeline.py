@@ -81,14 +81,14 @@ def test_unadmissible_proposal_is_removed_before_workspace_competition(tmp_path)
     }]
 
 
-def test_goal_proposal_gate_matches_quality_and_lexical_admission(tmp_path):
+def test_goal_proposal_gate_defers_when_semantic_quality_is_unavailable(tmp_path):
     engine = GoalEngine(SimpleNamespace(), persistence_file=str(tmp_path / "goals.json"))
     engine._is_external_task_topic = lambda _topic: False
     engine._is_valid_goal_topic = lambda topic: topic == "grounded perception"
 
     assert engine.thought_proposal_rejection_reason("grounded perception") is None
     assert engine.thought_proposal_rejection_reason("notice pull toward") == "quality_unavailable"
-    assert engine.thought_proposal_rejection_reason("module") == "lexical_noise"
+    assert engine.thought_proposal_rejection_reason("module") == "quality_unavailable"
 
 
 def test_enhanced_cycle_competes_only_admissible_goal_proposals():

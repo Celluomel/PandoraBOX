@@ -857,6 +857,38 @@ class InternalThoughtLoop:
             }
             if numeric_summary:
                 summary["numeric_metrics"] = numeric_summary
+            topic_quality = value.get("topic_quality")
+            if isinstance(topic_quality, dict):
+                safe_topic_quality: dict[str, Any] = {}
+                for source in ("semantic_memory", "curiosity", "autonomous"):
+                    metrics = topic_quality.get(source)
+                    if not isinstance(metrics, dict):
+                        continue
+                    safe_topic_quality[source] = {
+                        key: int(metrics[key])
+                        for key in (
+                            "candidate_count", "accepted_count",
+                            "rejected_count", "unscored_count",
+                        )
+                        if isinstance(metrics.get(key), int)
+                    }
+                embedding_status = topic_quality.get("embedding_status")
+                if embedding_status in {"not_requested", "available", "deferred"}:
+                    safe_topic_quality["embedding_status"] = embedding_status
+                summary["topic_quality"] = safe_topic_quality
+            candidate_generation = value.get("candidate_generation")
+            if isinstance(candidate_generation, dict):
+                safe_candidate_generation = {
+                    key: candidate_generation[key]
+                    for key in (
+                        "considered_count", "cooldown_suppressed_count",
+                        "live_duplicate_suppressed_count", "user_task_suppressed_count",
+                        "semantic_rejected_count", "semantic_unavailable_count",
+                        "candidate_count", "capacity_blocked",
+                    )
+                    if isinstance(candidate_generation.get(key), (bool, int))
+                }
+                summary["candidate_generation"] = safe_candidate_generation
             for key in ("all_candidates", "candidates", "goals", "threads"):
                 item = value.get(key)
                 if isinstance(item, (list, tuple)):

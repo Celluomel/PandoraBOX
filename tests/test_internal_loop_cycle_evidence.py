@@ -1053,3 +1053,40 @@ def test_goal_proposal_receipt_preserves_hashed_source_and_candidate_lineage():
     assert summary["selected_candidate_ref"] == "b" * 20
     assert "private_topic" not in summary
     assert "never enter the receipt" not in str(summary)
+
+
+def test_goal_tick_receipt_exposes_safe_semantic_and_candidate_counters_only():
+    summary = InternalThoughtLoop._evidence_summary({
+        "status": "completed",
+        "topic_quality": {
+            "semantic_memory": {
+                "candidate_count": 4, "accepted_count": 2,
+                "rejected_count": 1, "unscored_count": 1,
+                "private_topics": ["do not serialize"],
+            },
+            "autonomous": {"candidate_count": 5, "accepted_count": 5},
+            "embedding_status": "available",
+            "private_topic": "do not serialize",
+        },
+        "candidate_generation": {
+            "considered_count": 10,
+            "cooldown_suppressed_count": 2,
+            "live_duplicate_suppressed_count": 3,
+            "user_task_suppressed_count": 1,
+            "semantic_rejected_count": 2,
+            "semantic_unavailable_count": 0,
+            "candidate_count": 2,
+            "capacity_blocked": False,
+            "candidate_text": "do not serialize",
+        },
+    })
+
+    assert summary["topic_quality"]["semantic_memory"] == {
+        "candidate_count": 4, "accepted_count": 2,
+        "rejected_count": 1, "unscored_count": 1,
+    }
+    assert summary["topic_quality"]["embedding_status"] == "available"
+    assert summary["candidate_generation"]["live_duplicate_suppressed_count"] == 3
+    assert "private_topic" not in str(summary)
+    assert "candidate_text" not in str(summary)
+    assert "do not serialize" not in str(summary)

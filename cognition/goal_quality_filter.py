@@ -20,16 +20,6 @@ from cognition.tension_topics import TENSION_TOPIC_GENERATORS, TENSION_GOALS
 
 logger = logging.getLogger(__name__)
 
-# Words that are clearly keyword-noise from NLP extraction
-NOISE_WORDS = {
-    'able', 'warm', 'coffee', 'caffeine', 'tackle', 'plateaued', 'personal',
-    'action', 'thing', 'something', 'anything', 'question', 'statement',
-    'exploration', 'discussion', 'conversation', 'topic', 'point', 'stuff',
-    'bit', 'lot', 'way', 'time', 'day', 'going', 'getting', 'making',
-    'work', 'help', 'need', 'want', 'feel', 'think', 'know', 'like',
-    'just', 'good', 'great', 'new', 'old', 'big', 'small', 'sure', 'ok',
-}
-
 # Tension keys → goal themes that are meaningful
 TENSION_THEMES = {
     'curiosity_drive':        ['understand', 'explore', 'learn', 'discover', 'investigate', 'research'],
@@ -115,6 +105,18 @@ class GoalQualityFilter:
         else:
             logger.info(f"[GQF] embeddings unavailable; using DICT fallback for tension alignment")
 
+        # Score topic meaningfulness in one batch for the whole pool. Calling
+        # the semantic endpoint once per goal would serialize network latency
+        # on every maintenance pass and recreate the review-path bottleneck.
+        topic_quality_by_name = None
+        try:
+            from cognition import goal_semantics as _gs
+            topic_quality_by_name = _gs.batch_topic_quality(
+                [goal.get("name", "") for goal in goals]
+            )
+        except Exception as e:  # noqa: BLE001 - unknown quality is not a veto
+            logger.debug("[GQF] topic-quality scoring unavailable: %s", e)
+
         for goal in goals:
             persisted_fields = {
                 key: goal.get(key)
@@ -126,20 +128,28 @@ class GoalQualityFilter:
             }
             _name = goal.get("name", "")
             semantic_align = sem_align.get(_name) if sem_align is not None else None
-            score, reasons = self._score_goal(goal, tensions, emotions, semantic_align=semantic_align)
+            score, reasons = self._score_goal(
+                goal, tensions, emotions, semantic_align=semantic_align,
+                semantic_quality_verdict=(
+                    topic_quality_by_name.get(_name)
+                    if topic_quality_by_name is not None else None
+                ),
+                semantic_quality_checked=True,
+            )
             goal['quality_score'] = round(score, 3)
             goal['quality_reasons'] = reasons
             report['scored'].append({'id': goal['id'], 'name': goal.get('name',''), 'score': score})
 
-            is_lexical_noise = any(
-                reason.startswith("lexical-noise topic") for reason in reasons
+            is_semantically_invalid = any(
+                reason.startswith("semantic topic-quality gate rejected")
+                for reason in reasons
             )
-            if (score < self.quality_threshold or is_lexical_noise) and goal.get('status') == 'active':
+            if (score < self.quality_threshold or is_semantically_invalid) and goal.get('status') == 'active':
                 # Don't mark low-quality if we're already below the minimum active threshold
                 current_active = len([g for g in goals if g.get('status') == 'active'
                                       and g.get('quality_score', 0.5) >= self.quality_threshold
                                       and g['id'] != goal['id']])
-                if current_active < 4 and not is_lexical_noise:
+                if current_active < 4 and not is_semantically_invalid:
                     # Preserve the small active pool for merely low-scoring goals,
                     # but never keep a topic the GoalEngine itself rejects.
                     pass
@@ -259,6 +269,8 @@ class GoalQualityFilter:
         tensions: Dict[str, float],
         emotions: Dict[str, float],
         semantic_align: Optional[Tuple[float, str]] = None,
+        semantic_quality_verdict: Optional[Tuple[float, float, bool]] = None,
+        semantic_quality_checked: bool = False,
     ) -> Tuple[float, List[str]]:
         """
         Score a goal 0-1.
@@ -275,17 +287,23 @@ class GoalQualityFilter:
         name  = goal.get('name', '').lower().strip()
         words = set(name.replace('_', ' ').split())
 
-        # GoalEngine is the admission authority. Reuse its hard lexical gate
-        # so this maintenance/scoring path cannot reactivate rejected topics.
-        from cognition.goal_engine import GoalEngine
-        if GoalEngine._is_lexical_noise_topic(name):
-            return 0.0, [f"lexical-noise topic '{name[:80]}'"]
+        # Reuse the same semantic meaningfulness gate as GoalEngine. Unknown
+        # embedding status is not a negative verdict and therefore cannot
+        # veto an existing goal here.
+        if not semantic_quality_checked:
+            try:
+                from cognition import goal_semantics
+                semantic_quality = goal_semantics.batch_topic_quality([name])
+                semantic_quality_verdict = (
+                    semantic_quality.get(name) if semantic_quality is not None else None
+                )
+            except Exception:  # noqa: BLE001 - maintenance scoring remains available
+                semantic_quality_verdict = None
+        if semantic_quality_verdict is not None and not bool(semantic_quality_verdict[2]):
+            return 0.0, ["semantic topic-quality gate rejected topic"]
 
         # ── Semantic richness ──────────────────────────────────────────────
-        if len(words) <= 1 and name in NOISE_WORDS:
-            score -= 0.4
-            reasons.append(f"single noise keyword '{name}'")
-        elif len(words) <= 1:
+        if len(words) <= 1:
             score -= 0.2
             reasons.append("single-word goal")
         elif len(words) >= 3:

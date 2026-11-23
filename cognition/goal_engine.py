@@ -353,8 +353,6 @@ class GoalEngine:
             return "missing_topic"
         if self._is_external_task_topic(normalized):
             return "user_owned_task"
-        if self._is_lexical_noise_topic(normalized):
-            return "lexical_noise"
         if self._is_valid_goal_topic(normalized):
             return None
         with self._lock:
@@ -798,10 +796,22 @@ class GoalEngine:
             List of new Goal objects
         """
         candidates = []
+        generation_report = {
+            "considered_count": 0,
+            "cooldown_suppressed_count": 0,
+            "live_duplicate_suppressed_count": 0,
+            "user_task_suppressed_count": 0,
+            "semantic_rejected_count": 0,
+            "semantic_unavailable_count": 0,
+            "candidate_count": 0,
+            "capacity_blocked": False,
+        }
         
         # Only generate if we have room
         active_count = len([g for g in self._goals.values() if g.status == "active"])
         if active_count >= self.MAX_ACTIVE_GOALS:
+            generation_report["capacity_blocked"] = True
+            self._last_candidate_generation_report = generation_report
             logger.debug(f"Max active goals reached ({active_count}), skipping generation")
             return []
         
@@ -817,7 +827,6 @@ class GoalEngine:
             if g.status in {"active", "dormant"}
         }
 
-        logged_noise_topics = set()
         for motive in motivations:
             if len(candidates) >= limit:
                 break
@@ -826,19 +835,16 @@ class GoalEngine:
                 if len(candidates) >= limit:
                     break
 
+                generation_report["considered_count"] += 1
                 t_lower = topic.casefold().strip()
                 if time.time() - self._recently_abandoned.get(t_lower, 0.0) < self.TOPIC_COOLDOWN_SECS:
-                    continue
-                if len(t_lower) < 4:      # skip noise words
-                    continue
-                if self._is_lexical_noise_topic(t_lower):
-                    if t_lower not in logged_noise_topics:
-                        logger.debug("[GoalEngine] rejected lexical-noise topic %r", topic)
-                        logged_noise_topics.add(t_lower)
+                    generation_report["cooldown_suppressed_count"] += 1
                     continue
                 if t_lower in seen_topics:  # dedup across batch AND existing goals
+                    generation_report["live_duplicate_suppressed_count"] += 1
                     continue
                 if self._is_external_task_topic(t_lower):
+                    generation_report["user_task_suppressed_count"] += 1
                     logger.debug(
                         "GoalEngine: skipping user-owned task topic %r", topic
                     )
@@ -846,7 +852,12 @@ class GoalEngine:
                 # Fail closed if semantic topic scoring is unavailable; the
                 # conversation fragment must not become a durable goal.
                 if not self._is_valid_goal_topic(t_lower):
-                    logger.debug(f"[GoalEngine] Skipping noise topic: {t_lower!r}")
+                    with self._lock:
+                        semantic_verdict = self._topic_quality_cache.get(t_lower)
+                    if semantic_verdict is None:
+                        generation_report["semantic_unavailable_count"] += 1
+                    else:
+                        generation_report["semantic_rejected_count"] += 1
                     continue
 
                 intent_kind, temporal_scope = _goal_intent(motive.name, topic)
@@ -863,8 +874,9 @@ class GoalEngine:
                 )
 
                 candidates.append(goal)
+                generation_report["candidate_count"] += 1
                 seen_topics.add(t_lower)  # mark so next motivation skips it
-        
+        self._last_candidate_generation_report = generation_report
         logger.info(f"Generated {len(candidates)} goal candidates")
         return candidates
     
@@ -1023,49 +1035,12 @@ class GoalEngine:
             active = len([g for g in self._goals.values() if g.status == "active"])
             logger.debug(f"Goal update: {active} active, {len(self._goals)} total")
     
-    # Single-word noise topics to reject — produced by bigram extraction
-    _NOISE_TOPICS = {
-        # English single-word noise
-        'morning', 'catching', 'inside', 'statement', 'question', 'today',
-        'bonjour', 'hello', 'greeting', 'salut',
-        'glad', 'sure', 'natural', 'fresh', 'image', 'topic', 'point',
-        'thing', 'something', 'anything', 'bit', 'lot', 'way', 'time',
-        'going', 'getting', 'work', 'help', 'feel', 'think', 'know',
-        'just', 'good', 'great', 'new', 'old', 'ok', 'okay', 'yes', 'no',
-        'spoke', 'yesterday', 'capable', 'deeply', 'general', 'kind', 'sort',
-        'really', 'very', 'quite', 'pretty', 'nice', 'right', 'wrong',
-        'primary', 'secondary', 'main', 'basic', 'simple', 'complex',
-        # French words that slip through (from bilingual conversations)
-        'donnes', 'donne', 'faire', 'avec', 'pour', 'dans', 'comme',
-        'tout', 'mais', 'plus', 'bien', 'très', 'aussi', 'donc', 'même',
-        'avoir', 'être', 'aller', 'veux', 'peut', 'fait', 'dit', 'voir',
-        'recommande', 'recommander', 'absolument', 'recommend', 'absolutely',
-        'actual', 'actuel', 'objectif',
-        # Multi-word noise phrases
-        'spoke yesterday', 'spoke year', 'catching up', 'explain deeply',
-        'capable instrospection', 'gemma primary', "you're creating",
-        'you re creating', 'right now', 'right here', 'i think', 'i feel',
-        'i know', 'i want', 'i need', 'i am', 'i was', 'i have',
-        # French conversational fragments and inflections seen in goal logs.
-        'toujours', 'quelles', 'quelle', 'quels', 'assez', 'sois', 'soit',
-        'soyez', 'savoir', 'curieux', 'curieuse', 'curiosité', 'tente',
-        'essayez', 'essaie', 'peux', 'peut', 'pourrais', 'pourrait',
-        'dis', 'dites', 'faut', 'semble', 'vraiment', 'arxchiv',
-        # Generic architecture vocabulary seen repeatedly in introspection
-        # turns; alone it is not a durable developmental goal.
-        'module', 'modules',
-    }
-
     def add_goal(self, goal: Goal) -> bool:
         """Add and persist a goal; return True only after the write is confirmed."""
         topic = goal.topic.strip().casefold()
 
         if self._is_external_task_topic(topic):
             logger.info("GoalEngine: rejected user-owned task topic %r", goal.topic)
-            return False
-
-        if self._is_lexical_noise_topic(topic):
-            logger.info("GoalEngine: rejected lexical-noise topic %r", goal.topic)
             return False
 
         if not self._is_valid_goal_topic(topic):
@@ -1079,23 +1054,6 @@ class GoalEngine:
                 f"GoalEngine: topic '{goal.topic}' in cooldown "
                 f"({self.TOPIC_COOLDOWN_SECS}s), skipping"
             )
-            return False
-
-        # Reject single-word or known noise topics
-        topic_words = topic.split()
-        if topic in self._NOISE_TOPICS or (
-            len(topic) < 4  # too short
-        ) or (
-            len(topic_words) <= 1 and len(topic) < 6
-        ) or (
-            len(topic_words) <= 2 and all(
-                w in self._NOISE_TOPICS for w in topic_words
-            )
-        ) or (
-            # Reject if looks like a sentence fragment (contains verb + pronoun)
-            any(w in {"you're", "you're", "i'm", "it's", "don't", "can't", "won't"} for w in topic.split())
-        ):
-            logger.debug(f"GoalEngine: rejected noise topic '{goal.topic}'")
             return False
 
         with self._lock:
@@ -1322,24 +1280,6 @@ class GoalEngine:
             "status": goal.status,
         }
     
-    @classmethod
-    def _is_lexical_noise_topic(cls, topic: str) -> bool:
-        """Reject function-word fragments before semantic scoring/admission."""
-        normalized = unicodedata.normalize("NFKD", str(topic or "").casefold())
-        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-        normalized = " ".join(re.findall(r"[^\W\d_]+", normalized, flags=re.UNICODE))
-        words = normalized.split()
-        noise = set()
-        for item in cls._NOISE_TOPICS:
-            item = unicodedata.normalize("NFKD", item.casefold())
-            noise.add("".join(ch for ch in item if not unicodedata.combining(ch)))
-        if not words or normalized in noise:
-            return True
-        content = [word for word in words if word not in noise]
-        # Bare tokens (including misspelled feed fragments) lack enough
-        # context to become a persistent goal. Curiosity goals should be phrases.
-        return not content or len(words) == 1 or any(word in noise for word in words)
-
     def mark_action(
         self,
         goal_id: str,
@@ -1715,9 +1655,23 @@ class GoalEngine:
         accepted = 0
         _generation_blocked = False
         topic_quality_metrics = {
-            "semantic_memory": {"candidate_count": 0, "accepted_count": 0},
-            "curiosity": {"candidate_count": 0, "accepted_count": 0},
+            "semantic_memory": {"candidate_count": 0, "accepted_count": 0,
+                                "rejected_count": 0, "unscored_count": 0},
+            "curiosity": {"candidate_count": 0, "accepted_count": 0,
+                          "rejected_count": 0, "unscored_count": 0},
+            "autonomous": {"candidate_count": 0, "accepted_count": 0,
+                           "rejected_count": 0, "unscored_count": 0},
             "embedding_status": "not_requested",
+        }
+        candidate_generation_metrics = {
+            "considered_count": 0,
+            "cooldown_suppressed_count": 0,
+            "live_duplicate_suppressed_count": 0,
+            "user_task_suppressed_count": 0,
+            "semantic_rejected_count": 0,
+            "semantic_unavailable_count": 0,
+            "candidate_count": 0,
+            "capacity_blocked": False,
         }
 
         def _admit_semantic_topics(raw_topics, source_name, limit=8):
@@ -1738,6 +1692,7 @@ class GoalEngine:
 
             if scores is None:
                 topic_quality_metrics["embedding_status"] = "deferred"
+                source_metrics["unscored_count"] = len(unique_topics)
                 logger.info(
                     "[GoalEngine] %s topic scoring deferred; no unscored topics promoted",
                     source_name,
@@ -1749,6 +1704,7 @@ class GoalEngine:
             for topic in unique_topics:
                 verdict = scores.get(topic)
                 if verdict is None:
+                    source_metrics["unscored_count"] += 1
                     continue
                 good_sim, noise_sim, is_quality = verdict
                 normalized = " ".join(topic.casefold().split())
@@ -1761,6 +1717,8 @@ class GoalEngine:
                 )
                 if is_quality:
                     admitted.append(topic)
+                else:
+                    source_metrics["rejected_count"] += 1
 
             admitted = admitted[:limit]
             source_metrics["accepted_count"] = len(admitted)
@@ -1849,6 +1807,12 @@ class GoalEngine:
             ])
             # Preserve order while avoiding duplicate autonomous goals.
             autonomous_topics = list(dict.fromkeys(autonomous_topics))
+            # Autonomous subjects use the same meaning-based admission as
+            # conversational and curiosity topics. No token list or minimum
+            # word-length rule may override the semantic decision.
+            autonomous_topics = _admit_semantic_topics(
+                autonomous_topics, "autonomous", limit=8
+            )
             # User-grounded topics provide conversational relevance, but they
             # must never suppress self-directed development.  Both streams
             # are candidates; provenance only prevents assistant prose from
@@ -1868,34 +1832,10 @@ class GoalEngine:
                     len(user_topics), len(autonomous_topics),
                 )
 
-            # ── 5. Filter topics for quality before goal generation ─────────────
-            # semantic_memory contains all conversation bigrams including noise
-            # like "sorry curious", "glass haunts", "phrase". Only pass topics
-            # that are substantive: single words >= 6 chars OR multi-word where
-            # EVERY word is >= 5 chars, neither word is a conversation filler.
-            _FILLER = frozenset({
-                "sorry", "curious", "phrase", "question", "thanks", "thank",
-                "hello", "change", "chqnging", "direction", "please", "going",
-                "seems", "right", "every", "quite", "those", "still", "quite",
-                "today", "whats", "heres", "thats", "yours", "mine", "glass",
-                "haunts", "great", "think", "would", "could", "should", "really",
-                "little", "found", "maybe", "often", "never", "always", "truly",
-            })
-            filtered_topics = []
-            for _t in topics:
-                _words = _t.lower().strip().split()
-                if not _words:
-                    continue
-                # reject if any word is a filler
-                if any(w in _FILLER for w in _words):
-                    continue
-                # single word: min 6 chars
-                if len(_words) == 1 and len(_words[0]) < 6:
-                    continue
-                # multi-word: every word min 5 chars
-                if len(_words) >= 2 and any(len(w) < 5 for w in _words):
-                    continue
-                filtered_topics.append(_t)
+            # Source-level semantic admission has already classified user,
+            # curiosity, and autonomous topics. A second lexical pass used to
+            # discard admitted topics by token identity and word length.
+            filtered_topics = list(topics)
 
             # ── 6. Generate and add goal candidates ───────────────────────────
             # Governor gate: when pressure is high or mode is structured,
@@ -1920,6 +1860,9 @@ class GoalEngine:
             use_topics = filtered_topics if filtered_topics else autonomous_topics
             if motivations and use_topics and not _generation_blocked:
                 candidates = self.generate_candidates(motivations, use_topics, limit=3)
+                candidate_generation_metrics.update(
+                    getattr(self, "_last_candidate_generation_report", {})
+                )
                 accepted = 0
                 for goal in candidates:
                     if self.add_goal(goal):
@@ -1947,6 +1890,7 @@ class GoalEngine:
                 "user_topic_count": len(user_topics),
                 "filtered_topic_count": len(filtered_topics),
                 "topic_quality": topic_quality_metrics,
+                "candidate_generation": candidate_generation_metrics,
                 "candidate_count": len(candidates),
                 "accepted_candidate_count": accepted,
                 "generation_blocked": bool(_generation_blocked),
@@ -1965,6 +1909,8 @@ class GoalEngine:
                 "error_type": type(e).__name__,
                 "motivation_count": len(motivations),
                 "filtered_topic_count": len(filtered_topics),
+                "topic_quality": topic_quality_metrics,
+                "candidate_generation": candidate_generation_metrics,
                 "candidate_count": len(candidates),
                 "accepted_candidate_count": accepted,
             })

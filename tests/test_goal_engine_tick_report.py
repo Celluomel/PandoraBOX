@@ -95,10 +95,14 @@ def test_curiosity_topic_fallback_uses_the_same_semantic_admission_gate():
 
     # The quality gate's false verdict must apply to curiosity fallback topics,
     # not only to topics returned by SemanticMemory.
-    with patch(
-        "cognition.goal_semantics.batch_topic_quality",
-        return_value={"après chaque": (0.40, 0.50, False)},
-    ):
+    def score_topics(topics):
+        return {
+            topic: ((0.40, 0.50, False) if topic == "après chaque"
+                    else (0.70, 0.30, True))
+            for topic in topics
+        }
+
+    with patch("cognition.goal_semantics.batch_topic_quality", side_effect=score_topics):
         engine.tick()
 
     assert "après chaque" not in offered_topics
@@ -107,6 +111,8 @@ def test_curiosity_topic_fallback_uses_the_same_semantic_admission_gate():
     assert report["topic_quality"]["curiosity"] == {
         "candidate_count": 1,
         "accepted_count": 0,
+        "rejected_count": 1,
+        "unscored_count": 0,
     }
     assert report["topic_quality"]["embedding_status"] == "available"
 
@@ -133,7 +139,33 @@ def test_curiosity_topics_are_deferred_when_semantic_quality_is_unavailable():
         engine.tick()
 
     assert "unverified conversation fragment" not in offered_topics
-    assert "relational understanding" in offered_topics
+    assert "relational understanding" not in offered_topics
     report = engine.get_last_tick_report()
     assert report["topic_quality"]["curiosity"]["accepted_count"] == 0
     assert report["topic_quality"]["embedding_status"] == "deferred"
+    assert report["topic_quality"]["autonomous"]["unscored_count"] > 0
+
+
+def test_semantically_admitted_topic_is_not_removed_by_word_length_or_token_rules():
+    engine = make_engine()
+    engine.ai_system._organism = SimpleNamespace(
+        semantic_memory=SimpleNamespace(
+            recent_user_topics=lambda **_kwargs: ["AI reasoning"]
+        ),
+        curiosity=None,
+    )
+    offered_topics = []
+    engine.generate_candidates = lambda _motivations, topics, limit: offered_topics.extend(topics) or []
+
+    with patch(
+        "cognition.goal_semantics.batch_topic_quality",
+        side_effect=lambda topics: {
+            topic: (0.70, 0.30, True) for topic in topics
+        },
+    ):
+        engine.tick()
+
+    assert "AI reasoning" in offered_topics
+    report = engine.get_last_tick_report()
+    assert report["topic_quality"]["semantic_memory"]["accepted_count"] == 1
+    assert report["filtered_topic_count"] >= 1
