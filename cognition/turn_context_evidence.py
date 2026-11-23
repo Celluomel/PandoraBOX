@@ -389,6 +389,22 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 receipt[key] = max(0, min(1000, number))
         if isinstance(value.get("dominant_topic_selected"), bool):
             receipt["dominant_topic_selected"] = value["dominant_topic_selected"]
+        curiosity_status = str(value.get("curiosity_status") or "")[:32]
+        if curiosity_status in {
+            "stimulated", "unavailable", "failed", "skipped_peer_source",
+            "no_grounded_dominant_topic",
+        }:
+            receipt["curiosity_status"] = curiosity_status
+        if isinstance(value.get("curiosity_topic_selected"), bool):
+            receipt["curiosity_topic_selected"] = value["curiosity_topic_selected"]
+        curiosity_level = value.get("curiosity_level_after")
+        if isinstance(curiosity_level, (int, float)) and not isinstance(curiosity_level, bool):
+            numeric = float(curiosity_level)
+            if math.isfinite(numeric):
+                receipt["curiosity_level_after"] = max(0.0, min(1.0, numeric))
+        curiosity_error = str(value.get("curiosity_error_type") or "")
+        if curiosity_error and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", curiosity_error):
+            receipt["curiosity_error_type"] = curiosity_error
         duration = value.get("duration_ms")
         if isinstance(duration, (int, float)) and not isinstance(duration, bool):
             numeric = float(duration)

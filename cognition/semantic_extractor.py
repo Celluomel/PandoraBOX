@@ -218,20 +218,25 @@ class SemanticExtractor:
                 curiosity = getattr(self._organism, "curiosity", None)
                 if curiosity is None:
                     receipt["curiosity_status"] = "unavailable"
+                    receipt["curiosity_topic_selected"] = True
                 else:
                     try:
-                        curiosity.stimulate(
+                        curiosity_level = curiosity.stimulate(
                             topic, amount=0.15, source="user_semantic",
                         )
                         receipt["curiosity_status"] = "stimulated"
-                        receipt["curiosity_topic"] = topic
+                        receipt["curiosity_topic_selected"] = True
+                        receipt["curiosity_level_after"] = curiosity_level
                     except Exception as curiosity_error:
                         receipt["curiosity_status"] = "failed"
+                        receipt["curiosity_topic_selected"] = True
                         receipt["curiosity_error_type"] = type(curiosity_error).__name__
             elif observation_role == "peer_topic":
                 receipt["curiosity_status"] = "skipped_peer_source"
+                receipt["curiosity_topic_selected"] = bool(topic and topic in concepts)
             else:
                 receipt["curiosity_status"] = "no_grounded_dominant_topic"
+                receipt["curiosity_topic_selected"] = False
 
             # CAG receives the concepts this extractor already grounded in the
             # incoming message. This avoids its former independent heuristic

@@ -51,7 +51,7 @@ def test_grounded_user_topic_is_the_only_semantic_path_to_curiosity():
     )
     assert receipt["turn_id"] == "turn-semantic-1"
     assert receipt["curiosity_status"] == "stimulated"
-    assert receipt["curiosity_topic"] == "robot locomotion"
+    assert receipt["curiosity_topic_selected"] is True
 
 
 def test_peer_topic_does_not_stimulate_human_curiosity():
@@ -75,6 +75,7 @@ def test_peer_topic_does_not_stimulate_human_curiosity():
 
     curiosity.stimulate.assert_not_called()
     assert receipt["curiosity_status"] == "skipped_peer_source"
+    assert receipt["curiosity_topic_selected"] is True
 
 
 def test_user_semantic_curiosity_uses_grounding_not_word_filter(tmp_path: Path):

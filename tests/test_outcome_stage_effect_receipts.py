@@ -196,14 +196,23 @@ def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
         "relation_upsert_calls_returned": 0,
         "relations_persisted": 0,
         "dominant_topic_selected": True,
+        "curiosity_status": "stimulated",
+        "curiosity_topic_selected": True,
+        "curiosity_level_after": 0.60,
         "duration_ms": 12.5,
         "concepts": ["private concept text"],
+        "curiosity_topic": "private topic text",
     })
     assert summary["type"] == "semantic_extraction_receipt"
     assert summary["persistence_status"] == "confirmed"
     assert summary["concepts_persisted"] == 2
     assert summary["dominant_topic_selected"] is True
+    assert summary["curiosity_status"] == "stimulated"
+    assert summary["curiosity_topic_selected"] is True
+    assert summary["curiosity_level_after"] == 0.60
     assert "concepts" not in summary
+    assert "curiosity_topic" not in summary
+    assert "private topic text" not in str(summary)
 
 
 def test_app_state_resolves_relational_memory_from_its_actual_owner():
