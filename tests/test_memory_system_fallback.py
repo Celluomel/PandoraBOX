@@ -367,6 +367,25 @@ class MemorySystemFallbackTests(unittest.TestCase):
             "memory recall",
         )
 
+    def test_relative_clause_recall_routes_to_historical_source(self):
+        cases = (
+            (
+                "Rappelle-moi le dernier objectif cognitif dont nous avons parlé.",
+                "le dernier objectif cognitif",
+            ),
+            (
+                "Remind me the last goal we discussed.",
+                "the last goal",
+            ),
+        )
+        for query, expected_topic in cases:
+            with self.subTest(query=query):
+                self.assertTrue(is_explicit_memory_recall_query(query))
+                self.assertEqual(
+                    extract_explicit_recall_topic(query).casefold(),
+                    expected_topic,
+                )
+
     def test_memory_write_instruction_is_not_misclassified_as_recall(self):
         instruction = (
             "For this audit only, remember the test phrase amber kite 731 "

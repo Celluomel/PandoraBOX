@@ -44,6 +44,21 @@ whl woff woff2 xls xlsx xml yaml yml zip zipx zst
 
 
 _HISTORICAL_REQUEST_PATTERNS = (
+    # Resolve the general relative-clause form "remind me [subject] we
+    # discussed" / "rappelle-moi [sujet] dont nous avons parlé". This is a
+    # grammatical history reference, not a fixed vocabulary of memory topics.
+    re.compile(
+        r"\bremind\s+me\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:that\s+)?(?:we|i)\s+(?:discussed|talked\s+about|decided\s+on)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\brappelle(?:-moi)?\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:dont|duquel|de\s+laquelle|sur\s+lequel|sur\s+laquelle)\s+"
+        r"(?:nous|on)\s+(?:avons|a)\s+"
+        r"(?:parl[ée]|discut[ée]|décid[ée]|évoqu[ée])\b",
+        re.IGNORECASE,
+    ),
     # Historical instructions are often framed as "what did I give you?"
     # rather than "what did I ask you?". Route that grammatical form through
     # source-backed recall so the current prompt cannot be quoted as history.
