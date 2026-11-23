@@ -77,9 +77,12 @@ logger = logging.getLogger(__name__)
 
 def _resolve_semantic_extractor_llm_fn(ai_system, external_llm_fn=None):
     """Choose the configured history-free LLM callable for semantic learning."""
-    candidate = getattr(ai_system, "_simple_llm_fn", None)
+    # PersonaBridge receives LLMManager.generate_bare, the same configured
+    # history-free path used by internal cognition. Prefer it over the legacy
+    # convenience wrapper, which may silently swallow provider errors.
+    candidate = external_llm_fn
     if not callable(candidate):
-        candidate = external_llm_fn
+        candidate = getattr(ai_system, "_simple_llm_fn", None)
     return candidate if callable(candidate) else None
 
 _TURN_OUTPUT_UNSET = object()

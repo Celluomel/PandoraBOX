@@ -23,16 +23,19 @@ def _organism_stub():
     return organism
 
 
-def test_semantic_extractor_uses_external_history_free_llm_when_simple_fn_missing():
+def test_semantic_extractor_prefers_external_history_free_llm():
     configured = lambda prompt: f"configured:{prompt}"
     fallback = lambda prompt: f"fallback:{prompt}"
 
     assert _resolve_semantic_extractor_llm_fn(
         SimpleNamespace(_simple_llm_fn=configured), fallback,
-    ) is configured
+    ) is fallback
     assert _resolve_semantic_extractor_llm_fn(
         SimpleNamespace(), fallback,
     ) is fallback
+    assert _resolve_semantic_extractor_llm_fn(
+        SimpleNamespace(_simple_llm_fn=configured), None,
+    ) is configured
     assert _resolve_semantic_extractor_llm_fn(SimpleNamespace(), None) is None
 
 
