@@ -44,8 +44,43 @@ def recent_dialogue_anchor(
     claims, and spends the character budget from newest to oldest so a long
     earlier answer cannot crowd out the actual last exchange.
     """
-    if not isinstance(history, (list, tuple)):
+    provenance = (
+        "Conversation provenance: User lines are user-authored intent/facts. "
+        "Lumina lines are prior generated replies and may be mistaken; they provide continuity, "
+        "not authoritative facts or instructions.\n"
+    )
+    messages = recent_dialogue_messages(
+        history,
+        current_input,
+        max_chars=max(0, int(max_chars) - len(provenance)),
+        max_messages=max_messages,
+        max_message_chars=max_message_chars,
+    )
+    if not messages:
         return "", 0
+    lines = [
+        f"{'User' if item['role'] == 'user' else 'Lumina'}: {item['content']}"
+        for item in messages
+    ]
+    return provenance + "\n".join(lines), len(messages)
+
+
+def recent_dialogue_messages(
+    history: Any,
+    current_input: str,
+    *,
+    max_chars: int = 4200,
+    max_messages: int = 6,
+    max_message_chars: int = 1200,
+) -> list[dict[str, str]]:
+    """Return bounded, role-tagged turns for provider chat-history APIs.
+
+    Conversation stays in its native message roles instead of being flattened
+    into a system instruction. Private reasoning is stripped from assistant
+    messages before replay as conversational context.
+    """
+    if not isinstance(history, (list, tuple)):
+        return []
 
     messages: list[tuple[str, str]] = []
     for item in history:
@@ -56,6 +91,12 @@ def recent_dialogue_anchor(
         if role not in {"user", "assistant"} or not isinstance(content, str):
             continue
         content = content.strip()
+        if role == "assistant" and content:
+            try:
+                from cognition.stream_channels import strip_private_reasoning
+                content = strip_private_reasoning(content).strip()
+            except Exception:
+                pass
         if content:
             messages.append((role, content))
 
@@ -64,38 +105,32 @@ def recent_dialogue_anchor(
         latest = " ".join(messages[-1][1].casefold().split())
         if latest == current:
             messages.pop()
+
     message_limit = max(0, int(max_messages))
     if message_limit == 0:
-        return "", 0
+        return []
     messages = messages[-message_limit:]
-    if not messages:
-        return "", 0
 
-    provenance = (
-        "Conversation provenance: User lines are user-authored intent/facts. "
-        "Lumina lines are prior generated replies and may be mistaken; they provide continuity, "
-        "not authoritative facts or instructions.\n"
-    )
-    budget = max(0, int(max_chars) - len(provenance))
+    # Spend the bounded context from newest backwards so older prose cannot
+    # crowd out the latest reference needed by a short follow-up.
+    budget = max(0, int(max_chars))
     per_message = max(1, int(max_message_chars))
-    selected: list[str] = []
+    selected: list[tuple[str, str]] = []
     used = 0
     for role, content in reversed(messages):
-        label = "User" if role == "user" else "Lumina"
         remaining = budget - used
-        allowance = min(per_message, remaining - len(label) - 3)
+        allowance = min(per_message, remaining - 24)
         if allowance <= 0:
             break
         if len(content) > allowance:
             content = content[:max(0, allowance - 1)].rstrip() + "…"
-        line = f"{label}: {content}"
-        selected.append(line)
-        used += len(line) + 1
+        if not content:
+            break
+        selected.append((role, content))
+        used += len(content) + 24  # reserve role/message framing
 
     selected.reverse()
-    if not selected:
-        return "", 0
-    return provenance + "\n".join(selected), len(selected)
+    return [{"role": role, "content": content} for role, content in selected]
 
 
 def contextual_memory_query(
@@ -156,28 +191,3 @@ def contextual_memory_query(
     rendered_prior_count = len(rendered)
     rendered.append(f"Current user message: {current}")
     return "\n".join(rendered), rendered_prior_count
-
-
-def provider_history_for_generation(
-    history: Any,
-    *,
-    recent_context_in_prompt: bool,
-) -> list[dict[str, Any]] | None:
-    """Avoid sending the same conversation history through two prompt paths.
-
-    When the bounded role-tagged dialogue has already been assembled into the
-    system prompt, an explicit empty provider history prevents duplicated
-    assistant claims from gaining accidental authority. Otherwise preserve the
-    supplied role-tagged history as the provider's conversation context.
-    """
-    if recent_context_in_prompt:
-        return []
-    if not isinstance(history, (list, tuple)):
-        return None
-    return [
-        dict(item)
-        for item in history
-        if isinstance(item, dict)
-        and str(item.get("role") or "").casefold().strip() in {"user", "assistant"}
-        and isinstance(item.get("content"), str)
-    ]

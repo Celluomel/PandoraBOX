@@ -127,3 +127,47 @@ def test_history_source_and_continuity_are_linked_into_final_prompt():
     assert "conversation_history" in ast.unparse(continuity_consumes)
     assert "conversation_continuity_context" in ast.unparse(prompt_consumes)
     assert history_source.lineno < continuity.lineno < final_prompt.lineno
+
+
+def test_primary_generation_transports_history_as_role_tagged_messages():
+    source = (ROOT / "cognition" / "persona_bridge.py").read_text(encoding="utf-8")
+
+    assert "recent_dialogue_messages" in source
+    assert "_history_for_anchor" in source and "effective_input" in source
+    assert "history_override" in source and "_bounded_history" in source
+    assert "bounded_role_tagged_context" in source
+    assert "Actual preceding chat messages" not in source
+
+
+def test_llm_manager_passes_followup_history_to_provider_without_thinking_dependency():
+    from managers.llm_manager import LLMManager
+
+    class CaptureProvider:
+        model = "test-model"
+
+        def __init__(self):
+            self.messages = None
+            self.system_prompt = None
+
+        def generate_with_history_stream(self, prompt, history, system_prompt=None, **_kwargs):
+            self.messages = [dict(item) for item in history]
+            self.system_prompt = system_prompt
+            yield "answer"
+
+    provider = CaptureProvider()
+    manager = LLMManager(provider, text_model="test-model")
+    prior = [
+        {"role": "user", "content": "Which two states did we discuss?"},
+        {"role": "assistant", "content": "The biological and synthetic states."},
+    ]
+
+    result = list(manager.generate_stream(
+        "How do they act?",
+        "Resolve the follow-up from the prior turns.",
+        history_override=prior,
+        record_history=False,
+    ))
+
+    assert result == ["answer"]
+    assert provider.messages == prior
+    assert provider.messages[-1]["role"] == "assistant"

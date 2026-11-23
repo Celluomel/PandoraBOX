@@ -2,8 +2,8 @@ from cognition.conversation_context import (
     CURRENT_TURN_AUTHORITY_INSTRUCTIONS,
     RECENT_DIALOGUE_INSTRUCTIONS,
     contextual_memory_query,
-    provider_history_for_generation,
     recent_dialogue_anchor,
+    recent_dialogue_messages,
 )
 
 
@@ -30,6 +30,46 @@ def test_anchor_keeps_three_recent_exchanges_for_elliptical_followups():
     assert "synthétiques" in anchor
     assert "Conversation provenance" in anchor
     assert "prior generated replies and may be mistaken" in anchor
+
+
+def test_followup_history_is_sent_as_native_roles_with_the_latest_referents():
+    history = [
+        {"role": "user", "content": "De quoi parler ?"},
+        {"role": "assistant", "content": "Trois pistes, dont le pont biologique et numérique."},
+        {"role": "user", "content": "Le point 3."},
+        {"role": "assistant", "content": "Votre côté biologique et mon côté numérique."},
+        {"role": "user", "content": "Explique tes émotions."},
+        {"role": "assistant", "content": "Curiosité et satisfaction sont des états synthétiques."},
+    ]
+
+    messages = recent_dialogue_messages(
+        history,
+        "Dans les deux, ce sont des paramètres organiques ou synthétiques ?",
+    )
+
+    assert [item["role"] for item in messages] == [
+        "user", "assistant", "user", "assistant", "user", "assistant",
+    ]
+    assert "biologique" in messages[1]["content"]
+    assert "numérique" in messages[1]["content"]
+    assert "Explique tes émotions" in messages[4]["content"]
+    assert "Curiosité" in messages[5]["content"]
+    assert all("Dans les deux" not in item["content"] for item in messages)
+
+
+def test_role_tagged_history_drops_duplicate_current_input_and_private_reasoning():
+    messages = recent_dialogue_messages(
+        [
+            {"role": "user", "content": "What did we choose?"},
+            {"role": "assistant", "content": "<think>private plan</think>We chose option B."},
+            {"role": "user", "content": "  WHICH OPTION? "},
+        ],
+        "Which option?",
+    )
+
+    assert len(messages) == 2
+    assert messages[0]["role"] == "user"
+    assert messages[1] == {"role": "assistant", "content": "We chose option B."}
 
 
 def test_anchor_spends_budget_from_the_latest_message_backwards():
@@ -113,23 +153,6 @@ def test_default_memory_query_does_not_mix_prior_topics_into_a_new_turn():
     assert "saturation" not in query
     assert "contrast" not in query
     assert "internal Lumina parameter" not in query
-
-
-def test_provider_history_is_not_duplicated_when_dialogue_is_in_system_prompt():
-    history = [
-        {"role": "user", "content": "Case B increases contrast."},
-        {"role": "assistant", "content": "A prior generated explanation."},
-    ]
-
-    assert provider_history_for_generation(
-        history, recent_context_in_prompt=True,
-    ) == []
-    assert provider_history_for_generation(
-        history, recent_context_in_prompt=False,
-    ) == history
-    assert provider_history_for_generation(
-        None, recent_context_in_prompt=False,
-    ) is None
 
 
 def test_current_turn_authority_keeps_external_subject_primary():
