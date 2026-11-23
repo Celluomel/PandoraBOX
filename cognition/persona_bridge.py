@@ -56,6 +56,7 @@ from cognition.turn_context_evidence import (
     tag_memory_retrieval_lane,
 )
 from cognition.factual_self_report_context import history_without_assistant_claims
+from cognition.conversation_context import recent_dialogue_anchor
 from core.turn_execution_context import (
     current_turn_id as _current_audit_turn_id,
     normalize_turn_id as _normalize_audit_turn_id,
@@ -107,56 +108,6 @@ def _research_unavailable_response(user_input: str, response_language: str = "au
         "I did not retrieve a usable source for this search, so I cannot confirm recent findings "
         "or attribute information to any outlet or paper."
     )
-
-
-def _recent_dialogue_anchor(
-    history: Any, current_input: str, *, max_chars: int = 2200,
-) -> tuple[str, int]:
-    """Copy the immediately preceding exchange into a bounded prompt anchor.
-
-    The provider still receives the full role-tagged history. This short,
-    deterministic excerpt makes the most recent antecedents salient without a
-    second model call, language-specific phrase list, or lossy summary.
-    """
-    if not isinstance(history, (list, tuple)):
-        return "", 0
-    messages: list[tuple[str, str]] = []
-    for item in history:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or "").casefold().strip()
-        content = item.get("content")
-        if role not in {"user", "assistant"} or not isinstance(content, str):
-            continue
-        content = content.strip()
-        if content:
-            messages.append((role, content))
-    current = " ".join(str(current_input or "").casefold().split())
-    if messages and messages[-1][0] == "user":
-        latest = " ".join(messages[-1][1].casefold().split())
-        if latest == current:
-            messages.pop()
-    messages = messages[-2:]
-    if not messages:
-        return "", 0
-
-    lines = []
-    budget = max(0, int(max_chars))
-    used = 0
-    for role, content in messages:
-        label = "User" if role == "user" else "Lumina"
-        remaining = budget - used
-        if remaining <= len(label) + 4:
-            break
-        text = content[:remaining - len(label) - 3]
-        if len(text) < len(content):
-            text = text.rstrip() + "…"
-        line = f"{label}: {text}"
-        lines.append(line)
-        used += len(line) + 1
-    if not lines:
-        return "", 0
-    return "\n".join(lines), len(lines)
 
 
 def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
@@ -2904,7 +2855,7 @@ class PersonaBridge:
                 )
                 self._record_turn_stage(
                     "conversation_continuity_context", "injected",
-                    "Bounded excerpt of the immediately preceding exchange appended from role-tagged chat history.",
+                    "Bounded excerpt of up to three recent exchanges appended from role-tagged chat history.",
                     output={
                         "message_count": _anchor_message_count,
                         "character_count": len(_recent_anchor),
