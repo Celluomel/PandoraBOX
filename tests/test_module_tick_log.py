@@ -362,6 +362,35 @@ class ModuleTickLogTests(unittest.TestCase):
             "no_eligible_goals",
         )
 
+    def test_arc_synthesis_empty_text_keeps_a_reason_coded_effect_receipt(self):
+        class NarrativeModule:
+            _last_synthesis_receipt = None
+
+            def synthesise_arc(self, _identity):
+                self._last_synthesis_receipt = {
+                    "status": "no_effect",
+                    "reason_code": "no_global_internal_chapters",
+                    "effect_status": "none",
+                    "global_chapter_count": 0,
+                }
+                return ""
+
+        module = NarrativeModule()
+        loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+        loop._module_tick_log = ModuleTickLog()
+        loop._module_tick_wrapped = set()
+        loop._naw = module
+
+        loop._refresh_module_tick_probes(only_attr="_naw")
+        module.synthesise_arc(object())
+
+        tick = loop.module_tick_snapshot()["narrative_arc_writer"]
+        output = tick["last_output"]
+        assert output["quality"] == "present"
+        assert output["receipt_fields"]["status"] == "no_effect"
+        assert output["receipt_fields"]["reason_code"] == "no_global_internal_chapters"
+        assert output["summary_counts"]["global_chapter_count"] == 0
+
     def test_probe_targets_match_live_internal_loop_entrypoints(self):
         calls = []
         loop = InternalThoughtLoop.__new__(InternalThoughtLoop)

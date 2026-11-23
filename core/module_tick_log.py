@@ -58,6 +58,8 @@ def summarize_output(value: Any) -> dict[str, Any]:
             "contexts_after", "signals_before", "signals_after",
             "signals_pruned", "contexts_pruned",
             "belief_count", "response_characters", "event_handler_count",
+            "global_chapter_count", "tokenizable_word_count",
+            "clustered_theme_count", "pivot_chapter_count", "arc_characters",
         }
         for key in receipt_enum_fields:
             item = value.get(key)
@@ -68,8 +70,9 @@ def summarize_output(value: Any) -> dict[str, Any]:
             item = value.get(key)
             if isinstance(item, int) and not isinstance(item, bool):
                 receipt_fields[key] = item
-        if isinstance(value.get("aspiration_plan_exists"), bool):
-            receipt_fields["aspiration_plan_exists"] = value["aspiration_plan_exists"]
+        for key in ("aspiration_plan_exists", "arc_changed"):
+            if isinstance(value.get(key), bool):
+                receipt_fields[key] = value[key]
         if isinstance(value.get("persisted"), bool):
             receipt_fields["persisted"] = value["persisted"]
         for key in ("detected", "event_emitted"):
@@ -85,6 +88,8 @@ def summarize_output(value: Any) -> dict[str, Any]:
             "noise_marked", "boosted", "settled",
             "completion_write_failed", "goal_write_failed",
             "goal_writes_succeeded", "generated", "high_quality",
+            "global_chapter_count", "tokenizable_word_count",
+            "clustered_theme_count", "pivot_chapter_count",
         )
         nested_summary = value.get("summary")
         if isinstance(nested_summary, dict):

@@ -197,6 +197,51 @@ class NarrativeIdentity:
             if getattr(chapter, "scope", "interaction_context") == "global_internal"
         ]
 
+    def update_current_arc(
+        self,
+        arc: str,
+        topic: str,
+        *,
+        pivot_chapter: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Persist an arc transition and its optional pivot chapter atomically."""
+        arc = str(arc or "")
+        topic = str(topic or "")
+        with self._lock:
+            previous_arc = self._current_arc
+            previous_topic = self._last_arc_topic
+            previous_story = list(self.life_story)
+            previous_last_chapter = self._last_chapter
+            previous_narrative_stale = self._narrative_stale
+            changed = arc != previous_arc or topic != previous_topic
+            if pivot_chapter:
+                self.life_story.append(LifeChapter(
+                    timestamp=time.time(),
+                    title=str(pivot_chapter.get("title") or "Narrative arc pivot"),
+                    description=str(pivot_chapter.get("description") or ""),
+                    emotion=str(pivot_chapter.get("emotion") or "curious"),
+                    significance=float(pivot_chapter.get("significance", 0.7)),
+                    scope="global_internal",
+                ))
+                if len(self.life_story) > self.MAX_CHAPTERS:
+                    self.life_story.sort(key=lambda chapter: chapter.significance, reverse=True)
+                    self.life_story = self.life_story[:self.MAX_CHAPTERS]
+                    self.life_story.sort(key=lambda chapter: chapter.timestamp)
+                self._last_chapter = time.time()
+                self._narrative_stale = True
+                changed = True
+            self._current_arc = arc
+            self._last_arc_topic = topic
+            if not changed or self._save():
+                return True
+
+            self._current_arc = previous_arc
+            self._last_arc_topic = previous_topic
+            self.life_story = previous_story
+            self._last_chapter = previous_last_chapter
+            self._narrative_stale = previous_narrative_stale
+            return False
+
     def add_milestone(self, name: str, description: str) -> None:
         """Record a one-time milestone (first dream, 100th conversation, etc.)."""
         with self._lock:

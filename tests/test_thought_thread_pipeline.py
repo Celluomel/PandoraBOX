@@ -524,6 +524,29 @@ def test_narrative_arc_uses_internal_chapters_written_by_its_own_events(tmp_path
     assert arc
     assert "cognitive" in arc
     assert identity._current_arc == arc
+    reloaded = NarrativeIdentity(SimpleNamespace(), path=str(tmp_path / "identity.json"))
+    assert reloaded._current_arc == arc
+    assert reloaded._last_arc_topic == identity._last_arc_topic
+    assert writer._last_synthesis_receipt["status"] == "completed"
+    assert writer._last_synthesis_receipt["persisted"] is True
+
+
+def test_arc_state_and_pivot_roll_back_together_when_save_fails(tmp_path):
+    identity = NarrativeIdentity(SimpleNamespace(), path=str(tmp_path / "identity.json"))
+    assert identity.update_current_arc("prior arc", "prior") is True
+    prior_story = list(identity.life_story)
+    identity._save = lambda: False
+
+    assert identity.update_current_arc(
+        "new arc", "new", pivot_chapter={
+            "title": "My focus shifted to: new",
+            "description": "A new internal theme emerged.",
+            "significance": 0.7,
+        },
+    ) is False
+    assert identity._current_arc == "prior arc"
+    assert identity._last_arc_topic == "prior"
+    assert identity.life_story == prior_story
 
 
 def test_narrative_writer_retries_cde_chapter_after_persistence_failure():

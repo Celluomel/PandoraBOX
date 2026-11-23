@@ -104,7 +104,19 @@ class NarrativeArcWriter:
         self._last_arc_topic:    str       = ""
         self._last_arc_time:     float     = 0.0
         self._cycle             = 0
+        self._last_synthesis_receipt: Dict[str, Any] = {
+            "status": "not_run", "reason_code": "not_run",
+            "effect_status": "none", "global_chapter_count": 0,
+        }
         logger.info("[NAW] NarrativeArcWriter initialised")
+
+    def _set_synthesis_receipt(self, **receipt: Any) -> None:
+        self._last_synthesis_receipt = {
+            "status": str(receipt.pop("status", "unreported")),
+            "reason_code": str(receipt.pop("reason_code", "unreported")),
+            "effect_status": str(receipt.pop("effect_status", "none")),
+            **receipt,
+        }
 
     # ── 1. Thread resolution → chapter ───────────────────────────────────────
 
@@ -349,6 +361,10 @@ class NarrativeArcWriter:
         Stores arc on narrative_identity._current_arc for prompt injection.
         """
         if narrative_identity is None:
+            self._set_synthesis_receipt(
+                status="skipped_unavailable",
+                reason_code="narrative_identity_unavailable",
+            )
             return ""
 
         chapters = (
@@ -358,6 +374,10 @@ class NarrativeArcWriter:
                   if getattr(c, "scope", "interaction_context") == "global_internal"]
         )
         if not chapters:
+            self._set_synthesis_receipt(
+                status="no_effect", reason_code="no_global_internal_chapters",
+                global_chapter_count=0,
+            )
             return ""
 
         # Restore arc writer state from persisted narrative on first call
@@ -376,6 +396,10 @@ class NarrativeArcWriter:
                     word_freq[w] += 1
 
         if not word_freq:
+            self._set_synthesis_receipt(
+                status="no_effect", reason_code="no_tokenizable_chapter_text",
+                global_chapter_count=len(chapters),
+            )
             return ""
 
         # Top theme words
@@ -383,32 +407,20 @@ class NarrativeArcWriter:
                      if word_freq[w] >= ARC_MIN_CLUSTER_SIZE]
 
         if not top_words:
+            self._set_synthesis_receipt(
+                status="no_effect", reason_code="no_theme_reached_cluster_threshold",
+                global_chapter_count=len(chapters),
+                tokenizable_word_count=len(word_freq),
+            )
             return ""
 
         dominant_topic = top_words[0]
 
-        # Detect arc shift
-        arc_changed = dominant_topic != self._last_arc_topic
-        self._last_arc_time  = time.time()
-
-        if arc_changed and self._last_arc_topic:
-            # Record the arc pivot as a chapter
-            try:
-                narrative_identity.record_chapter(
-                    title       = f"My focus shifted to: {dominant_topic}",
-                    description = (
-                        f"My recent thinking has been circling around '{dominant_topic}'. "
-                        f"Before that, I was absorbed in '{self._last_arc_topic}'. "
-                        f"Something drew my attention in a new direction."
-                    ),
-                    emotion     = "curious",
-                    significance= SIG_ARC_PIVOT,
-                    scope       = "global_internal",
-                )
-            except Exception:
-                pass
-
-        self._last_arc_topic = dominant_topic
+        # Persist the arc, topic and optional pivot as one transaction.
+        previous_topic = self._last_arc_topic or getattr(
+            narrative_identity, "_last_arc_topic", ""
+        )
+        arc_changed = dominant_topic != previous_topic
 
         # Build arc string
         theme_str = ", ".join(top_words[:3])
@@ -418,11 +430,46 @@ class NarrativeArcWriter:
             f"the recurring themes have been: {theme_str}."
         )
 
-        # Store on narrative_identity for CognitivePreProcessor
+        update_arc = getattr(narrative_identity, "update_current_arc", None)
+        pivot_chapter = None
+        if arc_changed and previous_topic:
+            pivot_chapter = {
+                "title": f"My focus shifted to: {dominant_topic}",
+                "description": (
+                    f"My recent thinking has been circling around '{dominant_topic}'. "
+                    f"Before that, I was absorbed in '{previous_topic}'. "
+                    "Something drew my attention in a new direction."
+                ),
+                "emotion": "curious",
+                "significance": SIG_ARC_PIVOT,
+            }
         try:
-            narrative_identity._current_arc = arc
-        except Exception:
-            pass
+            persisted = bool(update_arc(
+                arc, dominant_topic, pivot_chapter=pivot_chapter,
+            )) if callable(update_arc) else False
+        except Exception as exc:
+            logger.warning("[NAW] Arc persistence failed: %s", type(exc).__name__)
+            persisted = False
+        if persisted:
+            self._last_arc_topic = dominant_topic
+            self._last_arc_time = time.time()
+            self._set_synthesis_receipt(
+                status="completed", reason_code="arc_synthesized",
+                effect_status="arc_persisted", persisted=True,
+                arc_changed=arc_changed, global_chapter_count=len(chapters),
+                tokenizable_word_count=len(word_freq),
+                clustered_theme_count=len(top_words),
+                pivot_chapter_count=int(pivot_chapter is not None),
+            )
+        else:
+            self._set_synthesis_receipt(
+                status="failed", reason_code="arc_persistence_failed",
+                effect_status="arc_not_updated", persisted=False,
+                arc_changed=arc_changed, global_chapter_count=len(chapters),
+                tokenizable_word_count=len(word_freq),
+                clustered_theme_count=len(top_words),
+                pivot_chapter_count=int(pivot_chapter is not None),
+            )
 
         logger.debug(f"[NAW] Arc: {arc!r}")
         return arc

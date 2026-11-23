@@ -660,6 +660,26 @@ class InternalThoughtLoop:
                         )
                         if isinstance(outcome_receipt, dict):
                             observed_output = outcome_receipt
+                    if __module == "narrative_arc_writer" and __method == "synthesise_arc":
+                        synthesis = getattr(
+                            __module_instance, "_last_synthesis_receipt", None
+                        )
+                        if isinstance(synthesis, dict):
+                            safe_fields = (
+                                "status", "reason_code", "effect_status", "persisted",
+                                "arc_changed", "global_chapter_count",
+                                "tokenizable_word_count", "clustered_theme_count",
+                                "pivot_chapter_count",
+                            )
+                            safe_receipt = {
+                                key: synthesis[key] for key in safe_fields
+                                if key in synthesis
+                            }
+                            observed_output = {
+                                **safe_receipt,
+                                "summary": safe_receipt,
+                                "arc_characters": len(output) if isinstance(output, str) else 0,
+                            }
                     self._module_tick_log.record(
                         __module, __method, started_at=started,
                         duration_ms=duration_ms,
