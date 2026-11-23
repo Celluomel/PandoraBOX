@@ -323,6 +323,27 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.deferred_turns[0][0][2], 'test-user')
             self.assertFalse(api._turn_lock.locked())
 
+    async def test_terminal_response_replaces_progressive_prefix_for_clients_and_learning(self):
+        class ReplacingPersona(Persona):
+            async def get_response_stream(self, text, **kwargs):
+                self.stream_kwargs = kwargs
+                yield 'A safe progressive sentence. '
+                yield {'__meta__': True, 'raw': 'Final approved response'}
+
+        self.runtime.persona = ReplacingPersona()
+        async with self.client() as client:
+            response = await client.post('/api/interface/chat', json={'text': 'Hello'})
+
+        events = [json.loads(line) for line in response.text.splitlines()]
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(events[1], {
+            'type': 'delta', 'turn_id': events[0]['turn_id'], 'seq': 2,
+            'text': 'A safe progressive sentence. ',
+        })
+        self.assertEqual(events[-1]['type'], 'done')
+        self.assertEqual(events[-1]['final_text'], 'Final approved response')
+        self.assertEqual(self.deferred_turns[0][0][1], 'Final approved response')
+
     async def test_debug_introspection_is_an_explicit_structured_capability(self):
         async with self.client() as client:
             response = await client.post('/api/interface/chat', json={

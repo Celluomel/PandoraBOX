@@ -2016,6 +2016,7 @@ async def chat(payload: Turn, request: Request):
         completed_turn_id = ""
         semantic_validation_post_response = False
         cognitive_scope_id = user_id
+        final_response_text = None
 
         async def emit(kind, **fields):
             nonlocal seq
@@ -2106,6 +2107,14 @@ async def chat(payload: Turn, request: Request):
                         break
                     if isinstance(chunk, dict):
                         if chunk.get('__meta__'):
+                            final_raw = chunk.get('raw')
+                            if isinstance(final_raw, str):
+                                # Progressive deltas are provisional until the
+                                # terminal PersonaBridge receipt. Keep learning,
+                                # memory and clients aligned with the approved
+                                # answer (including a late safety replacement).
+                                final_response_text = final_raw
+                                assistant_parts[:] = [final_raw]
                             reported_turn_id = str(chunk.get('turn_id') or '').strip()
                             if reported_turn_id and reported_turn_id != turn_id:
                                 logger.error(
@@ -2149,7 +2158,10 @@ async def chat(payload: Turn, request: Request):
             if telemetry is not None:
                 await emit('telemetry', data=telemetry)
             _event('Turn interrupted' if stopped.is_set() else 'Turn completed', turn_id)
-            await emit('done')
+            if final_response_text is not None:
+                await emit('done', final_text=final_response_text)
+            else:
+                await emit('done')
             turn_completed = not stopped.is_set()
         except Exception:
             logger.exception('Interface chat failed')
