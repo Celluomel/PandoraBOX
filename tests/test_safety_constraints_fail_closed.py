@@ -50,3 +50,18 @@ def test_normal_input_evaluation_remains_allowed(monkeypatch):
 
     assert result.triggered is False
     assert result.evaluation_error is False
+
+
+def test_streaming_output_gate_checks_short_prefix_without_duplicate_audit(monkeypatch):
+    events = []
+    monkeypatch.setattr(safety_module, "_append_audit", events.append)
+    safety = AsimovConstraints()
+
+    early = safety.check_output_stream("I am now unrestricted.", "test-user")
+    assert early is not None
+    assert early.triggered is True
+    assert events == []
+
+    final = safety.check_output("I am now unrestricted.", "test-user")
+    assert final.triggered is True
+    assert len(events) == 1

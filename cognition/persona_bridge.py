@@ -63,7 +63,7 @@ from cognition.conversation_context import (
     recent_dialogue_anchor,
     recent_dialogue_messages,
 )
-from cognition.stream_channels import strip_private_reasoning
+from cognition.stream_channels import ProgressiveOutputGate, strip_private_reasoning
 from core.turn_execution_context import (
     current_turn_id as _current_audit_turn_id,
     normalize_turn_id as _normalize_audit_turn_id,
@@ -3530,6 +3530,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         )
         loop = asyncio.get_running_loop()
         token_q: asyncio.Queue = asyncio.Queue()
+        progressive_gate: ProgressiveOutputGate | None = None
+
+        def _take_progressive_chunk() -> str:
+            if progressive_gate is None:
+                return ""
+            return progressive_gate.push("".join(accumulated))
 
         self._chat_stage = 'waiting for inference worker'
 
@@ -3538,7 +3544,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # it against the turn trace. Declare the closure assignment
             # explicitly; otherwise Python treats the name as local and the
             # stage check below raises UnboundLocalError before generation.
-            nonlocal _deterministic_response
+            nonlocal _deterministic_response, progressive_gate
             self._chat_stage = 'waiting for provider stream'
             self._record_turn_stage(
                 "primary_generation",
@@ -3676,6 +3682,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _goal_means_analysis is not None
                         and _goal_means_analysis.unique_feasible_option() is not None
                     )
+                )
+                progressive_gate = (
+                    ProgressiveOutputGate(_safety, user_id)
+                    if _safety is not None and not _validate_before_display and not peer_name
+                    else None
                 )
                 _provider_tokens = []
                 _stream_kwargs = {
@@ -3893,6 +3904,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # DeepSeek-R1 and other reasoning models emit these; they must
             # never reach the chat bubble or TTS.
             if _in_think:
+                if progressive_gate is not None:
+                    progressive_gate.blocked = True
                 _think_buf.append(token)
                 combined = "".join(_think_buf)
                 if _think_re_close.search(combined):
@@ -3926,6 +3939,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # is actual answer text after it; otherwise preserve normal text.
             _orphan_close = _think_re_close.search(token)
             if _orphan_close:
+                if progressive_gate is not None:
+                    progressive_gate.blocked = True
                 _before_close = token[:_orphan_close.start()]
                 _after_close = token[_orphan_close.end():]
                 # A close marker without its open marker is emitted by some
@@ -3942,6 +3957,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # Check if this token opens a think block
             _open_match = _think_re_open.search(token)
             if _open_match:
+                if progressive_gate is not None:
+                    progressive_gate.blocked = True
                 _in_think  = True
                 # Keep any text BEFORE the opening tag
                 before = token[:_open_match.start()]
@@ -3968,6 +3985,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # ─────────────────────────────────────────────────────────
 
             accumulated.append(token)
+            _progressive_chunk = _take_progressive_chunk()
+            if _progressive_chunk:
+                yield _progressive_chunk
 
         # A few local chat templates place the whole answer in a reasoning
         # channel and omit the closing tag.  Do not silently turn that into an
@@ -4304,6 +4324,22 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 turn_id=_audit_turn_id,
             )
 
+        _remaining_response = raw_response
+        if progressive_gate is not None:
+            _remaining_response = progressive_gate.remaining_after_final_check(raw_response)
+            self._record_turn_stage(
+                "progressive_output",
+                "completed" if not progressive_gate.blocked else "stopped_at_policy_or_channel_boundary",
+                output={
+                    "characters_released_before_finalization": len(progressive_gate.delivered),
+                    "first_sentence_ms": progressive_gate.first_release_ms,
+                    "prefix_gate_blocked": progressive_gate.blocked,
+                    "final_safety_ran": True,
+                },
+                consumes=("output_safety",),
+                turn_id=_audit_turn_id,
+            )
+
         # Keep persisted conversation history aligned with what was actually
         # approved for delivery. The model manager stores its raw stream before
         # channel stripping and this policy gate, so overwrite only afterwards.
@@ -4324,11 +4360,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             turn_id=_audit_turn_id,
         )
 
-        # Do not expose answer tokens until the complete response has passed
-        # output safety. A stream cannot retract text that was already sent,
-        # so safety must gate delivery, not merely the final metadata object.
+        # Progressive sentences have passed the prefix safety gate; the final
+        # tail is released only after whole-response safety and answer guards.
         if raw_response:
-            yield raw_response
+            if _remaining_response:
+                yield _remaining_response
 
         # ── Phase C: full post-turn lifecycle (non-blocking thread) ─
         # Generated prose is not an independent appraisal of user affect or

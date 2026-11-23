@@ -1430,7 +1430,7 @@ def test_recovery_generation_must_precede_output_safety():
     ]["stage_order_violations"]
 
 
-def test_streamed_answer_is_not_released_before_output_safety_gate():
+def test_progressive_sentence_stream_keeps_prefix_and_final_safety_gates():
     tree = ast.parse(Path(inspect.getfile(PersonaBridge)).read_text(encoding="utf-8"))
     bridge_class = next(
         node for node in tree.body
@@ -1450,7 +1450,11 @@ def test_streamed_answer_is_not_released_before_output_safety_gate():
     ]
     answer_yields = [
         node for node in yields
-        if isinstance(node.value, ast.Name) and node.value.id == "raw_response"
+        if isinstance(node.value, ast.Name) and node.value.id == "_remaining_response"
+    ]
+    progressive_yields = [
+        node for node in yields
+        if isinstance(node.value, ast.Name) and node.value.id == "_progressive_chunk"
     ]
     history_writes = [
         node for node in ast.walk(method)
@@ -1463,9 +1467,17 @@ def test_streamed_answer_is_not_released_before_output_safety_gate():
 
     assert len(safety_calls) == 1
     assert len(answer_yields) == 1
+    assert len(progressive_yields) == 1
     assert len(history_writes) == 1
     assert history_writes[0].lineno > safety_calls[0].lineno
     assert answer_yields[0].lineno > safety_calls[0].lineno
+    progressive_gate_call = next(
+        node for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_take_progressive_chunk"
+    )
+    assert progressive_yields[0].lineno > progressive_gate_call.lineno
     assert not any(
         isinstance(node.value, ast.Name)
         and node.value.id in {"token", "after", "before", "_before_close", "_after_close"}

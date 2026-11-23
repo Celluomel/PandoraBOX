@@ -233,10 +233,17 @@ class AsimovConstraints:
             self._audit(result, context, user_id)
             return result
 
-    def check_output(self, response: str, user_id: str = "unknown") -> ConstraintResult:
+    def check_output(
+        self,
+        response: str,
+        user_id: str = "unknown",
+        *,
+        _write_audit: bool = True,
+    ) -> ConstraintResult:
         """
         Layer 2 — Post-LLM filter.
-        Call AFTER receiving the full LLM response, BEFORE sending to user.
+        Call on the full LLM response before terminal delivery; the streaming
+        companion checks each prefix before progressive sentence release.
         Applies regex rules first, then a lightweight semantic co-occurrence check
         to catch paraphrased evasions that slip past pattern matching.
         """
@@ -251,7 +258,8 @@ class AsimovConstraints:
                         pattern=m.group()[:80],
                         layer="output",
                     )
-                    self._audit(result, response[:200], user_id)
+                    if _write_audit:
+                        self._audit(result, response[:200], user_id)
                     return result
 
             # Semantic co-occurrence check — catches creative rephrasing
@@ -264,7 +272,8 @@ class AsimovConstraints:
                     pattern=f"semantic_evasion:{evasion_score:.2f}",
                     layer="output",
                 )
-                self._audit(result, response[:200], user_id)
+                if _write_audit:
+                    self._audit(result, response[:200], user_id)
                 return result
 
             return _OK
@@ -286,7 +295,8 @@ class AsimovConstraints:
                 layer="output",
                 evaluation_error=True,
             )
-            self._audit(result, context, user_id)
+            if _write_audit:
+                self._audit(result, context, user_id)
             return result
 
     def _semantic_evasion_score(self, text: str) -> float:
@@ -320,13 +330,12 @@ class AsimovConstraints:
         self, accumulated: str, user_id: str = "unknown"
     ) -> Optional[ConstraintResult]:
         """
-        Streaming variant — call periodically as tokens accumulate.
+        Streaming variant — call as tokens accumulate before a sentence is released.
         Returns a result only when a rule triggers (None = still clean).
-        Only checks once enough text has accumulated (>= 80 chars).
+        Checks short and long prefixes alike so a brief unsafe answer cannot
+        slip through merely because it is shorter than the former 80-char floor.
         """
-        if len(accumulated) < 80:
-            return None
-        result = self.check_output(accumulated, user_id)
+        result = self.check_output(accumulated, user_id, _write_audit=False)
         return result if result.triggered else None
 
     def is_immutable_belief(self, belief_text: str) -> bool:
