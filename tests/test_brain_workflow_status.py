@@ -309,6 +309,37 @@ class BrainWorkflowStatusTests(unittest.TestCase):
             error_type="ProviderTimeout",
         )
 
+    def test_advisory_semantic_review_runs_only_after_response_scheduler(self):
+        persona = SimpleNamespace(
+            get_last_turn_trace=Mock(return_value={"turn_id": "turn-review", "cognitive_scope_id": "fred"}),
+            record_deferred_turn_stage=Mock(),
+            run_deferred_semantic_validation=Mock(return_value={"status": "completed"}),
+        )
+        state = AppState.__new__(AppState)
+        state.persona = persona
+        state._deferred_cognitive_tasks = set()
+        task = _CallbackTask()
+        captured = {}
+
+        def fake_to_thread(callback):
+            captured["callback"] = callback
+            return object()
+
+        with patch("core.state.asyncio.to_thread", new=Mock(side_effect=fake_to_thread)):
+            with patch("core.state.asyncio.create_task", new=Mock(return_value=task)):
+                scheduled = state.schedule_deferred_cognitive_stages(
+                    "How is the current goal progressing?", "It remains in progress.",
+                    "fred", 12, turn_id="turn-review", semantic_validation=True,
+                )
+
+        self.assertTrue(scheduled)
+        persona.run_deferred_semantic_validation.assert_not_called()
+        captured["callback"]()
+        persona.run_deferred_semantic_validation.assert_called_once_with(
+            "How is the current goal progressing?", "It remains in progress.",
+            "fred", turn_id="turn-review", reflection_epoch=12,
+        )
+
     def test_deferred_stage_updates_its_original_turn_after_a_new_turn_starts(self):
         bridge = PersonaBridge.__new__(PersonaBridge)
         bridge._turn_trace_lock = threading.Lock()
