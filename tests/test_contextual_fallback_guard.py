@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+from cognition.conversation_context import recent_dialogue_anchor
+from cognition.persona_bridge import PersonaBridge
 
 ROOT = Path(__file__).parents[1]
 
@@ -75,3 +77,19 @@ def test_empty_blocking_fallback_is_failed_before_any_success_finalization():
     assert "EmptyFallbackResponse" in guard_source
     assert "empty_fallback_response" in guard_source
     assert "_finish_turn_trace('failed', audit_turn_id)" in guard_source
+
+
+def test_conversation_context_helper_is_imported_and_callable():
+    history = [
+        {"role": "user", "content": "We are comparing organic and synthetic states."},
+        {"role": "assistant", "content": "The latter are computational variables."},
+    ]
+    excerpt, message_count = recent_dialogue_anchor(history, "And the first case?")
+    assert message_count == 2
+    assert "organic and synthetic states" in excerpt
+    assert "computational variables" in excerpt
+
+
+def test_local_camera_fallback_guard_resolves_at_runtime():
+    assert PersonaBridge._may_route_to_local_camera("Can you see me through the camera?")
+    assert not PersonaBridge._may_route_to_local_camera("How are you doing today?")

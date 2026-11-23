@@ -2838,7 +2838,7 @@ class PersonaBridge:
             if not _history_for_anchor:
                 _history_manager = getattr(self._llm_stream_fn, "__self__", None)
                 _history_for_anchor = getattr(_history_manager, "history", [])
-            _recent_anchor, _anchor_message_count = _recent_dialogue_anchor(
+            _recent_anchor, _anchor_message_count = recent_dialogue_anchor(
                 _history_for_anchor, effective_input,
             )
             if _recent_anchor:
@@ -8138,6 +8138,19 @@ Memory honesty — two distinct cases:
             normalized,
         )
         return bool(body_reference or direct_action)
+
+    @staticmethod
+    def _may_route_to_local_camera(text: str) -> bool:
+        """Identify camera-observation questions for context-safe fallback handling.
+
+        This is a conservative failure-path guard, not the semantic route
+        decision. The normal chat path still uses the cognitive intent router.
+        """
+        return bool(re.search(
+            r"\b(camera|caméra|vision|visual|image|picture|photo|face|visage|"
+            r"see|seeing|look|looking|vois|voir|vois-tu|regarde|reconnais|reconnaissance)\b",
+            str(text or "").casefold(),
+        ))
 
     @staticmethod
     def _is_factual_question_form(text: str) -> bool:
