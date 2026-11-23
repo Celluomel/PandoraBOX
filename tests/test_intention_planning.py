@@ -1613,6 +1613,32 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(result["text"], "A grounded internal observation.")
         self.assertEqual(len(calls), 1)
 
+    def test_explicit_foreground_judgment_can_run_during_chat_reservation(self):
+        calls = []
+
+        class _Provider:
+            model = "test-model"
+
+            def _generate_messages(self, messages, **kwargs):
+                calls.append((messages, kwargs))
+                return "YES"
+
+        manager = LLMManager.__new__(LLMManager)
+        manager.provider = _Provider()
+        manager.text_model = "test-model"
+        manager._provider_lock = threading.Lock()
+        manager._chat_active = threading.Event()
+        manager._chat_active.set()
+
+        result = manager.generate_bare_result(
+            "Need outside research?", "Answer only YES or NO.",
+            max_tokens=48, _allow_interactive_turn=True,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["text"], "YES")
+        self.assertEqual(len(calls), 1)
+
     def test_background_llm_recovers_empty_nonstream_completion_from_content_stream(self):
         class _Provider:
             model = "test-model"

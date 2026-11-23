@@ -8,12 +8,13 @@ def _bridge(classifier):
     return bridge
 
 
-def test_short_status_update_does_not_call_search_classifier():
+def test_short_status_update_is_decided_semantically_without_keyword_gate():
     calls = []
-    bridge = _bridge(lambda *args, **kwargs: calls.append((args, kwargs)) or "YES")
+    bridge = _bridge(lambda *args, **kwargs: calls.append((args, kwargs)) or "NO")
 
     assert bridge._llm_should_search("restarted") is False
-    assert calls == []
+    assert len(calls) == 1
+    assert "keyword lists" in calls[0][0][1]
 
 
 def test_explicit_short_research_request_reaches_classifier():
@@ -48,10 +49,10 @@ def test_internal_state_classifier_is_directed_to_use_runtime_evidence():
     assert bridge._llm_should_search(query) is False
     assert len(calls) == 1
     _, system, kwargs = calls[0]
-    assert "current internal state" in system
-    assert "supplied internal context" in system
-    assert "explicit request for external research" in system
-    assert kwargs["max_tokens"] == 5
+    assert "live state" in system
+    assert "keyword lists" in system
+    assert kwargs["max_tokens"] >= 32
+    assert kwargs["_allow_interactive_turn"] is True
 
 
 def test_architecture_topic_can_still_request_new_external_papers():
@@ -78,6 +79,26 @@ def test_architecture_topic_can_still_request_new_external_papers():
     assert "For requests for recent subject-matter facts or new papers, reply YES." in calls[0][1]
 
 
+def test_always_mode_semantically_excludes_greetings_but_searches_eligible_topics():
+    calls = []
+
+    def classifier(prompt, system, **kwargs):
+        calls.append((prompt, system, kwargs))
+        return "NO" if "re bonjour" in prompt else "YES"
+
+    bridge = _bridge(classifier)
+    assert bridge._llm_should_search(
+        "re bonjour Lumina", always_eligible_topics=True,
+    ) is False
+    assert bridge._llm_should_search(
+        "Explain recent findings on Angelman syndrome", always_eligible_topics=True,
+    ) is True
+    assert len(calls) == 2
+    assert all("meaning and context, not phrase matching" in call[1] for call in calls)
+    assert all("greets" in call[1] for call in calls)
+    assert all("re bonjour Lumina" in call[1] for call in calls)
+
+
 def test_classifier_failure_does_not_treat_generic_body_question_as_web_search():
     def unavailable(*args, **kwargs):
         raise RuntimeError("classifier unavailable")
@@ -85,6 +106,24 @@ def test_classifier_failure_does_not_treat_generic_body_question_as_web_search()
     bridge = _bridge(unavailable)
 
     assert bridge._llm_should_search("what is the body battery") is False
+
+
+def test_invalid_classifier_output_fails_closed_without_a_second_llm_call():
+    calls = []
+
+    def invalid(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ""
+
+    bridge = _bridge(invalid)
+    receipts = [{"query": "earlier search", "sources": [], "trace": {}}]
+
+    assert bridge._llm_should_search(
+        "What are the latest research results?", activity_receipts=receipts,
+    ) is False
+    assert len(calls) == 1
+    assert calls[0][1]["max_tokens"] >= 32
+    assert calls[0][1]["_allow_interactive_turn"] is True
 
 
 def test_explicit_per_turn_search_opt_out_overrides_always_mode_instruction():

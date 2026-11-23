@@ -7,7 +7,11 @@ from unittest.mock import Mock, patch
 
 from core.state import AppState
 from core.internal_loop import InternalThoughtLoop
-from cognition.persona_bridge import PersonaBridge, _research_result_grounding_instruction
+from cognition.persona_bridge import (
+    PersonaBridge,
+    _research_result_grounding_instruction,
+    _research_unavailable_response,
+)
 
 
 class _Task:
@@ -34,6 +38,16 @@ class BrainWorkflowStatusTests(unittest.TestCase):
         self.assertIn("Never invent paper titles", instruction)
         self.assertEqual(_research_result_grounding_instruction(True, "results_injected"), "")
         self.assertEqual(_research_result_grounding_instruction(False, "no_results"), "")
+
+    def test_empty_search_response_is_deterministic_and_does_not_name_sources(self):
+        french = _research_unavailable_response(
+            "Quelles sont les recherches récentes sur Angelman ?", "auto",
+        )
+        english = _research_unavailable_response("What are the latest findings?", "auto")
+        self.assertIn("aucune source exploitable", french)
+        self.assertIn("médias", french)
+        self.assertIn("a usable source", english)
+        self.assertIn("any outlet or paper", english)
 
     def test_search_activity_question_uses_receipt_instead_of_searching_web_again(self):
         bridge = PersonaBridge.__new__(PersonaBridge)

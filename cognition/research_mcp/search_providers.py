@@ -19,11 +19,10 @@ SOLUTION: Three tiers tried in order until results are found.
     BBC, Reuters, AP, Guardian, Hacker News, NYT, WSJ RSS
     Always works, no API key, perfect for "latest news" queries
 
-  TIER 3 — Stealth browser scraping  (last resort, arms-race but resilient)
-    DuckDuckGo + Bing with:
+  TIER 3 — Browser search fallback  (last resort)
+    DuckDuckGo + Bing are queried concurrently with:
     - playwright-stealth JS injection (navigator.webdriver spoofed)
-    - Random UA, viewport, timing
-    - Human-like scroll before extraction
+    - Random UA and viewport
     - Multiple selector fallback strategies
 
 CONFIG (set via /llm settings page or config.json):
@@ -36,6 +35,7 @@ import asyncio
 import contextvars
 import copy
 import datetime as _dt
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import math
 import random
@@ -331,23 +331,26 @@ def _rss(query: str, num: int, tag_hint: Optional[str] = None) -> List[dict]:
 
         terms = set(re.findall(r"[^\W_]{3,}", query.casefold(), flags=re.UNICODE))
         candidates = []
-        for feed in feeds:
-            trace = _SEARCH_TRACE.get()
-            feed_attempt = {
+        feed_attempts = [
+            {
                 "name": feed.name,
                 "tags": list(feed.tags),
                 "url": feed.url,
                 "status": "request_started",
             }
-            if isinstance(trace, dict):
-                trace.setdefault("feeds_attempted", []).append(feed_attempt)
+            for feed in feeds
+        ]
+        trace = _SEARCH_TRACE.get()
+        if isinstance(trace, dict):
+            trace.setdefault("feeds_attempted", []).extend(feed_attempts)
+
+        def _fetch_feed(feed):
             try:
                 r = _req.get(feed.url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
                 if r.status_code != 200:
-                    feed_attempt["status"] = f"http_{r.status_code}"
-                    continue
-                feed_attempt["status"] = "http_ok"
+                    return f"http_{r.status_code}", []
                 root  = ET.fromstring(r.content)
+                items = []
                 for item in root.findall(".//item")[:25]:
                     title = (item.findtext("title") or "").strip()
                     link  = (item.findtext("link")  or "").strip()
@@ -357,12 +360,21 @@ def _rss(query: str, num: int, tag_hint: Optional[str] = None) -> List[dict]:
                     tokens = set(re.findall(
                         r"[^\W_]{3,}", f"{title} {desc}".casefold(), flags=re.UNICODE
                     ))
-                    candidates.append((tokens, _r(title, link, desc[:300], src=f"rss_{feed.name}")))
-                registry.mark_used(feed.feed_id)
-                feed_attempt["status"] = "parsed"
+                    items.append((tokens, _r(title, link, desc[:300], src=f"rss_{feed.name}")))
+                return "parsed", items
             except Exception as exc:
-                feed_attempt["status"] = f"failed:{type(exc).__name__}"
-                continue
+                return f"failed:{type(exc).__name__}", []
+
+        # Independent feeds are fetched concurrently; query-level ranking and
+        # registry updates remain serialized and deterministic afterwards.
+        worker_count = max(1, min(12, len(feeds)))
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="rss-feed") as pool:
+            feed_results = list(pool.map(_fetch_feed, feeds))
+        for feed, feed_attempt, (status, items) in zip(feeds, feed_attempts, feed_results):
+            feed_attempt["status"] = status
+            candidates.extend(items)
+            if status == "parsed":
+                registry.mark_used(feed.feed_id)
         if not candidates:
             return []
         # Weight query terms by rarity across fetched feed items. This
@@ -517,14 +529,8 @@ async def _stealth_ddg(query: str, num: int) -> List[dict]:
         if context._stealth_fn:
             await context._stealth_fn(page)
         try:
-            await asyncio.sleep(random.uniform(0.5,1.2))
             await page.goto(f"https://duckduckgo.com/?q={quote_plus(query)}&kp=-1",
-                            timeout=18000, wait_until="domcontentloaded")
-            # Human-like: scroll, wait
-            await asyncio.sleep(random.uniform(1.5,2.8))
-            await page.mouse.move(random.randint(200,600), random.randint(200,400), steps=12)
-            await page.mouse.wheel(0, random.randint(300,600))
-            await asyncio.sleep(random.uniform(0.8,1.5))
+                            timeout=9000, wait_until="domcontentloaded")
 
             raw = await _extract_ddg(page, num+2)
             raw = [r for r in raw if r.get("url","").startswith("http") and not _is_blocked(r["url"])]
@@ -551,12 +557,8 @@ async def _stealth_bing(query: str, num: int) -> List[dict]:
         if context._stealth_fn:
             await context._stealth_fn(page)
         try:
-            await asyncio.sleep(random.uniform(0.4,1.0))
             await page.goto(f"https://www.bing.com/search?q={quote_plus(query)}",
-                            timeout=18000, wait_until="domcontentloaded")
-            await asyncio.sleep(random.uniform(1.5,2.5))
-            await page.mouse.wheel(0, random.randint(200,500))
-            await asyncio.sleep(random.uniform(0.5,1.0))
+                            timeout=9000, wait_until="domcontentloaded")
 
             raw = await page.evaluate("""
                 (num) => {
@@ -585,13 +587,30 @@ async def _stealth_bing(query: str, num: int) -> List[dict]:
 
 
 def _stealth(query: str, num: int) -> List[dict]:
-    """Run stealth DDG + Bing sequentially (sync wrapper)."""
+    """Query browser fallbacks concurrently and return their merged candidates."""
     try:
-        out = asyncio.run(_stealth_ddg(query, num))
-        if not out:
-            logger.info("DDG stealth empty → trying Bing stealth")
-            out = asyncio.run(_stealth_bing(query, num))
-        return out
+        async def _query_both():
+            return await asyncio.gather(
+                _stealth_ddg(query, num),
+                _stealth_bing(query, num),
+                return_exceptions=True,
+            )
+
+        results = asyncio.run(_query_both())
+        merged: list[dict] = []
+        seen: set[str] = set()
+        for provider_results in results:
+            if isinstance(provider_results, Exception):
+                logger.warning("Stealth provider failed: %s", type(provider_results).__name__)
+                continue
+            for result in provider_results or []:
+                url = str(result.get("url") or "")
+                if url and url not in seen:
+                    seen.add(url)
+                    merged.append(result)
+                    if len(merged) >= num:
+                        return merged
+        return merged
     except Exception as e:
         logger.error(f"Stealth search failed: {e}")
         return []

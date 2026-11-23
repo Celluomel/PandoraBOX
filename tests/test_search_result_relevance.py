@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
 from cognition.research_mcp import search_providers
@@ -113,3 +113,19 @@ def test_search_trace_records_an_arxiv_feed_query_even_without_a_matching_result
     assert trace["feeds_attempted"][0]["name"] == "arXiv-Biology"
     assert trace["feeds_attempted"][0]["status"] == "parsed"
     assert trace["started_at"] <= trace["completed_at"]
+
+
+def test_stealth_fallback_queries_both_engines_and_deduplicates_candidates():
+    ddg_result = {"title": "DDG result", "url": "https://example.test/shared"}
+    bing_result = {"title": "Bing result", "url": "https://example.test/shared"}
+    bing_unique = {"title": "Bing unique", "url": "https://example.test/bing"}
+    with patch.object(
+        search_providers, "_stealth_ddg", new=AsyncMock(return_value=[ddg_result]),
+    ) as ddg, patch.object(
+        search_providers, "_stealth_bing", new=AsyncMock(return_value=[bing_result, bing_unique]),
+    ) as bing:
+        results = search_providers._stealth("Angelman research", 5)
+
+    ddg.assert_awaited_once()
+    bing.assert_awaited_once()
+    assert results == [ddg_result, bing_unique]

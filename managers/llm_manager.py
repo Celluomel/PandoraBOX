@@ -754,6 +754,7 @@ class LLMManager:
         need that distinction so an occupied camera/chat model does not count
         as failed reasoning.
         """
+        allow_interactive_turn = bool(kwargs.pop("_allow_interactive_turn", False))
         kwargs.setdefault("max_tokens", 1000)
         messages: List[Dict] = []
         if system_prompt:
@@ -772,24 +773,33 @@ class LLMManager:
         # Proactive cognition must never compete with an active user turn.
         # Skipping is preferable to delaying the chat or filling its model
         # queue with an obsolete background thought.
-        if self._chat_active.is_set():
+        if self._chat_active.is_set() and not allow_interactive_turn:
             logger.debug("Deferring background LLM task during an interactive turn.")
             return {
                 "text": "",
                 "status": "deferred",
                 "reason": "interactive turn active",
             }
-        if not self._provider_lock.acquire(False):
-            logger.debug("Deferring background LLM task while the provider is busy.")
+        acquired = (
+            self._provider_lock.acquire(timeout=5.0)
+            if allow_interactive_turn
+            else self._provider_lock.acquire(False)
+        )
+        if not acquired:
+            logger.warning(
+                "Interactive auxiliary LLM judgment timed out waiting for the provider."
+                if allow_interactive_turn else
+                "Deferring background LLM task while the provider is busy."
+            )
             return {
                 "text": "",
                 "status": "deferred",
-                "reason": "provider busy",
+                "reason": "provider wait timed out" if allow_interactive_turn else "provider busy",
             }
         try:
             # Close the race where a user turn starts between the first marker
             # check and acquiring the provider lock.
-            if self._chat_active.is_set():
+            if self._chat_active.is_set() and not allow_interactive_turn:
                 return {
                     "text": "",
                     "status": "deferred",

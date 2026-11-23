@@ -68,19 +68,28 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
         turn_call_number = _sequence[turn_id]
     caller = "unknown"
     caller_file = ""
+    invocation_chain: list[str] = []
+    infrastructure_modules = {
+        __name__,
+        "managers.llm_manager",
+        type(instance).__module__,
+    }
     frame = inspect.currentframe()
     try:
         frame = frame.f_back if frame else None
         while frame:
             module = str(frame.f_globals.get("__name__", ""))
-            if module != __name__:
-                caller = f"{module}.{frame.f_code.co_name}"
+            if module not in infrastructure_modules and not module.startswith("managers.llm_manager."):
+                site = f"{module}.{frame.f_code.co_name}"
+                if len(invocation_chain) < 4:
+                    invocation_chain.append(site[:180])
+                if caller == "unknown":
+                    caller = site
                 caller_file = str(Path(frame.f_code.co_filename).resolve())
                 try:
                     caller_file = Path(caller_file).relative_to(ROOT).as_posix()
                 except ValueError:
                     caller_file = Path(caller_file).name
-                break
             frame = frame.f_back
     finally:
         del frame
@@ -94,6 +103,7 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
         "provider_method": method,
         "caller": caller[:180],
         "caller_file": caller_file[:120],
+        "invocation_chain": invocation_chain,
         "execution": "foreground_turn" if turn_id else "background_or_unattributed",
         "thread": threading.current_thread().name[:80],
         "prompt_chars": len(prompt),

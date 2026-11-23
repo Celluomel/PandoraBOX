@@ -811,8 +811,10 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             and isinstance(node.args[0], ast.Attribute)
             and node.args[0].attr == "_build_prompt_and_cache"
         )
-        self.assertIsInstance(prompt_call.args[-1], ast.Name)
-        self.assertEqual(prompt_call.args[-1].id, "_force_semantic_search_judgment")
+        self.assertFalse(any(
+            isinstance(node, ast.Name) and node.id == "_force_semantic_search_judgment"
+            for node in ast.walk(function)
+        ), "the search decision is semantic for every eligible turn, not forced only for architecture queries")
 
         prompt_builder = next(
             node for node in bridge_class.body

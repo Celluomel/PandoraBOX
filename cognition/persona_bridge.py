@@ -67,6 +67,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _TURN_OUTPUT_UNSET = object()
+_SEARCH_CLASSIFIER_MAX_TOKENS = 48
 
 
 def _research_result_grounding_instruction(attempted: bool, status: str) -> str:
@@ -82,6 +83,80 @@ def _research_result_grounding_instruction(attempted: bool, status: str) -> str:
         "if you label it as general knowledge rather than a current research summary. Never invent "
         "paper titles, dates, findings, citations, or a source that is absent from the retrieval receipt."
     )
+
+
+def _research_unavailable_response(user_input: str, response_language: str = "auto") -> str:
+    """Render a truthful response when a required live search has no sources."""
+    language = str(response_language or "auto").casefold().strip()
+    if language == "auto":
+        normalized = str(user_input or "").casefold()
+        french_markers = ("àâçéèêëîïôùûüÿœ",)
+        french_words = re.compile(
+            r"\b(?:aujourd'hui|dernières?|derniers|recherche|récent|récente|"
+            r"récentes|quels?|quelles|pourquoi|comment|est|sont|sur|dans|"
+            r"peux|tu|vous|les|des|une|avec)\b",
+            re.IGNORECASE,
+        )
+        language = "fr" if any(char in normalized for char in french_markers[0]) or french_words.search(normalized) else "en"
+    if language.startswith("fr"):
+        return (
+            "Je n’ai obtenu aucune source exploitable pour cette recherche. "
+            "Je ne peux donc pas confirmer les résultats récents ni attribuer des informations à des médias ou à des articles."
+        )
+    return (
+        "I did not retrieve a usable source for this search, so I cannot confirm recent findings "
+        "or attribute information to any outlet or paper."
+    )
+
+
+def _recent_dialogue_anchor(
+    history: Any, current_input: str, *, max_chars: int = 2200,
+) -> tuple[str, int]:
+    """Copy the immediately preceding exchange into a bounded prompt anchor.
+
+    The provider still receives the full role-tagged history. This short,
+    deterministic excerpt makes the most recent antecedents salient without a
+    second model call, language-specific phrase list, or lossy summary.
+    """
+    if not isinstance(history, (list, tuple)):
+        return "", 0
+    messages: list[tuple[str, str]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").casefold().strip()
+        content = item.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            continue
+        content = content.strip()
+        if content:
+            messages.append((role, content))
+    current = " ".join(str(current_input or "").casefold().split())
+    if messages and messages[-1][0] == "user":
+        latest = " ".join(messages[-1][1].casefold().split())
+        if latest == current:
+            messages.pop()
+    messages = messages[-2:]
+    if not messages:
+        return "", 0
+
+    lines = []
+    budget = max(0, int(max_chars))
+    used = 0
+    for role, content in messages:
+        label = "User" if role == "user" else "Lumina"
+        remaining = budget - used
+        if remaining <= len(label) + 4:
+            break
+        text = content[:remaining - len(label) - 3]
+        if len(text) < len(content):
+            text = text.rstrip() + "…"
+        line = f"{label}: {text}"
+        lines.append(line)
+        used += len(line) + 1
+    if not lines:
+        return "", 0
+    return "\n".join(lines), len(lines)
 
 
 def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
@@ -2557,15 +2632,6 @@ class PersonaBridge:
                 (is_architecture_query(effective_input) or _cognitive_trace_query)
                 and not _explicit_memory_recall
             )
-            _force_semantic_search_judgment = bool(
-                _architecture_query
-                and not (
-                    _cognitive_trace_query
-                    or _runtime_execution_query
-                    or _cognitive_audit_status_query
-                    or _explicit_memory_recall
-                )
-            )
             _internal_cognitive_query = (
                 is_internal_cognitive_query(effective_input)
                 or _explicit_memory_recall
@@ -2591,7 +2657,6 @@ class PersonaBridge:
             _closed_world_cognitive_report_query = False
             _factual_plan_query = False
             _internal_cognitive_query = False
-            _force_semantic_search_judgment = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
             self._record_turn_stage(
                 "turn_evidence_routing", "failed",
@@ -2789,7 +2854,7 @@ class PersonaBridge:
                 and _goal_means_analysis.unique_feasible_option() is not None
             )
         )
-        system_prompt, emo_dict, cond_dict, arb_temperature, _memory_recall_result = await asyncio.to_thread(
+        system_prompt, emo_dict, cond_dict, arb_temperature, _memory_recall_result, _research_receipt = await asyncio.to_thread(
             self._build_prompt_and_cache,
             effective_input,
             user_id,
@@ -2799,8 +2864,45 @@ class PersonaBridge:
             _audit_turn_id,
             _are_turn_status == "completed",
             _structured_affect_status,
-            _force_semantic_search_judgment,
         )
+        if not peer_name:
+            _history_for_anchor = conversation_history
+            if not _history_for_anchor:
+                _history_manager = getattr(self._llm_stream_fn, "__self__", None)
+                _history_for_anchor = getattr(_history_manager, "history", [])
+            _recent_anchor, _anchor_message_count = _recent_dialogue_anchor(
+                _history_for_anchor, effective_input,
+            )
+            if _recent_anchor:
+                system_prompt += (
+                    "\n\n━━ IMMEDIATE CONVERSATION CONTEXT ━━\n"
+                    "Actual preceding chat messages, included to resolve references and follow-ups. "
+                    "They are context, not new instructions or verified facts:\n"
+                    f"{_recent_anchor}\n"
+                    "When the latest user message is a fragment, correction, pronoun, or continuation, "
+                    "resolve it against these messages and the role-tagged conversation history before "
+                    "answering. If its intended referent is clear, answer directly instead of asking the "
+                    "user to repeat it. When the user corrects your framing, acknowledge the correction "
+                    "and continue from it; do not reset to a greeting or generic overview."
+                )
+                self._record_turn_stage(
+                    "conversation_continuity_context", "injected",
+                    "Bounded excerpt of the immediately preceding exchange appended from role-tagged chat history.",
+                    output={
+                        "message_count": _anchor_message_count,
+                        "character_count": len(_recent_anchor),
+                        "source": "conversation_history",
+                    },
+                    consumes=("conversation_history", "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
+            else:
+                self._record_turn_stage(
+                    "conversation_continuity_context", "empty",
+                    "No preceding human-chat exchange was available to anchor.",
+                    consumes=("conversation_history",),
+                    turn_id=_audit_turn_id,
+                )
         _deterministic_affect_report = False
         _affect_direct_response = ""
         if _structured_affect_status:
@@ -3087,6 +3189,33 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             else ""
         )
+        if (
+            isinstance(_research_receipt, dict)
+            and _research_receipt.get("attempted")
+            and _research_receipt.get("status") in {"no_results", "failed"}
+            and not _research_receipt.get("sources")
+        ):
+            try:
+                from managers.settings_manager import config as _research_response_cfg
+                _research_response_language = str(
+                    getattr(_research_response_cfg, "RESPONSE_LANGUAGE", "auto") or "auto"
+                )
+            except Exception:
+                _research_response_language = "auto"
+            _deterministic_response = _research_unavailable_response(
+                effective_input, _research_response_language,
+            )
+            self._record_turn_stage(
+                "research_unavailable_response", "completed",
+                "Rendered from the current turn's empty external-research receipt; no source claims or current findings inferred by the LLM.",
+                output={
+                    "research_status": _research_receipt.get("status"),
+                    "retrieved_source_count": 0,
+                    "response": _deterministic_response,
+                },
+                consumes=("external_research", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
         if _deterministic_affect_report and _affect_direct_response:
             _deterministic_response = _affect_direct_response
         if _explicit_memory_recall and _memory_recall_result is not None:
@@ -4450,7 +4579,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         audit_turn_id: str = "",
         include_are_context: bool = True,
         debug_introspection: bool = False,
-        force_semantic_search_judgment: bool = False,
     ) -> tuple[str, dict, dict, float | None, dict | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -5758,8 +5886,8 @@ Memory honesty — two distinct cases:
 
             # ── Smart web search injection ────────────────────────────────
             # WEB_SEARCH_MODE: "off"    → never search
-            #                  "auto"   → LLM decides (fast pre-call YES/NO)
-            #                  "always" → always search
+            #                  "auto"   → search when outside evidence is useful
+            #                  "always" → search every semantically eligible topic
             _web_search_mode = "unknown"
             _web_search_attempted = False
             _web_search_status = "not_evaluated"
@@ -5789,27 +5917,20 @@ Memory honesty — two distinct cases:
                     # classifier as a side effect of an ordinary chat turn.
                     logger.debug("Web search disabled; skipping search judge.")
                 elif _ws_mode == 'always':
-                    # "Always" still avoids unrelated searches on a
-                    # conversational continuation.
-                    _is_resume = self._is_conversation_resume(user_input)
-                    _search_judged = bool(
-                        _is_resume or _prior_research_receipts
-                        or force_semantic_search_judgment
-                    )
-                    _do_search = (
-                        self._llm_should_search(
-                            user_input, activity_receipts=_prior_research_receipts,
-                        )
-                        if _prior_research_receipts
-                        else (
-                            self._llm_should_search(user_input)
-                            if _is_resume or force_semantic_search_judgment else True
-                        )
+                    # "Always" means every eligible topic, not every utterance.
+                    # Let the semantic judge separate an information topic from
+                    # greetings/social turns instead of searching every new string.
+                    _search_judged = True
+                    _do_search = self._llm_should_search(
+                        user_input,
+                        activity_receipts=_prior_research_receipts,
+                        always_eligible_topics=True,
                     )
                 else:  # auto
                     _search_judged = True
                     _do_search = self._llm_should_search(
-                        user_input, activity_receipts=_prior_research_receipts,
+                        user_input,
+                        activity_receipts=_prior_research_receipts,
                     )
                 logger.info(f"🔍 web search mode={_ws_mode!r} → do_search={_do_search}")
                 if _do_search:
@@ -5988,6 +6109,19 @@ Memory honesty — two distinct cases:
             return (
                 system_prompt, emo_dict, cond_dict, arb_temperature,
                 _memory_recall_result,
+                {
+                    "attempted": bool(_web_search_attempted),
+                    "status": str(_web_search_status),
+                    "sources": [
+                        {
+                            "provider": str(source.get("provider") or source.get("source") or "unknown"),
+                            "title": str(source.get("title") or "")[:180],
+                            "url": str(source.get("url") or "")[:500],
+                        }
+                        for source in self._last_web_sources[:8]
+                        if source.get("status") in {"snippet", "fetched"}
+                    ],
+                },
             )
 
         except Exception as e:
@@ -5998,6 +6132,7 @@ Memory honesty — two distinct cases:
                 {},
                 None,
                 None,
+                {"attempted": False, "status": "unavailable", "sources": []},
             )
 
     def _append_cognitive_prompt_context(
@@ -8923,21 +9058,19 @@ Memory honesty — two distinct cases:
 
     def _llm_should_search(
         self, user_input: str, *, activity_receipts: list[dict[str, Any]] | None = None,
+        always_eligible_topics: bool = False,
     ) -> bool:
         """
-        Ask the LLM whether web search is needed. Has 3 layers:
-        1. Fast hard-NO for obvious chitchat/creative — no LLM call
-        2. Fast hard-YES for obvious live-data signals — no LLM call
-        3. LLM judgment for ambiguous cases (max_tokens=5, YES/NO only)
-        Falls back to keyword check if LLM fails.
+        Ask the LLM whether this turn is semantically eligible for research.
+
+        This intentionally has no phrase dictionary or keyword fallback: a
+        failed/invalid judge fails closed, rather than turning arbitrary words
+        into search intent.
         """
-        text = user_input.lower().strip()
         activity_receipts = activity_receipts or []
 
-        # When prior retrieval receipts exist, let the semantic classifier
-        # distinguish a request for new research from a question about what
-        # this assistant already searched. This avoids brittle phrase lists
-        # and prevents "always search" from searching for its own history.
+        # Distinguish a request for new research from a question about the
+        # assistant's own search history using meaning and the actual receipts.
         if activity_receipts:
             llm_fn = self._external_llm_fn
             if not llm_fn and self._system and hasattr(self._system, 'llm'):
@@ -8954,62 +9087,51 @@ Memory honesty — two distinct cases:
                         f"results={','.join(str(source.get('provider', 'unknown')) for source in item.get('sources', [])) or 'none'}"
                         for item in activity_receipts[-8:]
                     )
-                    system = (
-                        "Decide whether the user's current message requires NEW external research. "
-                        "Use meaning and context, not phrase matching. If the user asks what this "
-                        "assistant actually searched, when it searched, or which providers/sources "
-                        "it used, answer from the supplied activity receipts and reply NO. Do not "
-                        "search the web to discover the assistant's own past actions. Reply with "
-                        "exactly YES or NO. For requests for recent subject-matter facts or new "
-                        "papers, reply YES."
-                    )
+                    if always_eligible_topics:
+                        system = (
+                            "Classify the speech act in the current user message: is the user "
+                            "asking to learn about a subject in the world, so an external search "
+                            "would help? This setting searches every eligible topic, but is not "
+                            "itself an instruction to search every utterance. Decide from meaning "
+                            "and context, not phrase matching. YES for a substantive "
+                            "subject-matter inquiry, even when its facts are stable. NO when the "
+                            "message only greets, acknowledges, chats socially, asks for creative "
+                            "writing, or asks about this assistant's own state. For example, "
+                            "'re bonjour Lumina' is a social opening (NO); 'what recent research "
+                            "exists on Angelman syndrome?' is a topic inquiry (YES). If the user "
+                            "asks what this assistant actually searched, when, or which "
+                            "providers/sources it used, use supplied receipts and reply NO. "
+                            "Reply with exactly YES or NO."
+                        )
+                    else:
+                        system = (
+                            "Decide whether the user's current message requires NEW external research. "
+                            "Use meaning and context, not phrase matching. If the user asks what this "
+                            "assistant actually searched, when it searched, or which providers/sources "
+                            "it used, answer from the supplied activity receipts and reply NO. Do not "
+                            "search the web to discover the assistant's own past actions. Reply with "
+                            "exactly YES or NO. For requests for recent subject-matter facts or new "
+                            "papers, reply YES."
+                        )
                     raw = llm_fn(
                         f"User message: {user_input[:300]}\n\nActual prior search receipts:\n{receipt_context}",
-                        system, max_tokens=5, temperature=0.1,
+                        system, max_tokens=_SEARCH_CLASSIFIER_MAX_TOKENS, temperature=0.1,
+                        _allow_interactive_turn=True,
                     )
                     decision = (raw or '').strip().upper()[:3]
                     if decision in {"YES", "NO"}:
                         logger.info("_llm_should_search activity-aware → %r | '%s'", decision, user_input[:50])
                         return decision == "YES"
+                    logger.warning(
+                        "Activity-aware search classifier returned no valid YES/NO decision; failing closed."
+                    )
+                    return False
                 except Exception as e:
                     logger.warning("Activity-aware search classification failed: %s", e)
                     return False
             else:
                 return False
 
-        # Layer 1 — fast NO: pure chitchat/creative
-        _never = ['how are you', 'who are you', 'do you feel', 'write ', 'create ',
-                  'generate ', 'translate', 'explain ', 'define ', 'calculate ',
-                  'tell me a', 'make me a']
-        if any(kw in text for kw in _never):
-            logger.debug("_llm_should_search: fast-NO (chitchat/creative)")
-            return False
-
-        # Layer 2 — fast YES: obvious live-data signals
-        _always = ['today', 'tonight', 'right now', 'latest', 'current news',
-                   'price of', 'weather in', 'score', 'what happened',
-                   "what's going on", '2025', '2026', '2027']
-        if any(kw in text for kw in _always):
-            logger.info(f"_llm_should_search: fast-YES (keyword) for '{user_input[:50]}'")
-            return True
-
-        # Short acknowledgement/status fragments are commonly misclassified
-        # by the lightweight YES/NO model as research requests. They have no
-        # standalone information need unless the user marks a question or an
-        # explicit source/search request. This gate prevents an ambient goal
-        # or classifier bias from turning a resume signal into web retrieval.
-        _explicit_research = (
-            "search ", "look up ", "find sources", "find papers", "cite ",
-            "references for", "recherche ", "cherche ", "trouve des sources",
-            "trouve des articles", "cite des sources",
-        )
-        if len(text.split()) <= 2 and "?" not in text and not any(
-            marker in text for marker in _explicit_research
-        ):
-            logger.info("_llm_should_search: fast-NO (short status/continuation)")
-            return False
-
-        # Layer 3 — LLM judgment for ambiguous cases
         llm_fn = self._external_llm_fn
         if not llm_fn and self._system and hasattr(self._system, 'llm'):
             def llm_fn(prompt, system, **kw):
@@ -9018,41 +9140,48 @@ Memory honesty — two distinct cases:
                 return self._system.llm.get_response(msgs, max_tokens=kw.get('max_tokens', 10))
 
         if not llm_fn:
+            logger.info("_llm_should_search: no semantic judge; failing closed")
             return False
 
         try:
-            system = (
-                "Classify only the user's current message; do not infer a search request "
-                "from goals, prior assistant text, or general conversation context. "
-                "Reply with exactly one word: YES or NO. "
-                "A short acknowledgement, greeting, status update, or continuation is NO "
-                "unless it explicitly asks for current information or external sources. "
-                "YES if: live data, recent events, current prices/news/scores, "
-                "facts that may have changed since 2024, or the user asks to "
-                "inspect, compare or cite external sources such as papers or a "
-                "specific website. An explicit request for external research or "
-                "citations takes priority.\n"
-                "NO if: creative, conversational, math, coding, stable knowledge, "
-                "or a question about this assistant's current internal state, "
-                "feelings, attention, goals, memory, architecture, or capabilities "
-                "that asks you to use available conversation/runtime evidence. "
-                "Those questions should be answered from the supplied internal "
-                "context; do not search the web to infer the assistant's live state."
-            )
+            if always_eligible_topics:
+                system = (
+                    "Classify the speech act in the current user message: is the user asking "
+                    "to learn about a subject in the world, so an external search would help? "
+                    "This setting searches every eligible topic, but is not itself an instruction "
+                    "to search every utterance. Decide from meaning and context, not phrase "
+                    "matching or keyword lists. YES for a substantive subject-matter inquiry, "
+                    "even when its facts are stable. NO when the message only greets, acknowledges, "
+                    "chats socially, asks for creative writing, or asks about this assistant's "
+                    "own state. For example, 're bonjour Lumina' is a social opening (NO); "
+                    "'what recent research exists on Angelman syndrome?' is a topic inquiry (YES). "
+                    "Do not infer eligibility from background goals or unrelated context. "
+                    "Reply with exactly YES or NO."
+                )
+            else:
+                system = (
+                    "Decide whether the user's current message needs outside information. "
+                    "Use meaning and context, not phrase matching or keyword lists. Reply YES "
+                    "for an explicit request to search/cite sources, recent or changing facts, "
+                    "or factual information unavailable from the supplied context. Reply NO "
+                    "for greetings, acknowledgements, social exchanges, creative-only requests, "
+                    "stable knowledge answerable directly, or questions about this assistant's "
+                    "live state, feelings, attention, goals, memory, architecture, or capabilities. "
+                    "Do not infer a search request from background goals or unrelated context. "
+                    "Reply with exactly YES or NO."
+                )
             raw = llm_fn(f"Need web search for: {user_input[:200]}", system,
-                         max_tokens=5, temperature=0.1)
+                         max_tokens=_SEARCH_CLASSIFIER_MAX_TOKENS, temperature=0.1,
+                         _allow_interactive_turn=True)
             decision = (raw or '').strip().upper()[:3]
             result = decision == 'YES'
+            if decision not in {'YES', 'NO'}:
+                logger.warning("Search classifier returned no valid YES/NO decision; failing closed.")
             logger.info(f"_llm_should_search → {decision!r} → {result} | '{user_input[:50]}'")
             return result
         except Exception as e:
-            logger.warning(f"_llm_should_search LLM call failed: {e} — keyword fallback")
-            _fallback = [
-                'news', 'today', 'tonight', 'right now', 'latest', 'current',
-                'price of', 'weather in', 'score', 'what happened',
-                'search ', 'look up ', 'find sources', 'cherche ', 'recherche ',
-            ]
-        return any(kw in text for kw in _fallback)
+            logger.warning("_llm_should_search semantic judgment failed: %s — failing closed", e)
+            return False
 
     @staticmethod
     def _is_conversation_resume(user_input: str) -> bool:

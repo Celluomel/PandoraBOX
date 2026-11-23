@@ -1142,8 +1142,9 @@ def test_exact_filename_recall_result_crosses_prompt_worker_boundary():
     assert len(worker_assignments) == 1
     target = worker_assignments[0].targets[0]
     assert isinstance(target, ast.Tuple)
-    assert isinstance(target.elts[-1], ast.Name)
-    assert target.elts[-1].id == "_memory_recall_result"
+    target_names = [item.id for item in target.elts if isinstance(item, ast.Name)]
+    assert "_memory_recall_result" in target_names
+    assert target_names[-1] == "_research_receipt"
 
 
 def test_deferred_profile_and_post_turn_stages_keep_originating_turn_id():
