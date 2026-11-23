@@ -4848,6 +4848,14 @@ La lecture en mode non mutatif du fichier réel reproduit la séparation attendu
 
 **Limites et suite :** le test nécessite le prochain chargement du code pour prouver que les appels live sont effectivement réduits sur les deux scénarios. Le tour thématique doit toujours montrer son appel post-réponse attribué; les tours social et retrieval doivent avoir zéro appel SemanticExtractor. L’autre appel provider sans origine de module explicite reste à attribuer, donc le nombre total d’appels pour un tour ordinaire n’est pas encore expliqué. Score global inchangé à **3/10 (30 %)** : correction locale vérifiée, piste non close avant les scénarios live et l’analyse de leurs effets aval.
 
+### 23 novembre — décision locale de routage Jev-like
+
+**Contrainte précisée :** l’orientation amont doit fonctionner localement, sans dépendance à une API cloud. Le Jev TypeSafe exact ne répond pas à cette contrainte : il n’existe pas de poids publics installables; le client/SDK appelle un endpoint hébergé. Un modèle « Jev-like » local est possible, mais il faut le distinguer du produit Jev.
+
+**Candidat local évalué :** Laya publie un moteur de décisions typées et un dépôt Apache-2.0, compatible avec une inférence locale; il n’est pas installé dans le venv du projet (`pip show laya` : absent; PyTorch est présent). Les résultats publiés par son propre dépôt signalent que les checkpoints génériques non fine-tunés sont proches du hasard sur leur jeu `typed-decisions` (0,362 contre 0,461 pour la classe majoritaire); les meilleurs résultats viennent d’un checkpoint fine-tuné. Il ne faut donc pas le brancher en zéro-shot comme arbitre de recherche/mémoire/identité. OpenJev est aussi téléchargeable localement, mais ses poids 27B BF16 et sa licence CC BY-NC 4.0 le rendent moins adapté à une dépendance par défaut.
+
+**Décision d’ingénierie :** ne pas remplacer l’actuel routeur par un nouvel appel modèle et ne pas confondre Nomic, un encodeur de similarité, avec un décideur typé. Le prochain essai local doit comparer Laya spécialisé ou un score local d’embeddings aux cas de routage réellement représentatifs, inclure « aucun outil », mesurer précision/abstention, permutation des libellés, latence et charge mémoire, puis laisser le modèle conversationnel répondre. Aucun routeur local n’est encore intégré ni validé. Cela reste une piste d’évaluation dans l’audit principal, pas une piste clôturée.
+
 ### 23 novembre — rappel générique par proposition relative
 
 **Cause du faux négatif :** le routeur source-backed reconnaissait quelques formulations explicites, dont « on a parlé » et « what have we discussed about », mais pas la structure française courante « rappelle-moi [sujet] dont nous avons parlé ». `explicit_recall=false` laissait donc la recherche de souvenirs dans son parcours générique; le modèle pouvait recevoir des épisodes voisins sans le contrat de rappel exact.
