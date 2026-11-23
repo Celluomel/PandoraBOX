@@ -172,6 +172,7 @@ class CognitiveGovernor:
         # Hysteresis: how many cycles must pass before switching modes
         self._mode_switch_cooldown = 3
         self._cycles_in_current_mode = 0
+        self._mode_initialized = False
 
         logger.info("[Governor] CognitiveGovernor initialised — mode=structured")
 
@@ -201,19 +202,33 @@ class CognitiveGovernor:
         self._pressure_source = str(pressure_source or "provided")[:40]
         self._this_cycle_run.clear()
         self._this_cycle_blocked.clear()
-        self._cycles_in_current_mode += 1
-
-        # ── Mode determination (with hysteresis) ──────────────────────────────
+        # Establish the initial mode from the first live pressure/goal sample.
+        # Hysteresis is for transitions between observed modes; applying it
+        # against the constructor's placeholder "structured" mode delayed
+        # autonomous goal generation for three full slow cycles after every
+        # process start.
         new_mode = self._compute_mode()
-        if new_mode != self.mode:
-            if self._cycles_in_current_mode >= self._mode_switch_cooldown:
-                old_mode = self.mode
-                self.mode = new_mode
-                self._cycles_in_current_mode = 0
-                logger.info(
-                    f"[Governor] Mode switch: {old_mode} → {new_mode} "
-                    f"(pressure={self._pressure:.2f}, goals={self._goal_count})"
-                )
+        if not self._mode_initialized:
+            self.mode = new_mode
+            self._mode_initialized = True
+            self._cycles_in_current_mode = 0
+            logger.info(
+                "[Governor] Initial mode established: %s "
+                "(pressure=%.2f, goals=%d)",
+                self.mode, self._pressure, self._goal_count,
+            )
+        elif new_mode == self.mode:
+            self._cycles_in_current_mode += 1
+        elif self._cycles_in_current_mode + 1 >= self._mode_switch_cooldown:
+            old_mode = self.mode
+            self.mode = new_mode
+            self._cycles_in_current_mode = 0
+            logger.info(
+                f"[Governor] Mode switch: {old_mode} → {new_mode} "
+                f"(pressure={self._pressure:.2f}, goals={self._goal_count})"
+            )
+        else:
+            self._cycles_in_current_mode += 1
 
         # ── Budget ────────────────────────────────────────────────────────────
         if self._pressure > self.HIGH_PRESSURE_THRESHOLD:

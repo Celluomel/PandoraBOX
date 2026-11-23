@@ -37,6 +37,24 @@ def test_terminal_goal_does_not_permanently_block_topic_after_cooldown(tmp_path)
     assert reloaded.add_goal(candidates[0]) is True
 
 
+def test_legacy_terminal_record_without_cooldown_can_reenter(tmp_path):
+    engine = _engine(tmp_path)
+    topic = "understand grounded memory retrieval"
+    engine._goals["legacy-goal"] = Goal(
+        id="legacy-goal", topic=topic, origin="explore", priority=0.7,
+        energy=0.2, created_cycle=1, last_active=20, status="completed",
+    )
+
+    candidates = engine.generate_candidates(
+        [Motivation(name="explore", strength=0.7, origin="test")],
+        [topic],
+        limit=1,
+    )
+
+    assert len(candidates) == 1
+    assert engine.add_goal(candidates[0]) is True
+
+
 def test_live_goal_and_unexpired_cooldown_still_suppress_reentry(tmp_path):
     engine = _engine(tmp_path)
     topic = "understand grounded memory retrieval"

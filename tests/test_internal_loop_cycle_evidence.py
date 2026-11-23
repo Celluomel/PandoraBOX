@@ -846,7 +846,14 @@ def test_low_pressure_and_four_live_goals_allow_governor_to_leave_structured_mod
         }
     ))
 
-    for cycle in range(1, 4):
+    snapshot = governor.begin_cycle(
+        total_pressure=0.2453,
+        goal_count=live_goal_count,
+        cycle_number=1,
+    )
+    assert governor.mode == CognitiveGovernor.MODE_EXPLORATORY
+    assert governor.may_run("GoalEngine") is True
+    for cycle in range(2, 4):
         snapshot = governor.begin_cycle(
             total_pressure=0.2453,
             goal_count=live_goal_count,
@@ -860,6 +867,19 @@ def test_low_pressure_and_four_live_goals_allow_governor_to_leave_structured_mod
     assert snapshot["total_pressure"] == 0.2453
     assert snapshot["cycle"] == 3
     assert governor.may_run("Phase2Narrative") is True
+
+
+def test_governor_initializes_exploratory_mode_immediately_when_goal_pool_is_empty():
+    governor = CognitiveGovernor()
+
+    snapshot = governor.begin_cycle(
+        total_pressure=0.21596,
+        goal_count=0,
+        cycle_number=13426,
+    )
+
+    assert snapshot["mode"] == CognitiveGovernor.MODE_EXPLORATORY
+    assert governor.may_run("GoalEngine") is True
 
 
 def test_governor_cycle_snapshot_is_auditable_without_prose_or_private_state():

@@ -1707,13 +1707,7 @@ class GoalEngine:
             logger.debug(f"[GoalEngine] tick skipped (cooldown: {_now-_last:.0f}s)")
             return
         self._last_tick_time = _now
-        # Rebuild cooldown state from terminal records after process restart.
-        # This preserves the existing cooldown policy without treating old
-        # completed/archived goals as permanent duplicates.
         self._recently_abandoned = getattr(self, "_recently_abandoned", {})
-        for goal in self._goals.values():
-            if goal.status in {"completed", "abandoned", "archived", "merged", "low_quality"}:
-                self._recently_abandoned.setdefault(goal.topic.casefold(), _now)
         metrics = {}
         filtered_topics = []
         motivations = []
