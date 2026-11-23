@@ -235,6 +235,9 @@ def record_goal_completion(
         except Exception as e:
             logger.debug("[Completion] goal_engine.complete_goal failed: %s" % e)
     if not wrote and dal is not None and hasattr(dal, "save_goal"):
+        missing = object()
+        original_status = _gget(goal, "status", missing)
+        original_completion = _gget(goal, "completion", missing)
         try:
             # Mark the goal completed in its own representation (dict or
             # object) so the persisted record reflects the completion.
@@ -250,6 +253,31 @@ def record_goal_completion(
             wrote = dal.save_goal(goal) is True
         except Exception as e:
             logger.debug("[Completion] dal.save_goal failed: %s" % e)
+        if not wrote:
+            # A failed persistence receipt must not leave a completed-looking
+            # object in the caller's in-memory goal pool. GQF and other callers
+            # continue processing that same object after this function returns.
+            if isinstance(goal, dict):
+                if original_status is missing:
+                    goal.pop("status", None)
+                else:
+                    goal["status"] = original_status
+                if original_completion is missing:
+                    goal.pop("completion", None)
+                else:
+                    goal["completion"] = original_completion
+            else:
+                for field, original in (
+                    ("status", original_status),
+                    ("completion", original_completion),
+                ):
+                    try:
+                        if original is missing:
+                            delattr(goal, field)
+                        else:
+                            setattr(goal, field, original)
+                    except Exception:
+                        pass
 
     if not wrote:
         logger.warning("[Completion] persistence did not confirm goal completion: %s", gid)

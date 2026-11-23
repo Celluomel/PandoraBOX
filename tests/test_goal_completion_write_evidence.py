@@ -29,14 +29,32 @@ def test_completion_does_not_claim_or_narrate_when_engine_rejects_write():
 def test_completion_requires_dal_to_confirm_persistence_before_narrative():
     narrative = _Narrative()
     dal = SimpleNamespace(save_goal=lambda _goal: False)
+    goal = {
+        "id": "goal-2", "topic": "cognitive integrity", "origin": "autonomous",
+        "status": "active", "completion": 0.25,
+    }
     with patch("cognition.goal_completion.get_narrative_identity", return_value=narrative):
         result = record_goal_completion(
-            {"id": "goal-2", "topic": "cognitive integrity", "origin": "autonomous"},
+            goal,
             dal=dal,
         )
 
     assert result is False
+    assert goal["status"] == "active"
+    assert goal["completion"] == 0.25
     assert narrative.chapters == []
+
+
+def test_completion_dal_failure_restores_object_state():
+    goal = SimpleNamespace(
+        id="goal-object-failure", topic="cognitive integrity", origin="autonomous",
+        status="dormant", completion=0.4,
+    )
+    dal = SimpleNamespace(save_goal=lambda _goal: False)
+
+    assert record_goal_completion(goal, dal=dal) is False
+    assert goal.status == "dormant"
+    assert goal.completion == 0.4
 
 
 def test_completion_narrative_follows_confirmed_engine_write():
