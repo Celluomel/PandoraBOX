@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from cognition.goal_engine import Goal, GoalEngine
 from cognition.goal_quality_filter import GoalQualityFilter
@@ -113,6 +114,64 @@ def test_archived_and_merged_history_does_not_exhaust_live_goal_capacity(tmp_pat
     assert persisted["archived-1"] == history["archived-1"]
     assert persisted["merged-1"] == history["merged-1"]
     assert "new-1" in persisted
+
+
+def test_tick_admits_persists_and_activates_goal_with_terminal_history_present(tmp_path):
+    path = tmp_path / "goals.json"
+    history = {
+        f"archived-{index}": {
+            "id": f"archived-{index}", "topic": f"old archived goal {index}",
+            "origin": "test", "priority": 0.2, "energy": 0.1,
+            "created_cycle": 1, "last_active": 1, "status": "archived",
+        }
+        for index in range(21)
+    }
+    history.update({
+        f"merged-{index}": {
+            "id": f"merged-{index}", "topic": f"old merged goal {index}",
+            "origin": "test", "priority": 0.2, "energy": 0.1,
+            "created_cycle": 1, "last_active": 1, "status": "merged",
+        }
+        for index in range(4)
+    })
+    path.write_text(json.dumps({"cycle_counter": 1, "goals": history}), encoding="utf-8")
+
+    engine = GoalEngine(
+        SimpleNamespace(
+            identity_system=SimpleNamespace(get_identity=lambda: {}),
+            _organism=SimpleNamespace(
+                semantic_memory=SimpleNamespace(recent_user_topics=lambda **_kwargs: []),
+                curiosity=None,
+            ),
+        ),
+        persistence_file=str(path),
+    )
+    engine.derive_motivations = lambda _identity, _pressures: [
+        SimpleNamespace(name="understand_user", strength=0.8, origin="test")
+    ]
+    engine.get_current_pressures = lambda: {}
+
+    with patch(
+        "cognition.goal_semantics.batch_topic_quality",
+        side_effect=lambda topics: {
+            topic: (0.8, 0.2, True) for topic in topics
+        },
+    ):
+        engine.tick()
+
+    report = engine.get_last_tick_report()
+    assert report["candidate_count"] == 3
+    assert report["accepted_candidate_count"] == 3
+    assert report["active_goal_count"] == 3
+    assert report["total_goal_count"] == 3
+    assert engine.get_goal_by_id("archived-0").status == "archived"
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))["goals"]
+    assert persisted["archived-0"] == history["archived-0"]
+    assert persisted["merged-0"] == history["merged-0"]
+    live_ids = set(persisted) - set(history)
+    assert len(live_ids) == 3
+    assert all(persisted[goal_id]["status"] == "active" for goal_id in live_ids)
 
 
 def test_quality_filter_submits_new_tension_goal_through_goal_engine(tmp_path):
