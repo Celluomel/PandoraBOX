@@ -1,6 +1,8 @@
 """Abstract reasoning should preserve its result while avoiding serial LLM passes."""
 
 import json
+import time
+from unittest.mock import patch
 
 from cognition.abstract_reasoning_engine import AbstractReasoningEngine
 
@@ -80,7 +82,7 @@ def test_abstract_reasoning_clamps_bad_confidence_and_bounds_fields():
     assert result.analogy_confidence == 1.0
 
 
-def test_invalid_single_call_output_uses_existing_heuristic_fallback_path():
+def test_invalid_single_call_output_is_not_replaced_by_keyword_heuristic():
     llm = _LLM("not json")
     engine = AbstractReasoningEngine(_Organism(), llm)
 
@@ -88,6 +90,46 @@ def test_invalid_single_call_output_uses_existing_heuristic_fallback_path():
 
     assert len(llm.calls) == 1
     assert result is None
+
+
+def test_busy_provider_defers_without_inventing_analogy_or_side_effects():
+    engine = AbstractReasoningEngine(_Organism(), _LLM("{}"))
+    previous = engine._deferred_result("user-1", 0.8, "prior")
+    previous.method = "llm"
+    previous.prompt_fragment = "verified prior analysis"
+    previous.timestamp = time.time()
+    engine._cache["user-1"] = previous
+
+    with patch("core.llm_scheduler.llm_scheduler.is_busy", return_value=True), \
+         patch.object(engine, "_apply_side_effects") as apply_effects:
+        result = engine.reason("user-1", "How does identity remain stable while beliefs change?")
+
+    assert result is not None
+    assert result.method == "deferred"
+    assert result.reason_code == "llm_scheduler_busy"
+    assert result.prompt_fragment == ""
+    assert result.llm_call_count == 0
+    apply_effects.assert_not_called()
+    fragment = engine.get_reasoning_fragment("user-1")
+    assert "verified prior analysis" in fragment
+    assert "chess" not in fragment
+
+
+def test_cooldown_defers_new_topic_instead_of_using_default_analogy():
+    llm = _LLM("{}")
+    engine = AbstractReasoningEngine(_Organism(), llm)
+    engine._last_run["user-1"] = time.time()
+    engine._last_input["user-1"] = "a different earlier abstract question"
+
+    with patch.object(engine, "_score_abstractness", return_value=0.8), \
+         patch.object(engine, "_apply_side_effects") as apply_effects:
+        result = engine.reason("user-1", "A new conceptual question about identity")
+
+    assert result is not None and result.method == "deferred"
+    assert result.reason_code == "per_user_cooldown"
+    assert result.prompt_fragment == ""
+    assert llm.calls == []
+    apply_effects.assert_not_called()
 
 
 def test_short_social_question_does_not_start_an_abstract_reasoning_call():

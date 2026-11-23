@@ -2709,13 +2709,20 @@ class PersonaBridge:
                 _are_result = await asyncio.to_thread(
                     _state_are.are.reason, user_id, effective_input,
                 )
-                _are_turn_status = "completed" if _are_result is not None else "not_applicable"
+                _are_method = getattr(_are_result, "method", None) if _are_result else None
+                _are_turn_status = (
+                    "completed" if _are_method == "llm"
+                    else "deferred" if _are_method == "deferred"
+                    else "not_applicable"
+                )
                 _are_pair = getattr(_are_result, "causal_pair", ("", "")) if _are_result else ("", "")
                 self._record_turn_stage(
                     "abstract_reasoning", _are_turn_status,
                     output={
-                        "result_available": _are_result is not None,
-                        "method": getattr(_are_result, "method", None),
+                        "result_available": _are_method == "llm",
+                        "method": _are_method,
+                        "reason_code": getattr(_are_result, "reason_code", "") if _are_result else "below_threshold_or_unavailable",
+                        "llm_call_count": getattr(_are_result, "llm_call_count", 0) if _are_result else 0,
                         "abstract_score": getattr(_are_result, "abstract_score", None),
                         "causal_pair_available": bool(_are_pair and _are_pair[0] and _are_pair[1]),
                     },
@@ -4437,6 +4444,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             elif _are_turn_status == "not_applicable":
                 self._record_turn_stage(
                     "abstract_reasoning_outcome", "skipped_not_applicable",
+                    turn_id=_audit_turn_id,
+                )
+            elif _are_turn_status == "deferred":
+                self._record_turn_stage(
+                    "abstract_reasoning_outcome", "skipped_deferred",
                     turn_id=_audit_turn_id,
                 )
             else:

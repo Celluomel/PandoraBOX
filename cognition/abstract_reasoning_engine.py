@@ -33,7 +33,7 @@ Design principles:
   • Does NOT replace the InnerMonologueEngine two-pass.
     ARE feeds INTO the system prompt; IME shapes the expression pass.
   • LLM calls are bare (no history pollution).
-  • Graceful degradation — heuristic fallback if LLM busy.
+  • If the provider is busy, defer cleanly without inventing a substitute insight.
   • Uses at most one LLM call per reasoning result.
 """
 
@@ -98,9 +98,11 @@ class ReasoningResult:
     causal_pair:     Tuple[str, str] = ("", "")
 
     # Meta
-    method:         str       = "heuristic"    # "heuristic" | "llm"
+    method:         str       = "unavailable"
     abstract_score: float     = 0.0            # 0–1 how abstract the input was
     prompt_fragment: str      = ""
+    llm_call_count: int       = 0
+    reason_code:    str       = ""
 
 
 class AbstractReasoningEngine:
@@ -177,30 +179,39 @@ class AbstractReasoningEngine:
                     if result is not None:
                         self._cache[user_id] = result
                     return result
-            # Do not spend another LLM call during cooldown, but reason about
-            # this turn rather than injecting the previous turn's result.
-            result = self._heuristic_reason(user_id, user_text, abstract_score)
-            self._apply_side_effects(result)
+            # Do not spend another LLM call or invent a keyword-selected
+            # analogy during cooldown. Preserve the prior result as continuity.
             with self._lock:
-                previous = self._cache.get(user_id) or self._continuity_cache.get(user_id)
+                previous = self._cache.pop(user_id, None)
                 if previous is not None:
                     self._continuity_cache[user_id] = previous
-                self._cache[user_id] = result
-                self._last_input[user_id] = " ".join(user_text.casefold().split())
-            return result
+            return self._deferred_result(user_id, abstract_score, "per_user_cooldown")
 
         # ── Try LLM run ───────────────────────────────────────────────────
         result = None
+        defer_reason = "provider_busy_or_unavailable"
         try:
             from core.llm_scheduler import llm_scheduler
-            if not llm_scheduler.is_busy() and self._llm:
+            if llm_scheduler.is_busy():
+                defer_reason = "llm_scheduler_busy"
+            elif self._llm:
                 result = self._llm_reason(user_id, user_text, abstract_score)
+                if result is None:
+                    previous = self._cache.pop(user_id, None)
+                    if previous is not None:
+                        self._continuity_cache[user_id] = previous
+                    return self._deferred_result(user_id, abstract_score, "inference_unavailable")
+            else:
+                defer_reason = "llm_unavailable"
         except Exception:
-            pass
+            defer_reason = "reasoning_exception"
 
-        # ── Heuristic fallback ────────────────────────────────────────────
         if result is None:
-            result = self._heuristic_reason(user_id, user_text, abstract_score)
+            with self._lock:
+                previous = self._cache.pop(user_id, None)
+                if previous is not None:
+                    self._continuity_cache[user_id] = previous
+            return self._deferred_result(user_id, abstract_score, defer_reason)
 
         # ── Side effects ──────────────────────────────────────────────────
         self._apply_side_effects(result)
@@ -230,7 +241,7 @@ class AbstractReasoningEngine:
             previous = self._continuity_cache.get(user_id)
         now = time.time()
         parts = []
-        if result and now - result.timestamp <= 30:
+        if result and result.prompt_fragment and now - result.timestamp <= 30:
             parts.append(result.prompt_fragment)
         if previous and previous is not result and now - previous.timestamp <= 120:
             parts.append(
@@ -262,6 +273,17 @@ class AbstractReasoningEngine:
             "beliefs_updated": 0,
             "causal_pair_available": True,
         }
+
+    @staticmethod
+    def _deferred_result(user_id: str, abstract_score: float, reason_code: str) -> ReasoningResult:
+        """Represent a skipped inference without fabricating semantic content."""
+        return ReasoningResult(
+            user_id=user_id,
+            method="deferred",
+            abstract_score=abstract_score,
+            prompt_fragment="",
+            reason_code=reason_code[:64],
+        )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Abstractness scoring
@@ -308,7 +330,7 @@ class AbstractReasoningEngine:
     ) -> Optional[ReasoningResult]:
         """
         Run one structured, history-free inference for all reasoning fields.
-        Returns None on failure so heuristic fallback can take over.
+        Returns None on failure; the caller records an explicit deferred result.
         """
         try:
             # ── Retrieve semantic memory context ─────────────────────────────
@@ -397,63 +419,12 @@ Return only one JSON object with all of these fields:
                 method             = "llm",
                 abstract_score     = abstract_score,
                 prompt_fragment    = fragment,
+                llm_call_count     = 1,
             )
 
         except Exception as e:
             logger.debug(f"ARE LLM pass failed: {e}")
             return None
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    #  Heuristic fallback (no LLM needed)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    def _heuristic_reason(
-        self, user_id: str, text: str, abstract_score: float
-    ) -> ReasoningResult:
-        """Fast heuristic reasoning — keyword-based, no LLM."""
-        text_lower = text.lower()
-
-        # Identify core concept from top keyword hit
-        hit_keywords = [kw for kw in ABSTRACT_TOPIC_KEYWORDS if kw in text_lower]
-        core_concept = hit_keywords[0] if hit_keywords else "abstract idea"
-
-        # Find best analogy seed by keyword overlap
-        best_domain, best_pattern, best_score = "", "", 0.0
-        for domain, pattern in self._analogy_seeds:
-            score = sum(1 for w in domain.split() if w in text_lower)
-            score += sum(1 for w in pattern.split() if w in text_lower)
-            if score > best_score:
-                best_score  = score
-                best_domain = domain
-                best_pattern = pattern
-
-        if not best_domain:
-            best_domain, best_pattern = self._analogy_seeds[0]  # chess default
-
-        # Minimal synthesis
-        derived_insight = (
-            f"The concept of {core_concept} may share structural properties "
-            f"with {best_domain} — specifically {best_pattern}."
-        )
-        open_question = f"What are the limits of the {best_domain} analogy for {core_concept}?"
-
-        fragment = self._build_fragment(
-            core_concept, best_pattern, best_domain,
-            derived_insight, open_question, ""
-        )
-
-        return ReasoningResult(
-            user_id         = user_id,
-            core_concept    = core_concept,
-            best_analogy    = best_pattern,
-            analogy_domain  = best_domain,
-            derived_insight = derived_insight,
-            open_question   = open_question,
-            causal_pair     = (core_concept, f"structural pattern like {best_domain}"),
-            method          = "heuristic",
-            abstract_score  = abstract_score,
-            prompt_fragment = fragment,
-        )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Side effects — WorldModel, CuriosityEngine, SemanticMemory
@@ -464,6 +435,9 @@ Return only one JSON object with all of these fields:
         Feed reasoning results back into the cognitive architecture.
         All calls are best-effort — never raise.
         """
+        if result.method != "llm" or result.llm_call_count != 1:
+            return
+
         # An analogy pair is a conceptual link, not evidence that one item
         # causes the other. The analogy is persisted below in SemanticMemory;
         # do not promote it into the WorldModel's causal store.
