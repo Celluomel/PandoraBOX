@@ -8,7 +8,8 @@ from core.module_tick_log import ModuleTickLog
 from core.cognitive_governor import CognitiveGovernor
 from core.internal_loop import InternalThoughtLoop, _executive_arbitration_skip_reason
 from cognition.global_workspace import GlobalWorkspace
-from cognition.thought_thread_engine import ThoughtThreadStatus
+from cognition.thought_thread_engine import ThoughtThread, ThoughtThreadStatus
+from cognition.cognitive_dissonance_engine import DissonanceEvent, DissonanceEventType
 
 
 def make_loop():
@@ -268,6 +269,87 @@ def test_in_progress_cycle_is_visible_without_being_marked_completed():
     assert snapshot["retained"] == 0
     assert snapshot["cycles"][0]["status"] == "running"
     assert snapshot["cycles"][0]["stages"][0]["output_summary"]["item_count"] == 1
+
+
+def test_cycle_list_summary_exposes_tte_lifecycle_without_private_thread_text():
+    active = ThoughtThread(
+        id="thread-private-1", topic="private topic one", goal="private goal one",
+        status=ThoughtThreadStatus.ACTIVE, confidence=0.7, uncertainty=0.2,
+    )
+    completed = ThoughtThread(
+        id="thread-private-2", topic="private topic two", goal="private goal two",
+        status=ThoughtThreadStatus.COMPLETED, confidence=0.9, uncertainty=0.1,
+    )
+
+    summary = InternalThoughtLoop._evidence_summary([active, completed])
+
+    assert summary["item_count"] == 2
+    assert summary["item_type_counts"] == {"ThoughtThread": 2}
+    assert summary["status_counts"] == {"active": 1, "completed": 1}
+    assert summary["numeric_metrics"]["confidence"] == {
+        "count": 2, "min": 0.7, "mean": 0.8, "max": 0.9,
+    }
+    assert len(summary["item_id_refs"]) == 2
+    assert "private topic" not in str(summary)
+    assert "private goal" not in str(summary)
+
+
+def test_cycle_list_summary_exposes_cde_resolution_and_event_distributions():
+    unresolved = DissonanceEvent(
+        id="event-private-1", type=DissonanceEventType.BELIEF_VS_EVIDENCE,
+        intensity=0.4, resolved=False, resolution_status="deferred_low_intensity",
+        self_question="private question",
+    )
+    resolved = DissonanceEvent(
+        id="event-private-2", type=DissonanceEventType.PREDICTION_VS_REALITY,
+        intensity=0.8, resolved=True, resolution_status="verified_resolved",
+        self_question="another private question",
+    )
+
+    summary = InternalThoughtLoop._evidence_summary([unresolved, resolved])
+
+    assert summary["event_type_counts"] == {
+        "belief_vs_evidence": 1, "prediction_vs_reality": 1,
+    }
+    assert summary["resolution_status_counts"] == {
+        "deferred_low_intensity": 1, "verified_resolved": 1,
+    }
+    assert summary["resolved_count"] == 1
+    assert summary["numeric_metrics"]["intensity"]["mean"] == 0.6
+    assert "private question" not in str(summary)
+
+
+def test_cycle_list_summary_keeps_unrecognized_payloads_count_only():
+    values = [
+        "private free text",
+        {"status": "completed", "id": "untrusted prose id"},
+    ]
+
+    summary = InternalThoughtLoop._evidence_summary(values)
+
+    assert summary["item_count"] == 2
+    assert summary["item_type_counts"] == {"str": 1, "mapping": 1}
+    assert "status_counts" not in summary
+    assert "item_id_refs" not in summary
+    assert "private free text" not in str(summary)
+    assert "untrusted prose id" not in str(summary)
+
+
+def test_cycle_list_summary_bounds_typed_record_inspection():
+    values = [
+        ThoughtThread(
+            id=f"thread-{index}", topic="private", goal="private",
+            status=ThoughtThreadStatus.ACTIVE,
+        )
+        for index in range(205)
+    ]
+
+    summary = InternalThoughtLoop._evidence_summary(values)
+
+    assert summary["item_count"] == 205
+    assert summary["inspected_count"] == 200
+    assert summary["truncated"] is True
+    assert summary["status_counts"] == {"active": 200}
 
 
 def test_module_probe_emits_per_cycle_execution_receipt():

@@ -48,11 +48,13 @@ import json
 import hashlib
 import inspect
 import logging
+import math
 import os
 import re
 import threading
 import time
 from collections import deque
+from itertools import islice
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -928,7 +930,129 @@ class InternalThoughtLoop:
                 summary["goal_proposal_origin_count"] = len(safe_refs)
             return summary
         if isinstance(value, (list, tuple, set)):
-            return {"kind": type(value).__name__, "item_count": len(value)}
+            item_count = len(value)
+            items = list(islice(iter(value), 201))
+            summary: dict[str, Any] = {
+                "kind": type(value).__name__,
+                "item_count": item_count,
+            }
+            if not item_count:
+                return summary
+
+            # Cycle outputs often contain ThoughtThread or DissonanceEvent
+            # objects. A count alone proves that something was returned but
+            # says nothing about its lifecycle outcome. Summarize only a
+            # small allowlist of enums/counters; never serialize topic, goal,
+            # hypothesis, prediction, or arbitrary provider text.
+            status_values = {
+                "active", "engaged", "deferred", "completed", "failed", "retired",
+            }
+            resolution_values = {
+                "pending", "deferred_low_intensity", "unverified_no_resolution_receipt",
+                "verified_thread_not_completed", "verified_thread_sync_failed",
+                "verified_resolved",
+            }
+            event_type_values = {
+                "belief_vs_evidence", "identity_vs_action", "goal_vs_outcome",
+                "prediction_vs_reality",
+            }
+            distributions: dict[str, dict[str, int]] = {
+                "status_counts": {},
+                "resolution_status_counts": {},
+                "event_type_counts": {},
+            }
+            numeric_values: dict[str, list[float]] = {
+                "confidence": [], "uncertainty": [], "dissonance": [],
+                "safety_risk": [], "intensity": [],
+            }
+            item_types: dict[str, int] = {}
+            identity_refs: list[str] = []
+            resolved_true = 0
+
+            def field(item: Any, key: str) -> Any:
+                if isinstance(item, dict):
+                    return item.get(key)
+                try:
+                    return vars(item).get(key)
+                except (TypeError, AttributeError):
+                    return None
+
+            def enum_value(raw: Any) -> Any:
+                return getattr(raw, "value", raw)
+
+            for item in items[:200]:
+                type_name = "mapping" if isinstance(item, dict) else type(item).__name__
+                if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", type_name):
+                    item_types[type_name] = item_types.get(type_name, 0) + 1
+
+                # Only recognize the two typed cognitive records. A generic
+                # mapping that happens to contain `status="completed"` is
+                # not evidence that a TTE thread completed.
+                if type_name == "ThoughtThread":
+                    raw_status = enum_value(field(item, "status"))
+                    if isinstance(raw_status, str) and raw_status in status_values:
+                        distributions["status_counts"][raw_status] = (
+                            distributions["status_counts"].get(raw_status, 0) + 1
+                        )
+                elif type_name == "DissonanceEvent":
+                    for key, allowed, bucket in (
+                        ("resolution_status", resolution_values, "resolution_status_counts"),
+                        ("type", event_type_values, "event_type_counts"),
+                    ):
+                        raw = enum_value(field(item, key))
+                        if isinstance(raw, str) and raw in allowed:
+                            distributions[bucket][raw] = distributions[bucket].get(raw, 0) + 1
+                else:
+                    continue
+
+                if type_name == "DissonanceEvent" and field(item, "resolved") is True:
+                    resolved_true += 1
+
+                metric_keys = (
+                    ("confidence", "uncertainty", "dissonance", "safety_risk")
+                    if type_name == "ThoughtThread" else ("intensity",)
+                )
+                for key in metric_keys:
+                    values = numeric_values[key]
+                    raw = field(item, key)
+                    if (
+                        isinstance(raw, (int, float))
+                        and not isinstance(raw, bool)
+                        and math.isfinite(float(raw))
+                    ):
+                        values.append(float(raw))
+
+                identity = field(item, "id")
+                if isinstance(identity, str) and identity and len(identity) <= 256:
+                    ref = InternalThoughtLoop._evidence_fingerprint(identity)
+                    if ref and ref not in identity_refs and len(identity_refs) < 20:
+                        identity_refs.append(ref)
+
+            if item_count > 200:
+                summary["inspected_count"] = 200
+                summary["truncated"] = True
+            if item_types:
+                summary["item_type_counts"] = item_types
+            for key, counts in distributions.items():
+                if counts:
+                    summary[key] = counts
+            if resolved_true:
+                summary["resolved_count"] = resolved_true
+            if identity_refs:
+                summary["item_id_refs"] = identity_refs
+            numeric_summary = {
+                key: {
+                    "count": len(values),
+                    "min": round(min(values), 4),
+                    "mean": round(sum(values) / len(values), 4),
+                    "max": round(max(values), 4),
+                }
+                for key, values in numeric_values.items()
+                if values
+            }
+            if numeric_summary:
+                summary["numeric_metrics"] = numeric_summary
+            return summary
         if value is None:
             return {"kind": "none"}
         return {"kind": type(value).__name__}
