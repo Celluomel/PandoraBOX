@@ -307,6 +307,29 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['values']['AFFECT_EMBEDDING_MODEL'], selected)
 
+    async def test_location_settings_are_saved_as_validated_numbers(self):
+        async with self.client() as client:
+            response = await client.post('/api/interface/settings', json={
+                'values': {
+                    'LOCATION_LATITUDE': '48.863878',
+                    'LOCATION_LONGITUDE': '2.119038',
+                },
+            })
+        self.assertEqual(response.status_code, 200)
+        config = self.modules['managers.settings_manager'].config
+        self.assertEqual(config.LOCATION_LATITUDE, 48.863878)
+        self.assertEqual(config.LOCATION_LONGITUDE, 2.119038)
+        self.assertIsInstance(config.LOCATION_LATITUDE, float)
+        self.assertIsInstance(config.LOCATION_LONGITUDE, float)
+
+    async def test_invalid_location_settings_are_rejected(self):
+        async with self.client() as client:
+            response = await client.post('/api/interface/settings', json={
+                'values': {'LOCATION_LATITUDE': '120'},
+            })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('between -90.0 and 90.0', response.json()['detail'])
+
     async def test_stream_keeps_api_turn_id_for_deferred_receipts_without_meta_id(self):
         async with self.client() as client:
             response = await client.post('/api/interface/chat', json={'text': 'Hello'})

@@ -367,6 +367,17 @@ def load_settings() -> AppSettings:
             # Update defaults with loaded data
             for key, value in data.items():
                 if hasattr(settings, key):
+                    if key in {'LOCATION_LATITUDE', 'LOCATION_LONGITUDE'}:
+                        if value is None or (isinstance(value, str) and not value.strip()):
+                            value = None
+                        else:
+                            try:
+                                value = float(value)
+                                lower, upper = (-90.0, 90.0) if key == 'LOCATION_LATITUDE' else (-180.0, 180.0)
+                                if not lower <= value <= upper:
+                                    value = None
+                            except (TypeError, ValueError, OverflowError):
+                                value = None
                     setattr(settings, key, resolve(key, value) if key in SECRET_FIELDS else value)
             print(f"✅ Loaded settings from {CONFIG_FILE}")
         except Exception as e:

@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+from datetime import datetime
+import time
 
 from cognition.cognitive_dissonance_engine import (
     CDEContext,
@@ -221,3 +223,67 @@ def test_identity_action_detector_does_not_count_internal_question_as_expression
 
     assert len(events) == 1
     assert events[0].action_ref == "no expression action taken"
+
+
+def test_later_successful_exploration_receipt_closes_only_its_linked_incident(tmp_path):
+    from cognition.thought_thread_engine import (
+        ThoughtThread, ThoughtThreadEngine, ThoughtThreadStatus, TTEContext,
+    )
+
+    event = _event(intensity=0.8, event_id="event-curiosity")
+    event.created_at = time.time() - 10
+    thread = ThoughtThread(
+        id="inquiry-curiosity", topic="dissonance:curiosity",
+        goal="Check whether exploration resumed", source="dissonance",
+        current_state={"cde_event_id": event.id},
+    )
+    tte = ThoughtThreadEngine(str(tmp_path / "threads.json"))
+    tte._threads[thread.id] = thread
+    engine = CognitiveDissonanceEngine()
+    engine._events.append(event)
+    receipt = {
+        "event_id": "ledger-outcome-42",
+        "timestamp": datetime.fromtimestamp(event.created_at + 2).isoformat(),
+        "action": "web_search",
+        "success": True,
+    }
+
+    engine.step([], tte, CDEContext(action_receipts=[receipt]), TTEContext())
+
+    assert event.resolved is True
+    assert event.resolution_status == "verified_resolved"
+    assert event.resolution_evidence_ref == "consequence:ledger-outcome-42"
+    assert thread.status is ThoughtThreadStatus.COMPLETED
+    outcome = thread.current_state["verified_outcome"]
+    assert "does not establish a stable personality trait" in outcome["belief_statement"]
+    assert engine.last_step_report["verified_action_counterevidence_count"] == 1
+
+
+def test_action_counterevidence_requires_later_success_and_matching_event_thread(tmp_path):
+    from cognition.thought_thread_engine import (
+        ThoughtThread, ThoughtThreadEngine, ThoughtThreadStatus, TTEContext,
+    )
+
+    event = _event(intensity=0.8, event_id="event-curiosity")
+    event.created_at = time.time() - 10
+    thread = ThoughtThread(
+        id="inquiry-curiosity", topic="dissonance:curiosity",
+        goal="Check whether exploration resumed", source="dissonance",
+        current_state={"cde_event_id": "different-event"},
+    )
+    tte = ThoughtThreadEngine(str(tmp_path / "threads.json"))
+    tte._threads[thread.id] = thread
+    engine = CognitiveDissonanceEngine()
+    engine._events.append(event)
+    receipts = [
+        {"event_id": "past", "timestamp": datetime.fromtimestamp(event.created_at - 2).isoformat(),
+         "action": "web_search", "success": True},
+        {"event_id": "failed", "timestamp": datetime.fromtimestamp(event.created_at + 2).isoformat(),
+         "action": "web_search", "success": False},
+    ]
+
+    engine.step([], tte, CDEContext(action_receipts=receipts), TTEContext())
+
+    assert event.resolved is False
+    assert thread.status is not ThoughtThreadStatus.COMPLETED
+    assert engine.last_step_report["verified_action_counterevidence_count"] == 0

@@ -49,6 +49,34 @@ class ConfigProfileSelectionTests(unittest.TestCase):
             self.assertEqual(loaded.LUMINA_NETWORK_ROLE, "child")
             self.assertEqual(loaded.LUMINA_NETWORK_API_KEY, "test-shared-key")
 
+    def test_load_normalizes_legacy_string_coordinates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile = Path(temp_dir) / "legacy.json"
+            profile.write_text(json.dumps({
+                "LOCATION_LATITUDE": "48.863878",
+                "LOCATION_LONGITUDE": "2.119038",
+            }), encoding="utf-8")
+            with patch.object(settings_manager, "CONFIG_FILE", profile), \
+                    patch.object(settings_manager, "resolve", side_effect=lambda _name, value="": value), \
+                    patch("builtins.print"):
+                loaded = settings_manager.load_settings()
+
+            self.assertEqual(loaded.LOCATION_LATITUDE, 48.863878)
+            self.assertEqual(loaded.LOCATION_LONGITUDE, 2.119038)
+            self.assertIsInstance(loaded.LOCATION_LATITUDE, float)
+            self.assertIsInstance(loaded.LOCATION_LONGITUDE, float)
+
+    def test_load_rejects_out_of_range_coordinates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile = Path(temp_dir) / "invalid-location.json"
+            profile.write_text(json.dumps({"LOCATION_LATITUDE": "120"}), encoding="utf-8")
+            with patch.object(settings_manager, "CONFIG_FILE", profile), \
+                    patch.object(settings_manager, "resolve", side_effect=lambda _name, value="": value), \
+                    patch("builtins.print"):
+                loaded = settings_manager.load_settings()
+
+            self.assertIsNone(loaded.LOCATION_LATITUDE)
+
 
 if __name__ == "__main__":
     unittest.main()

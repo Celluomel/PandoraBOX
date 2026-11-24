@@ -1555,6 +1555,14 @@ async def update_settings(payload: SettingsUpdate):
                 value = float(value)
                 if not 1 <= value <= 30:
                     raise ValueError('must be between 1 and 30 seconds')
+            elif name in {'LOCATION_LATITUDE', 'LOCATION_LONGITUDE'}:
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    value = None
+                else:
+                    value = float(value)
+                    lower, upper = (-90.0, 90.0) if name == 'LOCATION_LATITUDE' else (-180.0, 180.0)
+                    if not lower <= value <= upper:
+                        raise ValueError(f'must be between {lower} and {upper}')
             setattr(config, name, value)
             changed.append(name)
         except Exception as exc:

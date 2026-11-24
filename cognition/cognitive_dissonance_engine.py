@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
@@ -41,6 +42,12 @@ logger = logging.getLogger(__name__)
 DISSONANCE_THRESHOLD = 0.35   # below this intensity → ignore
 CONFIDENCE_PENALTY   = 0.12   # per dissonance event applied to thread
 MAX_DISSONANCE_EVENTS = 20    # keep only most recent
+
+_EXPLORATION_ACTIONS = {
+    "memory_recall", "web_search", "self_question",
+    "bisociative_hypothesis", "explore", "research",
+}
+_EXPRESSION_ACTIONS = {"user_question", "express", "respond"}
 
 
 # ── Types ──────────────────────────────────────────────────────────────────────
@@ -396,6 +403,9 @@ class CognitiveDissonanceEngine:
                 all_threads = list(tte.all_threads())
             except Exception as exc:
                 logger.debug("[CDE] Could not read TTE outcome receipts: %s", exc)
+        self._record_action_counterevidence(
+            self._events, ctx, all_threads, tte, tte_ctx
+        )
         self.resolve(
             self._events, ctx, organism, outcome_threads=all_threads,
             tte=tte, tte_ctx=tte_ctx,
@@ -426,6 +436,9 @@ class CognitiveDissonanceEngine:
             "auto_resolved_event_count": 0,
             "deferred_low_intensity_count": len(deferred),
             "verified_resolved_event_count": sum(1 for event in report_events.values() if event.resolved),
+            "verified_action_counterevidence_count": int(
+                getattr(self, "_last_counterevidence_count", 0)
+            ),
             "event_refs": [
                 {"id": str(event.id), "type": event.type.value,
                  "intensity": round(float(event.intensity), 3),
@@ -437,6 +450,91 @@ class CognitiveDissonanceEngine:
             ],
         }
         return result
+
+    def _record_action_counterevidence(
+        self,
+        events: List[DissonanceEvent],
+        ctx: CDEContext,
+        threads: List[Any],
+        tte: Any,
+        tte_ctx: Any,
+    ) -> int:
+        """Record narrow, event-linked counterevidence from a later action receipt.
+
+        This closes only identity/action events whose detector explicitly
+        observed a missing recent action. It does not infer a stable trait or
+        resolve belief/outcome events from unrelated action success.
+        """
+        self._last_counterevidence_count = 0
+        if tte is None or tte_ctx is None or not hasattr(tte, "resolve_thread"):
+            return 0
+
+        candidates = {
+            "no exploration action taken": _EXPLORATION_ACTIONS,
+            "no expression action taken": _EXPRESSION_ACTIONS,
+        }
+        action_fragments = {
+            "no exploration action taken": ("explore", "research"),
+            "no expression action taken": ("express", "respond"),
+        }
+        by_event = {}
+        for thread in threads:
+            state = getattr(thread, "current_state", None)
+            event_id = state.get("cde_event_id") if isinstance(state, dict) else None
+            if (getattr(thread, "source", "") == "dissonance" and event_id
+                    and event_id not in by_event):
+                by_event[str(event_id)] = thread
+
+        for event in events:
+            if event.resolved or event.type != DissonanceEventType.IDENTITY_VS_ACTION:
+                continue
+            expected_actions = candidates.get(str(event.action_ref or "").strip().casefold())
+            thread = by_event.get(str(event.id))
+            if not expected_actions or thread is None:
+                continue
+            for receipt in ctx.action_receipts:
+                if not isinstance(receipt, dict) or receipt.get("success") is not True:
+                    continue
+                action = str(receipt.get("action") or receipt.get("action_type") or "").casefold()
+                if action not in expected_actions and not any(
+                    part in action for part in action_fragments[str(event.action_ref).casefold()]
+                ):
+                    continue
+                timestamp = str(receipt.get("timestamp") or "").strip()
+                event_ref = str(receipt.get("event_id") or "").strip()
+                try:
+                    observed_at = datetime.fromisoformat(
+                        timestamp.replace("Z", "+00:00")
+                    ).timestamp()
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                # ConsequenceTracker timestamps are second-resolution ISO
+                # strings. Require a strictly later second than event creation;
+                # ambiguous same-second ordering is not evidence.
+                if observed_at <= event.created_at or not event_ref:
+                    continue
+
+                evidence_ref = f"consequence:{event_ref}"[:200]
+                outcome = (
+                    f"A successful {action} action receipt was recorded after this "
+                    "specific recent-absence observation. It is counterevidence to "
+                    "that observation only; it does not establish a stable personality trait."
+                )
+                try:
+                    resolved = tte.resolve_thread(
+                        thread, tte_ctx, success=True, evidence_ref=evidence_ref,
+                        outcome_statement=outcome, outcome_confidence=0.75,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[CDE] Could not record event-linked action evidence for %s (%s)",
+                        event.id[:8], type(exc).__name__,
+                    )
+                    break
+                if getattr(getattr(resolved, "status", None), "value", None) == "completed":
+                    self._last_counterevidence_count += 1
+                break
+        return self._last_counterevidence_count
 
     # ── Private detection helpers ─────────────────────────────────────────────
 
@@ -457,12 +555,6 @@ class CognitiveDissonanceEngine:
             # evidence that an identity claim was enacted.
             return isinstance(item, dict) and item.get("success") is True
 
-        exploration_actions = {
-            "memory_recall", "web_search", "self_question",
-            "bisociative_hypothesis", "explore", "research",
-        }
-        expression_actions = {"user_question", "express", "respond"}
-
         for belief in beliefs[:10]:
             bl = belief.lower()
 
@@ -471,7 +563,7 @@ class CognitiveDissonanceEngine:
                 explored = any(
                     action_succeeded(action)
                     and (
-                        action_kind(action) in exploration_actions
+                        action_kind(action) in _EXPLORATION_ACTIONS
                         or "explore" in action_kind(action)
                         or "research" in action_kind(action)
                     )
@@ -490,7 +582,7 @@ class CognitiveDissonanceEngine:
                 communicated = any(
                     action_succeeded(action)
                     and (
-                        action_kind(action) in expression_actions
+                        action_kind(action) in _EXPRESSION_ACTIONS
                         or "express" in action_kind(action)
                         or "respond" in action_kind(action)
                     )
