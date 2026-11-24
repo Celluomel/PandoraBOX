@@ -481,6 +481,10 @@ class GoalQualityFilter:
             # repeat verbatim for the goal's whole lifetime otherwise).
             generator = TENSION_TOPIC_GENERATORS.get(tension_key)
             topic = generator(self.persona_dir) if generator else template['topic']
+            topic_source = (
+                f"{generator.__module__}.{generator.__name__}"
+                if generator else "cognition.tension_topics.TENSION_GOALS"
+            )
 
             new_goal = make_goal(
                 name=template['name'],
@@ -493,6 +497,11 @@ class GoalQualityFilter:
             new_goal['tension_source'] = tension_key
             new_goal['tension_level']  = level
             new_goal['quality_score']  = 0.75
+            # The autonomous goal has no user-turn owner. Preserve the actual
+            # generator that supplied its topic so later audits can distinguish
+            # evidence-backed topics from rotating fallbacks without inventing
+            # a conversational source.
+            new_goal['source_concept_method'] = topic_source
             # Skip if same topic already active — breaks the infinite 5-goal cycle
             new_stem = new_goal.get('name', '')[:25].lower()
             if new_stem in active_stems:
@@ -510,6 +519,7 @@ class GoalQualityFilter:
                 last_active=int(getattr(goal_engine, "_cycle_counter", 0)),
                 tension_source=tension_key,
                 tension_level=level,
+                source_concept_method=topic_source,
             ))
             if not admitted:
                 logger.info(

@@ -195,3 +195,7 @@ def test_quality_filter_submits_new_tension_goal_through_goal_engine(tmp_path):
     assert isinstance(submissions[0], Goal)
     assert submissions[0].origin == "goal_quality_filter"
     assert submissions[0].tension_source == "curiosity_drive"
+    assert submissions[0].source_concept_method == (
+        "cognition.tension_topics.generate_curiosity_topic"
+    )
+    assert generated[0]["source_concept_method"] == submissions[0].source_concept_method
