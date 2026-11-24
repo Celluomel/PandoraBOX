@@ -5214,7 +5214,7 @@ Le transport HTTP reste non confirmé depuis l’environnement d’audit : `Get-
 
 ### 24 novembre — handler console cp1252 encore attaché
 
-**Trace observée :** `SessionManager._compress_unlocked()` a bien persisté le résumé, puis `logger.info()` a échoué pendant l’écriture de `→` dans un flux `cp1252`. L’échec concerne l’affichage du log; il ne démontre pas l’échec de la compression. Le message SemanticExtractor `skipped durable learning for unclassified turn` indique un abandon volontaire de l’apprentissage durable pour ce tour; sans son reçu de classification, la trace seule ne permet pas de dire si le statut `unclassified` est correct.
+**Trace observée :** `SessionManager._compress_unlocked()` a bien persisté le résumé, puis `logger.info()` a échoué pendant l’écriture de `→` dans un flux `cp1252`. L’échec concerne l’affichage du log; il ne démontre pas l’échec de la compression. Le reçu `logs/llm_call_audit.jsonl` lie le tour `0dfac1df-690c-4b01-b231-95b85b970810` à l’appel foreground `call_id=7`, qui n’a produit que **5 caractères**; c’est le tour synthétique `READY` du contrôle de disponibilité. Le saut `SemanticExtractor: skipped durable learning for unclassified turn` est donc attendu pour ce probe et ne constitue pas une preuve de perte d’apprentissage sur une conversation utilisateur ordinaire.
 
 **Cause du défaut restant :** le correctif UTF‑8 précédent reconfigurait stdout/stderr et ne rebranchait que les handlers qui pointaient vers ces objets exacts. Un handler console tiers conservant une ancienne référence (p. ex. `sys.__stderr__`) pouvait garder l’encodage `cp1252`.
 
