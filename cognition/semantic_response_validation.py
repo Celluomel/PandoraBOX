@@ -183,10 +183,12 @@ CANDIDATE ANSWER:
                 "support, and stated constraints. Return valid JSON and never "
                 "claim certainty beyond the evidence."
             ),
-            # The configured Gemma model used its entire 384-token budget on
-            # hidden reasoning and returned no visible review. 768 was the
-            # smallest live-tested budget that produced a schema-valid receipt.
-            max_tokens=768,
+            # Live LM Studio traces showed that the configured Gemma model
+            # consumed the 768-token budget on hidden reasoning, then needed
+            # the manager's 1536-token retry to return a valid review. Start at
+            # the smallest observed successful budget to avoid paying for the
+            # same structured review twice.
+            max_tokens=1536,
             temperature=0.0,
             timeout=20,
             reasoning_format="none",

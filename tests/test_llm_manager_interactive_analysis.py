@@ -57,6 +57,25 @@ class _LengthCappedStructuredProvider:
         yield {"type": "finish", "reason": "stop"}
 
 
+class _SufficientBudgetStructuredProvider:
+    model = "test-model"
+
+    def __init__(self):
+        self.output_limits = []
+
+    def _generate_messages_stream(self, _messages, **kwargs):
+        self.output_limits.append(kwargs["max_tokens"])
+        yield {
+            "type": "content",
+            "text": (
+                '{"relevant":true,"claim_basis":"factual",'
+                '"evidence_support":"supported","contract_compliant":true,'
+                '"material_issues":[],"repair":""}'
+            ),
+        }
+        yield {"type": "finish", "reason": "stop"}
+
+
 class InteractiveAnalysisTests(unittest.TestCase):
     def test_empty_nonstream_completion_uses_visible_stream_content_during_turn(self):
         manager = LLMManager.__new__(LLMManager)
@@ -92,7 +111,25 @@ class InteractiveAnalysisTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "passed")
-        self.assertEqual(provider.output_limits, [768, 1536])
+        self.assertEqual(provider.output_limits, [1536, 2048])
+
+    def test_review_starts_at_live_validated_budget_and_avoids_retry(self):
+        provider = _SufficientBudgetStructuredProvider()
+        manager = LLMManager.__new__(LLMManager)
+        manager.provider = provider
+        manager.text_model = "test-model"
+        manager._provider_lock = threading.Lock()
+        manager._chat_active = threading.Event()
+
+        result = review_response(
+            manager.generate_interactive_analysis,
+            request="How much is 2 + 2?",
+            response="Four.",
+            context="The arithmetic result is 4.",
+        )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(provider.output_limits, [1536])
 
 
 if __name__ == "__main__":
