@@ -3535,7 +3535,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             consumes=(
                 "turn_input", "memory_prompt_context", "user_profile_context",
                 "cognitive_prompt_context", "dominant_thought_context",
-                "conversation_continuity_context",
+                "conversation_continuity_context", "self_description_context",
             ),
             turn_id=_audit_turn_id,
         )

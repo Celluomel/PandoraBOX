@@ -1104,6 +1104,10 @@ def test_prompt_assembly_declares_cognitive_context_as_an_input():
         element.value for element in consumes.elts
         if isinstance(element, ast.Constant)
     }
+    assert "self_description_context" in {
+        element.value for element in consumes.elts
+        if isinstance(element, ast.Constant)
+    }
     system_prompt_mutations = [
         node.lineno for node in ast.walk(stream)
         if isinstance(node, (ast.Assign, ast.AugAssign))
