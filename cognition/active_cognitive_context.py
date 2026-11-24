@@ -152,12 +152,14 @@ class ActiveCognitiveContext:
         user_text:   str,
         ai_response: str,
         user_id:     str = "default",
-    ) -> None:
+    ) -> Dict[str, Any]:
         """
         Called after every conversation turn.
         Extracts topics, updates emotional trajectory, pulls in new data.
         """
         with self._lock:
+            turn_count_before = self._turn_count
+            topic_count_before = len(self._topics)
             self._turn_count += 1
 
         # Topics arrive asynchronously from SemanticExtractor after it has
@@ -193,12 +195,36 @@ class ActiveCognitiveContext:
             pass
 
         # ── Sync from organism every 30s ─────────────────────────────────
-        if time.time() - self._last_org_sync > 30:
+        sync_due = time.time() - self._last_org_sync > 30
+        if sync_due and self._org is not None:
             self._sync_from_organism()
+            sync_status = "invoked_unverified"
+        elif sync_due:
+            sync_status = "skipped_organism_unavailable"
+        else:
+            sync_status = "skipped_not_due"
 
         # Invalidate cached fragment
         with self._lock:
             self._last_fragment = ""
+            turn_count_after = self._turn_count
+            topic_count_after = len(self._topics)
+            fragment_invalidated = not bool(self._last_fragment)
+
+        receipt_verified = (
+            turn_count_after == turn_count_before + 1 and fragment_invalidated
+        )
+        return {
+            "status": "maintenance_completed" if receipt_verified else "effect_unverified",
+            "turn_count_before": turn_count_before,
+            "turn_count_after": turn_count_after,
+            "topic_count_before": topic_count_before,
+            "topic_count_after": topic_count_after,
+            "topic_decay_pass_ran": True,
+            "prompt_fragment_invalidated": fragment_invalidated,
+            "organism_sync": sync_status,
+            "durability": "in_memory_only",
+        }
 
     def update_from_organism(self) -> None:
         """Force a full sync from the organism. Call from cognitive cycle timer."""

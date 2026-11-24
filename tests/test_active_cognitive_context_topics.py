@@ -6,14 +6,19 @@ from cognition.semantic_extractor import SemanticExtractor
 
 def test_cag_does_not_turn_question_ngrams_or_assistant_prose_into_topics():
     context = ActiveCognitiveContext(organism=None, llm=None)
+    context._last_fragment = "stale cached prompt context"
 
-    context.update_from_turn(
+    receipt = context.update_from_turn(
         "Quelles émotions fonctionnelles sont actives en toi maintenant ?",
         "La curiosité et la chaleur sont actives.",
     )
 
     assert context.snapshot()["topics"] == []
     assert "Extracted conversation concepts" not in context.get_prompt_fragment()
+    assert receipt["status"] == "maintenance_completed"
+    assert receipt["turn_count_after"] == receipt["turn_count_before"] + 1
+    assert receipt["prompt_fragment_invalidated"] is True
+    assert receipt["durability"] == "in_memory_only"
 
 
 def test_cag_accepts_only_extractor_concepts_present_in_incoming_evidence():

@@ -4687,6 +4687,24 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             stage_name, "completed", output=result,
                             consumes=("output_safety",), turn_id=_audit_turn_id,
                         )
+                    elif stage_name == "active_context_update" and isinstance(result, dict):
+                        receipt_valid = (
+                            result.get("status") == "maintenance_completed"
+                            and result.get("turn_count_after")
+                            == result.get("turn_count_before", -1) + 1
+                            and result.get("prompt_fragment_invalidated") is True
+                        )
+                        if not receipt_valid:
+                            failures.append(RuntimeError(
+                                "active context update returned no verified effect receipt"
+                            ))
+                        self._record_turn_stage(
+                            stage_name,
+                            "completed" if receipt_valid else "failed",
+                            output={"type": "active_context_update_receipt", **result},
+                            consumes=("turn_input",),
+                            turn_id=_audit_turn_id,
+                        )
                     else:
                         self._record_turn_stage(
                             stage_name, "completed", output=result,
