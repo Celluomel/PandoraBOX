@@ -240,6 +240,38 @@ class PromptContextBudget:
         except Exception:
             pass
 
+    def selection_receipt(self, category: str, source: str) -> Dict[str, object]:
+        """Return safe selection facts for one prompt source after assembly.
+
+        This intentionally omits section text. Callers can attribute whether a
+        candidate entered the prompt without searching the assembled prompt,
+        which could otherwise mistake a duplicate fragment for this source.
+        """
+        entries = [
+            entry for entry in self._entries
+            if entry.category == category and entry.source == source
+        ]
+        if not self._assembled:
+            return {"registered": bool(entries), "selected": False, "reason": "not_assembled", "tokens": 0}
+        if not entries:
+            return {"registered": False, "selected": False, "reason": "not_registered", "tokens": 0}
+
+        selected = [entry for entry in entries if entry.selected]
+        if selected:
+            return {
+                "registered": True,
+                "selected": True,
+                "reason": "budget_ok",
+                "tokens": min(1_000_000, sum(max(0, entry.tokens) for entry in selected)),
+            }
+
+        reasons = {entry.reason for entry in entries}
+        reason = next(
+            (candidate for candidate in ("total_cap", "category_full", "empty") if candidate in reasons),
+            "not_selected",
+        )
+        return {"registered": True, "selected": False, "reason": reason, "tokens": 0}
+
     def contribution_summary(self) -> Dict[str, Dict]:
         """
         Returns per-source selection stats from the persisted log.

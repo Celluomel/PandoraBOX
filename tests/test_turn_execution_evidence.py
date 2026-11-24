@@ -20,6 +20,7 @@ from cognition.persona_bridge import (
 )
 from core.module_tick_log import summarize_output
 from cognition.turn_context_evidence import (
+    audit_safe_turn_summary,
     deterministic_reasoning_dependencies,
     response_learning_evidence,
 )
@@ -1072,6 +1073,99 @@ def test_memory_and_profile_receipts_can_be_attached_to_their_originating_turn()
     assert all(
         stage["output_fingerprint"] for stage in previous["stages"].values()
     )
+
+
+def test_behavioral_and_communication_profile_receipts_are_safe_and_distinct():
+    behavioral = audit_safe_turn_summary({
+        "type": "behavioral_user_model_context_receipt",
+        "status": "injected",
+        "source": "world_model_behavioral_model",
+        "context_included": True,
+        "context_sha256": "a" * 64,
+        "profile_present": True,
+        "interaction_count": 12,
+        "topic_count": 8,
+        "expertise_count": 2,
+        "private_topic": "never expose this",
+        "fragment": "private prompt text",
+    })
+    communication = audit_safe_turn_summary({
+        "type": "communication_calibrator_context_receipt",
+        "status": "empty",
+        "source": "communication_calibrator",
+        "context_included": False,
+        "sample_count": 12,
+        "calibration_count": 20,
+        "directive": "private prompt text",
+    })
+
+    assert behavioral["source"] == "world_model_behavioral_model"
+    assert behavioral["context_included"] is True
+    assert behavioral["quality"] == "present"
+    assert behavioral["interaction_count"] == 12
+    assert behavioral["topic_count"] == 8
+    assert communication["status"] == "empty"
+    assert communication["quality"] == "empty"
+    assert communication["sample_count"] == 12
+    assert "private_topic" not in str(behavioral)
+    assert "never expose this" not in str(behavioral)
+    assert "private prompt text" not in str(behavioral)
+    assert "private prompt text" not in str(communication)
+
+
+def test_profile_context_budget_omission_is_not_reported_as_empty():
+    omitted = audit_safe_turn_summary({
+        "type": "behavioral_user_model_context_receipt",
+        "status": "omitted_by_prompt_budget",
+        "source_available": True,
+        "context_included": False,
+        "budget_reason": "category_full",
+        "budget_tokens": 75,
+    })
+
+    assert omitted["status"] == "omitted_by_prompt_budget"
+    assert omitted["quality"] == "omitted"
+    assert omitted["source_available"] is True
+    assert omitted["budget_reason"] == "category_full"
+    assert omitted["budget_tokens"] == 75
+
+
+def test_profile_context_receipts_are_linked_as_inputs_to_the_prompt_block():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    build_prompt = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_build_prompt_and_cache"
+    )
+    builder_call = next(
+        node for node in ast.walk(build_prompt)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_build_prompt_additions"
+    )
+    assert any(keyword.arg == "source_receipts" for keyword in builder_call.keywords)
+
+    prompt_stage = next(
+        node for node in ast.walk(build_prompt)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_record_turn_stage"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "cognitive_prompt_context"
+        and any(keyword.arg == "consumes" for keyword in node.keywords)
+    )
+    consumes = next(keyword.value for keyword in prompt_stage.keywords if keyword.arg == "consumes")
+    consumed_names = {
+        item.value for item in consumes.elts if isinstance(item, ast.Constant)
+    }
+    assert "behavioral_user_model_context" in consumed_names
+    assert "communication_calibrator_context" in consumed_names
 
 
 def test_prompt_assembly_declares_cognitive_context_as_an_input():

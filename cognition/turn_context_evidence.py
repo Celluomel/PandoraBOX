@@ -344,6 +344,59 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
 
+    profile_receipt_types = {
+        "behavioral_user_model_context_receipt": {
+            "source": "world_model_behavioral_model",
+            "counts": ("interaction_count", "topic_count", "expertise_count"),
+        },
+        "communication_calibrator_context_receipt": {
+            "source": "communication_calibrator",
+            "counts": ("sample_count", "calibration_count"),
+        },
+    }
+    receipt_type = value.get("type")
+    if receipt_type in profile_receipt_types:
+        policy = profile_receipt_types[receipt_type]
+        status = str(value.get("status") or "unknown")[:40]
+        receipt: dict[str, Any] = {
+            "type": receipt_type,
+            "status": status if status in {
+                "injected", "empty", "omitted_by_prompt_budget", "unavailable", "failed",
+            } else "unverified",
+            "source": policy["source"],
+            "quality": (
+                "present" if status == "injected" else
+                "omitted" if status == "omitted_by_prompt_budget" else
+                "empty" if status == "empty" else "unverified"
+            ),
+        }
+        included = value.get("context_included")
+        if isinstance(included, bool):
+            receipt["context_included"] = included
+        source_available = value.get("source_available")
+        if isinstance(source_available, bool):
+            receipt["source_available"] = source_available
+        budget_reason = str(value.get("budget_reason") or "")
+        if budget_reason in {
+            "budget_ok", "category_full", "total_cap", "empty",
+            "not_registered", "not_assembled", "not_selected",
+        }:
+            receipt["budget_reason"] = budget_reason
+        for key in policy["counts"]:
+            raw = value.get(key)
+            if isinstance(raw, int) and not isinstance(raw, bool):
+                receipt[key] = max(0, min(1_000_000, raw))
+        budget_tokens = value.get("budget_tokens")
+        if isinstance(budget_tokens, int) and not isinstance(budget_tokens, bool):
+            receipt["budget_tokens"] = max(0, min(1_000_000, budget_tokens))
+        if receipt_type == "behavioral_user_model_context_receipt":
+            if isinstance(value.get("profile_present"), bool):
+                receipt["profile_present"] = value["profile_present"]
+        digest = str(value.get("context_sha256") or "")
+        if re.fullmatch(r"[a-f0-9]{64}", digest):
+            receipt["context_sha256"] = digest
+        return receipt
+
     if value.get("type") == "api_route_answer_receipt":
         receipt: dict[str, Any] = {
             "type": "api_route_answer_receipt",

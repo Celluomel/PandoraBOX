@@ -37,20 +37,41 @@ import logging
 import threading
 import atexit
 
+# Windows UTF-8 fix — reconfigure stdout/stderr in-place so emoji in log
+# messages never raise UnicodeEncodeError. Existing handlers may hold a
+# reference to an earlier stderr wrapper, so rebind them after reconfigure.
+# No-op on Linux/macOS.
+if sys.platform == 'win32':
+    _original_console_streams = (sys.stdout, sys.stderr)
+    for _stream in _original_console_streams:
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='backslashreplace')
+        except Exception:
+            pass
+    _stream_replacements = {
+        _original_console_streams[0]: sys.stdout,
+        _original_console_streams[1]: sys.stderr,
+    }
+    _loggers_to_rebind = [logging.getLogger()]
+    _loggers_to_rebind.extend(
+        value for value in logging.Logger.manager.loggerDict.values()
+        if isinstance(value, logging.Logger)
+    )
+    for _logger in _loggers_to_rebind:
+        for _handler in _logger.handlers:
+            if isinstance(_handler, logging.StreamHandler) and not isinstance(
+                _handler, logging.FileHandler
+            ) and _handler.stream in _stream_replacements:
+                try:
+                    _handler.setStream(_stream_replacements[_handler.stream])
+                except Exception:
+                    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
 )
 logger = logging.getLogger(__name__)
-
-# Windows UTF-8 fix — reconfigure stdout/stderr in-place so emoji in log
-# messages never raise UnicodeEncodeError. No-op on Linux/macOS.
-if sys.platform == 'win32':
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding='utf-8', errors='replace')
-        except Exception:
-            pass
 
 # ── Config + manager wiring ───────────────────────────────────────────
 import managers.settings_manager as _settings_mod

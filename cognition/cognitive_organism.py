@@ -52,6 +52,7 @@ response = organism.respond(user_input, user_id="alice")
 """
 
 import logging
+import hashlib
 import time
 from pathlib import Path
 from typing import Optional, Any, Dict
@@ -117,6 +118,15 @@ from cognition.skill_registry    import SkillRegistry
 from cognition.emotional_memory  import EmotionalMemorySystem
 from cognition.preference_engine import PreferenceEngine
 logger = logging.getLogger(__name__)
+
+
+def _safe_profile_count(value: Any) -> int:
+    """Normalize profile counters for audit receipts without trusting source types."""
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(0, min(1_000_000, count))
 
 
 def _global_workspace_prompt_fragment(
@@ -612,6 +622,7 @@ class CognitiveOrganism:
         decision: Any,
         user_input: str,
         turn_id: Optional[str] = None,
+        source_receipts: Optional[list[dict[str, Any]]] = None,
     ) -> str:
         """
         Assemble the cognitive context block to prepend to the system prompt.
@@ -620,6 +631,8 @@ class CognitiveOrganism:
         """
         from cognition.prompt_context_budget import PromptContextBudget
         budget   = PromptContextBudget(turn_id=turn_id)
+        _track_profile_receipts = source_receipts is not None
+        _profile_context_candidates: list[dict[str, Any]] = []
         tensions = cycle_data["tensions"]
         h_report = cycle_data["h_report"]
 
@@ -814,14 +827,46 @@ class CognitiveOrganism:
             pass
 
         # ── WorldModel: user-specific context ─────────────────────────────
+        _wm_candidate: dict[str, Any] = {
+            "stage": "behavioral_user_model_context",
+            "type": "behavioral_user_model_context_receipt",
+            "source": "world_model_behavioral_model",
+            "source_status": "unavailable",
+            "source_available": False,
+            "fragment": "",
+            "profile_present": False,
+            "interaction_count": 0,
+            "topic_count": 0,
+            "expertise_count": 0,
+        }
         try:
             # user_id is passed via kwargs from _call_ai_system
             _uid = getattr(self, '_current_user_id', 'default')
-            wm_frag = self.world_model.user_prompt_fragment(_uid)
-            if wm_frag:
-                budget.add("user_model", "behavioral_user_model", wm_frag)
+            _world_model = getattr(self, "world_model", None)
+            if _world_model is not None:
+                _wm_candidate["source_available"] = True
+                _wm_profile = _world_model.get_user(_uid) if _track_profile_receipts else None
+                wm_frag = str(_world_model.user_prompt_fragment(_uid) or "")
+                _wm_candidate.update({"source_status": "available", "fragment": wm_frag})
+                if _track_profile_receipts:
+                    _wm_candidate.update({
+                        "profile_present": _wm_profile is not None,
+                        "interaction_count": _safe_profile_count(
+                            getattr(_wm_profile, "interaction_count", 0)
+                        ),
+                        "topic_count": _safe_profile_count(
+                            len(getattr(_wm_profile, "topic_entries", {}) or {})
+                        ),
+                        "expertise_count": _safe_profile_count(
+                            len(getattr(_wm_profile, "expertise", {}) or {})
+                        ),
+                    })
+                if wm_frag:
+                    budget.add("user_model", "behavioral_user_model", wm_frag)
         except Exception:
-            pass
+            _wm_candidate["source_status"] = "failed"
+        if _track_profile_receipts:
+            _profile_context_candidates.append(_wm_candidate)
 
         # ── PressureSystem: inner drive landscape ────────────────────────
         try:
@@ -877,16 +922,49 @@ class CognitiveOrganism:
             pass
 
         # ── v35: Communication calibration — clarity / concision directive ──
+        _comm_candidate: dict[str, Any] = {
+            "stage": "communication_calibrator_context",
+            "type": "communication_calibrator_context_receipt",
+            "source": "communication_calibrator",
+            "source_status": "unavailable",
+            "source_available": False,
+            "fragment": "",
+            "sample_count": 0,
+            "calibration_count": 0,
+        }
         try:
             _uid = getattr(self, '_current_user_id', 'default')
-            emo_vals = cycle_data.get("emo_values", {})
-            comm_frag = self.comm_calibrator.pre_response_directive(
-                _uid, user_input, emotional_state=emo_vals
-            )
-            if comm_frag:
-                budget.add("preferences", "communication", comm_frag)
+            _comm_calibrator = getattr(self, "comm_calibrator", None)
+            if _comm_calibrator is not None:
+                _comm_candidate["source_available"] = True
+                emo_vals = cycle_data.get("emo_values", {})
+                comm_frag = str(_comm_calibrator.pre_response_directive(
+                    _uid, user_input, emotional_state=emo_vals
+                ) or "")
+                _comm_candidate.update({"source_status": "available", "fragment": comm_frag})
+                if _track_profile_receipts:
+                    _communication_state = getattr(_comm_calibrator, "_state", None)
+                    _communication_profiles = getattr(
+                        _communication_state, "user_profiles", {},
+                    )
+                    _communication_profile = (
+                        _communication_profiles.get(_uid, {})
+                        if isinstance(_communication_profiles, dict) else {}
+                    )
+                    _comm_candidate.update({
+                        "sample_count": _safe_profile_count(
+                            _communication_profile.get("sample_count", 0)
+                        ),
+                        "calibration_count": _safe_profile_count(
+                            getattr(_communication_state, "total_calibrations", 0)
+                        ),
+                    })
+                if comm_frag:
+                    budget.add("preferences", "communication", comm_frag)
         except Exception:
-            pass
+            _comm_candidate["source_status"] = "failed"
+        if _track_profile_receipts:
+            _profile_context_candidates.append(_comm_candidate)
 
         # ── v35: Experiential learning — relevant prior schema ───────────────
         try:
@@ -1061,6 +1139,35 @@ class CognitiveOrganism:
         import logging as _log
         _log.getLogger(__name__).debug(budget.budget_report())
         budget.save()
+        if source_receipts is not None:
+            for candidate in _profile_context_candidates:
+                fragment = str(candidate.pop("fragment", "") or "")
+                source_status = str(candidate.pop("source_status", "unavailable"))
+                category, source = (
+                    ("user_model", "behavioral_user_model")
+                    if candidate["type"] == "behavioral_user_model_context_receipt"
+                    else ("preferences", "communication")
+                )
+                selection = budget.selection_receipt(category, source)
+                candidate["budget_reason"] = selection["reason"]
+                candidate["context_included"] = bool(selection["selected"])
+                if source_status in {"failed", "unavailable"}:
+                    candidate["status"] = source_status
+                elif not fragment:
+                    candidate["status"] = "empty"
+                else:
+                    candidate["status"] = (
+                        "injected" if candidate["context_included"]
+                        else "omitted_by_prompt_budget"
+                    )
+                candidate["source_available"] = bool(candidate.get("source_available"))
+                candidate["budget_tokens"] = _safe_profile_count(selection["tokens"])
+                candidate["context_sha256"] = (
+                    hashlib.sha256(
+                        fragment.encode("utf-8", errors="replace")
+                    ).hexdigest() if fragment else ""
+                )
+                source_receipts.append(candidate)
         return result
 
     def prepare_response_context(

@@ -22,6 +22,24 @@ class PromptContextInfluenceTests(unittest.TestCase):
 
         self.assertEqual(record["turn_id"], "turn-audit-123")
 
+    def test_selection_receipt_reports_the_actual_budget_decision_without_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            budget = PromptContextBudget(str(Path(directory) / "contributions.json"))
+            budget.add("user_model", "behavioral_user_model", "u" * 200)
+            budget.add("preferences", "communication", "c" * 400)
+            budget.assemble()
+
+            selected = budget.selection_receipt("user_model", "behavioral_user_model")
+            omitted = budget.selection_receipt("preferences", "communication")
+
+        self.assertEqual(selected, {
+            "registered": True, "selected": True, "reason": "budget_ok", "tokens": 50,
+        })
+        self.assertEqual(omitted, {
+            "registered": True, "selected": False, "reason": "category_full", "tokens": 0,
+        })
+        self.assertNotIn("text", selected)
+
     def test_state_fragments_are_compact_and_keep_distinct_signal_types(self):
         self_state = SelfModelMoment(
             phi=0.75,

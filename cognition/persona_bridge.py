@@ -5030,10 +5030,24 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 self._record_turn_stage("recursive_deliberation", "skipped_no_cycle")
             if cycle_data is not None and decision is not None:
                 try:
+                    _prompt_source_receipts: list[dict[str, Any]] = []
                     organism_block = self._organism._build_prompt_additions(
                         cycle_data, decision, user_input,
                         turn_id=audit_turn_id,
+                        source_receipts=_prompt_source_receipts,
                     )
+                    for _source_receipt in _prompt_source_receipts:
+                        _source_stage = str(_source_receipt.pop("stage", ""))
+                        if _source_stage in {
+                            "behavioral_user_model_context",
+                            "communication_calibrator_context",
+                        }:
+                            self._record_turn_stage(
+                                _source_stage,
+                                str(_source_receipt.get("status") or "unverified"),
+                                output=_source_receipt,
+                                turn_id=audit_turn_id,
+                            )
                     arb_temperature = decision.temperature
                     _workspace_winner = getattr(
                         self._organism, "_v32_workspace_winner", None
@@ -5127,7 +5141,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     self._record_turn_stage(
                         "cognitive_prompt_context", "completed",
                         output=organism_block,
-                        consumes=("global_workspace_prompt_source",),
+                        consumes=(
+                            "global_workspace_prompt_source",
+                            "behavioral_user_model_context",
+                            "communication_calibrator_context",
+                        ),
                         turn_id=audit_turn_id,
                     )
                     has_factual_plan_context = (
