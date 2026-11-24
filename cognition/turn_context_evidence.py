@@ -55,6 +55,7 @@ def deterministic_reasoning_dependencies(
     memory_recall: bool = False,
     cognitive_audit_report: bool = False,
     planner_snapshot: bool = False,
+    api_route_answer: bool = False,
 ) -> tuple[str, ...]:
     """Return only the recorded inputs that actually support a direct answer."""
     if not selected:
@@ -68,6 +69,8 @@ def deterministic_reasoning_dependencies(
         # The answer renderer consumes the snapshot; deterministic reasoning
         # consumes that rendered answer, preserving the intermediate causal edge.
         sources.append("planner_factual_answer")
+    if api_route_answer:
+        sources.append("api_route_answer")
     return tuple(sources)
 
 
@@ -323,6 +326,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "type": "turn_evidence_routing_receipt",
             "quality": "present",
             **{key: value[key] for key in routing_fields},
+            "api_route_query": bool(value.get("api_route_query", False)),
         }
 
     if value.get("type") == "cognitive_deliberation_receipt":

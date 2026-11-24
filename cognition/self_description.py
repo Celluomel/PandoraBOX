@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import re
+import sys
 import time
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -27,6 +28,148 @@ from threading import Lock
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
+
+
+def runtime_api_surface_context(api_app: Any = None) -> tuple[str, dict[str, Any]]:
+    """Describe the HTTP routes actually registered on this Brain process.
+
+    The route table is read from the running FastAPI app rather than copied
+    into a prompt as a hand-maintained list. This keeps self-description tied
+    to the deployed API and gives the model a source for exact path questions.
+    """
+    rows = _runtime_api_routes(api_app)
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    if rows:
+        lines = [
+            "LIVE REGISTERED HTTP ROUTES (introspected from this process's FastAPI route table):",
+            "These method/path pairs are the authoritative registered API surface. "
+            "For questions about an exact route, quote a matching pair; do not invent a URL. "
+            "If no matching route is listed, say the route is not established by this evidence.",
+        ]
+        lines.extend(
+            f"- {method} {path}" + (f" (handler: {name})" if name else "")
+            for method, path, name in rows[:100]
+        )
+        if len(rows) > 100:
+            lines.append(f"- {len(rows) - 100} additional registered routes omitted.")
+        status = "injected"
+    else:
+        lines = [
+            "LIVE REGISTERED HTTP ROUTES: unavailable from this process. "
+            "Do not infer or invent endpoint paths."
+        ]
+        status = "unavailable"
+    return "\n".join(lines), {
+        "status": status,
+        "source": "brain.api.routes",
+        "route_count": len(rows),
+        "routes_sha256": fingerprint,
+    }
+
+
+def _runtime_api_routes(api_app: Any = None) -> list[tuple[str, str, str]]:
+    if api_app is None:
+        brain_module = sys.modules.get("brain")
+        api_app = getattr(brain_module, "api", None) if brain_module else None
+
+    rows: set[tuple[str, str, str]] = set()
+    visited: set[int] = set()
+
+    def collect(routes: Any, prefix: str = "") -> None:
+        if not isinstance(routes, (list, tuple)):
+            return
+        for route in routes:
+            if id(route) in visited:
+                continue
+            visited.add(id(route))
+            path = getattr(route, "path", None)
+            full_path = f"{prefix}{path}" if isinstance(path, str) else ""
+            methods = getattr(route, "methods", None)
+            if full_path.startswith("/") and isinstance(methods, (set, list, tuple)):
+                endpoint = getattr(route, "endpoint", None)
+                name = str(
+                    getattr(route, "summary", "")
+                    or getattr(route, "name", "")
+                    or getattr(endpoint, "__name__", "")
+                )[:80]
+                for method in methods:
+                    method_name = str(method).strip().upper()
+                    if method_name.isalpha():
+                        rows.add((method_name, full_path[:240], name))
+            child_routes = getattr(route, "routes", None)
+            if child_routes is None:
+                child_app = getattr(route, "app", None)
+                child_routes = getattr(child_app, "routes", None)
+            if child_routes is not None:
+                collect(child_routes, full_path.rstrip("/"))
+
+    collect(getattr(api_app, "routes", None))
+    return sorted(rows)
+
+
+def is_runtime_api_route_question(user_input: str) -> bool:
+    """Recognize a question asking for a registered HTTP route or URL.
+
+    This classifies the requested evidence type only; route values always come
+    from the running app's route table, never from a phrase-to-answer map.
+    """
+    text = " ".join(str(user_input or "").casefold().split())
+    asks_for_location = bool(re.search(
+        r"\b(?:what|which|where|quel|quelle|quels|quelles|où)\b", text,
+    ))
+    asks_for_registered_route = bool(re.search(
+        r"\b(?:api|http|rest|endpoint|route|path|url|chemin|adresse)\b", text,
+    ))
+    return asks_for_location and asks_for_registered_route
+
+
+def resolve_runtime_api_route_question(
+    user_input: str, api_app: Any = None,
+) -> tuple[str | None, dict[str, Any]]:
+    """Answer a route question only from a unique match in the live route table."""
+    if not is_runtime_api_route_question(user_input):
+        return None, {"status": "not_applicable", "source": "brain.api.routes"}
+
+    rows = _runtime_api_routes(api_app)
+    query_tokens = set(re.findall(r"[a-z0-9]+", str(user_input).casefold()))
+    ranked: list[tuple[float, str, str, str]] = []
+    for method, path, name in rows:
+        route_tokens = set(re.findall(r"[a-z0-9]+", f"{path} {name}".casefold()))
+        overlap = route_tokens & query_tokens
+        if overlap:
+            ranked.append((len(overlap) / max(1, len(route_tokens)), method, path, name))
+    ranked.sort(reverse=True)
+    best = ranked[0] if ranked else None
+    runner_up = ranked[1] if len(ranked) > 1 else None
+    unique = bool(
+        best
+        and best[0] >= 0.8
+        and (runner_up is None or best[0] - runner_up[0] >= 0.15)
+    )
+    if unique:
+        _, method, path, name = best
+        if re.search(r"\b(?:quel|quelle|quels|quelles|où|chemin|adresse)\b", str(user_input).casefold()):
+            answer = f"La route HTTP enregistrée pour « {name or path} » est `{method} {path}`."
+        else:
+            answer = f"The registered HTTP route for “{name or path}” is `{method} {path}`."
+        status = "matched_registered_route"
+        selected = {"method": method, "path": path, "handler": name}
+    else:
+        if re.search(r"\b(?:quel|quelle|quels|quelles|où|chemin|adresse)\b", str(user_input).casefold()):
+            answer = "Je ne peux pas confirmer une route unique à partir des routes HTTP actuellement enregistrées."
+        else:
+            answer = "I can’t confirm a unique route from the HTTP routes currently registered."
+        status = "no_unique_registered_route"
+        selected = None
+    route_payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    return answer, {
+        "status": status,
+        "source": "brain.api.routes",
+        "route_count": len(rows),
+        "selected_route": selected,
+        "routes_sha256": hashlib.sha256(route_payload.encode("utf-8")).hexdigest(),
+    }
 
 
 def is_architecture_query(user_input: str) -> bool:
@@ -37,6 +180,8 @@ def is_architecture_query(user_input: str) -> bool:
     """
     text = " ".join(str(user_input or "").casefold().split())
     if is_runtime_execution_evidence_query(text):
+        return True
+    if is_runtime_api_route_question(text):
         return True
     if re.search(r"\b(?:architecture|harness|harnais)\b", text):
         return True

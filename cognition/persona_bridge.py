@@ -2644,6 +2644,7 @@ class PersonaBridge:
         _audit_turn_id = audit_turn_id
         _cognitive_scope = str(cognitive_scope_id or user_id)
         _explicit_memory_recall = is_explicit_memory_recall_query(effective_input)
+        _api_route_query = False
         # This flag is consumed later inside the streaming worker below. It
         # must live in this method's scope; the prompt builder runs in a
         # separate worker thread and its local variables are not shared.
@@ -2653,11 +2654,16 @@ class PersonaBridge:
                 is_runtime_execution_evidence_query,
                 is_internal_cognitive_query, is_cognitive_audit_status_query,
                 is_closed_world_cognitive_report_query,
+                is_runtime_api_route_question,
             )
             from cognition.long_horizon_planner import LongHorizonPlanner
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
             _cognitive_audit_status_query = is_cognitive_audit_status_query(effective_input)
+            _api_route_query = (
+                is_runtime_api_route_question(effective_input)
+                and not _explicit_memory_recall
+            )
             # Explicit requests to recall conversation history must stay on
             # the source-backed memory route even when their subject contains
             # goal/planning language ("Rappelle-moi l'objectif principal...").
@@ -2671,14 +2677,16 @@ class PersonaBridge:
                 is_closed_world_cognitive_report_query(effective_input)
                 or _factual_plan_query
                 or _explicit_memory_recall
+                or _api_route_query
             )
             _architecture_query = (
-                (is_architecture_query(effective_input) or _cognitive_trace_query)
+                (is_architecture_query(effective_input) or _cognitive_trace_query or _api_route_query)
                 and not _explicit_memory_recall
             )
             _internal_cognitive_query = (
                 is_internal_cognitive_query(effective_input)
                 or _explicit_memory_recall
+                or _api_route_query
             )
             self._record_turn_stage(
                 "turn_evidence_routing", "classified",
@@ -2689,6 +2697,7 @@ class PersonaBridge:
                     "cognitive_trace_query": bool(_cognitive_trace_query),
                     "runtime_execution_query": bool(_runtime_execution_query),
                     "explicit_memory_recall": bool(_explicit_memory_recall),
+                    "api_route_query": bool(_api_route_query),
                 },
                 consumes=("turn_input",),
                 turn_id=_audit_turn_id,
@@ -2701,6 +2710,7 @@ class PersonaBridge:
             _closed_world_cognitive_report_query = False
             _factual_plan_query = False
             _internal_cognitive_query = False
+            _api_route_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
             self._record_turn_stage(
                 "turn_evidence_routing", "failed",
@@ -3356,6 +3366,22 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 consumes=("memory_retrieval", "turn_input"),
                 turn_id=_audit_turn_id,
             )
+        if _api_route_query and not _deterministic_response:
+            from cognition.self_description import resolve_runtime_api_route_question
+            _deterministic_response, _api_route_answer_receipt = resolve_runtime_api_route_question(
+                effective_input,
+            )
+            self._record_turn_stage(
+                "api_route_answer",
+                str(_api_route_answer_receipt.get("status") or "unverified"),
+                "Answer selected only from a unique match in the current FastAPI route table; no matching source yields an explicit abstention.",
+                output={
+                    **_api_route_answer_receipt,
+                    "answer": _deterministic_response,
+                },
+                consumes=("runtime_api_surface", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
         if _runtime_execution_query and not _explicit_memory_recall:
             from cognition.self_description import trace_grounded_architecture_answer
             _runtime_evidence_trace = self.get_turn_trace(_audit_turn_id)
@@ -3432,6 +3458,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 cognitive_audit_report=bool(
                     _cognitive_audit_status_query and _deterministic_response
                 ),
+                api_route_answer=bool(_api_route_query and _deterministic_response),
             ),
             turn_id=_audit_turn_id,
         )
@@ -3711,6 +3738,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "[QuantitativeReasoning] physically infeasible turn resolved without LLM; agent=%s",
                             _quantitative_analysis.agent,
                         )
+                    elif _api_route_query:
+                        self._chat_stage = 'registered API route answer'
+                        self._record_turn_stage(
+                            "deterministic_reasoning", "selected_direct",
+                            output=_deterministic_response,
+                            consumes=deterministic_reasoning_dependencies(
+                                selected=True,
+                                api_route_answer=True,
+                            ),
+                            turn_id=_audit_turn_id,
+                        )
                     else:
                         self._chat_stage = (
                             'fast first-pass response' if _fast_round_used
@@ -3740,6 +3778,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                                         and _deterministic_response
                                     ),
                                     planner_snapshot=bool(_factual_plan_query),
+                                    api_route_answer=bool(_api_route_query),
                                 ),
                                 turn_id=_audit_turn_id,
                             )
@@ -5562,22 +5601,37 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # conversational model. Keep this explicitly partial so the LLM
             # cannot turn a registry into an invented complete architecture.
             _architecture_query = False
+            _api_route_query = False
             try:
                 from cognition.self_description import (
                     get_self_description, is_architecture_query,
                     is_internal_cognitive_query,
                     is_cognitive_trace_query,
                     is_self_affect_query,
+                    is_runtime_api_route_question,
+                    runtime_api_surface_context,
+                )
+                _api_surface_block, _api_surface_receipt = runtime_api_surface_context()
+                self._record_turn_stage(
+                    "runtime_api_surface",
+                    _api_surface_receipt.get("status", "unavailable"),
+                    output=_api_surface_receipt,
+                    turn_id=audit_turn_id,
                 )
                 _trace_only_query = is_cognitive_trace_query(user_input)
                 _explicit_recall_query = is_explicit_memory_recall_query(user_input)
+                _api_route_query = (
+                    is_runtime_api_route_question(user_input)
+                    and not _explicit_recall_query
+                )
                 _architecture_query = (
-                    (is_architecture_query(user_input) or _trace_only_query)
+                    (is_architecture_query(user_input) or _trace_only_query or _api_route_query)
                     and not _explicit_recall_query
                 )
                 _internal_cognitive_query = (
                     is_internal_cognitive_query(user_input)
                     or _explicit_recall_query
+                    or _api_route_query
                 )
                 _affect_self_report = bool(not peer_name and debug_introspection)
                 if _affect_self_report:
@@ -5620,6 +5674,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _internal_cognitive_query
                     and not _trace_only_query
                     and not _explicit_recall_query
+                    and not _api_route_query
                 ):
                     _loop = getattr(self._organism, "_loop", None)
                     _snapshot_fn = getattr(_loop, "module_tick_snapshot", None)
@@ -5671,10 +5726,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             module_tick_snapshot=_tick_snapshot,
                         )
                         _architecture_refresh_receipt.update(_receipt)
-                        return _block
-                    return _description.prompt_context(
-                        module_tick_snapshot=_tick_snapshot,
-                    )
+                    else:
+                        _block = _description.prompt_context(
+                            module_tick_snapshot=_tick_snapshot,
+                        )
+                    return f"{_block}\n\n{_api_surface_block}"
 
                 _architecture_block = _measure_prompt_context(
                     "architecture_prompt_context", _build_architecture_context,
@@ -5693,6 +5749,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         ).hexdigest(),
                         "context_chars": len(_architecture_block),
                     },
+                    consumes=("runtime_api_surface",),
                     turn_id=audit_turn_id,
                 )
             except Exception as _sde:

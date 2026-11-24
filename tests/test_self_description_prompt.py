@@ -15,6 +15,7 @@ from cognition.self_description import (
     is_closed_world_cognitive_report_query,
     is_cognitive_trace_query,
     is_internal_cognitive_query,
+    is_runtime_api_route_question,
     is_runtime_execution_evidence_query,
     is_self_affect_query,
     is_social_status_greeting,
@@ -22,6 +23,8 @@ from cognition.self_description import (
     render_affect_self_report,
     render_affect_change_analysis,
     render_detailed_affect_status,
+    resolve_runtime_api_route_question,
+    runtime_api_surface_context,
     sanitize_affect_event_receipts,
     sanitize_displayed_cognitive_trace,
     trace_grounded_architecture_answer,
@@ -29,6 +32,67 @@ from cognition.self_description import (
 
 
 class SelfDescriptionPromptTests(unittest.TestCase):
+    def test_runtime_api_surface_comes_from_registered_routes(self):
+        from types import SimpleNamespace
+
+        api_app = SimpleNamespace(routes=[
+            SimpleNamespace(path="/chat", methods={"POST"}, name="chat"),
+            SimpleNamespace(path="/status", methods={"GET"}, name="status"),
+        ])
+        context, receipt = runtime_api_surface_context(api_app)
+
+        self.assertIn("POST /chat", context)
+        self.assertIn("GET /status", context)
+        self.assertEqual(receipt["status"], "injected")
+        self.assertEqual(receipt["route_count"], 2)
+        self.assertEqual(receipt["source"], "brain.api.routes")
+
+    def test_runtime_api_surface_reports_unavailable_instead_of_inventing(self):
+        from types import SimpleNamespace
+
+        context, receipt = runtime_api_surface_context(SimpleNamespace(routes=[]))
+
+        self.assertIn("unavailable", context)
+        self.assertIn("Do not infer or invent endpoint paths", context)
+        self.assertEqual(receipt["status"], "unavailable")
+        self.assertEqual(receipt["route_count"], 0)
+
+    def test_api_route_question_uses_a_unique_live_route_match(self):
+        from types import SimpleNamespace
+
+        api_app = SimpleNamespace(routes=[
+            SimpleNamespace(path="/chat", methods={"POST"}, name="chat", summary="Chat"),
+            SimpleNamespace(
+                path="/lumina-network/chat", methods={"POST"},
+                name="lumina_network_chat", summary="Lumina Network Chat",
+            ),
+        ])
+        question = "What exact local REST path receives Lumina Brain chat requests?"
+
+        self.assertTrue(is_runtime_api_route_question(question))
+        self.assertTrue(is_architecture_query(question))
+        answer, receipt = resolve_runtime_api_route_question(question, api_app)
+
+        self.assertEqual(receipt["status"], "matched_registered_route")
+        self.assertEqual(receipt["selected_route"]["method"], "POST")
+        self.assertEqual(receipt["selected_route"]["path"], "/chat")
+        self.assertIn("POST /chat", answer)
+        self.assertNotIn("/api/v1/chat/lumina-brain", answer)
+
+    def test_api_route_question_abstains_when_route_match_is_ambiguous(self):
+        from types import SimpleNamespace
+
+        api_app = SimpleNamespace(routes=[
+            SimpleNamespace(path="/chat", methods={"POST"}, name="chat", summary="Chat"),
+            SimpleNamespace(path="/chat", methods={"GET"}, name="chat", summary="Chat"),
+        ])
+        answer, receipt = resolve_runtime_api_route_question(
+            "What exact API path receives chat requests?", api_app,
+        )
+
+        self.assertEqual(receipt["status"], "no_unique_registered_route")
+        self.assertIn("can’t confirm a unique route", answer)
+
     def test_registered_cognitive_module_roles_include_exact_scope_and_nonclaims(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             description = SelfDescription(
