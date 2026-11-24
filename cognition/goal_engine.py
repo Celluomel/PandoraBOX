@@ -116,6 +116,9 @@ class Goal:
     source_thought_type: str = ""
     source_thought_timestamp: str = ""
     source_concept_method: str = ""
+    source_concept_kind: str = ""
+    source_concept_ref: str = ""
+    source_concept_sha256: str = ""
     # Last autonomous action receipt, persisted with the goal so its counters
     # can be audited against the causal ledger instead of inferred from totals.
     last_action_execution_id: str = ""

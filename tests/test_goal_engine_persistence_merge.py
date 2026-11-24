@@ -199,3 +199,29 @@ def test_quality_filter_submits_new_tension_goal_through_goal_engine(tmp_path):
         "cognition.tension_topics.generate_curiosity_topic"
     )
     assert generated[0]["source_concept_method"] == submissions[0].source_concept_method
+    assert submissions[0].source_concept_kind in {"state_record", "unresolved"}
+    assert generated[0]["source_concept_kind"] == submissions[0].source_concept_kind
+
+
+def test_tension_source_receipt_survives_goal_engine_persistence(tmp_path):
+    path = tmp_path / "goals.json"
+    engine = GoalEngine(None, persistence_file=str(path))
+    goal = Goal(
+        id="provenance-1", topic="How does memory consolidation work?",
+        origin="goal_quality_filter", priority=0.7, energy=0.7,
+        created_cycle=3, last_active=3, tension_source="curiosity_drive",
+        source_concept_method="cognition.tension_topics.generate_curiosity_topic",
+        source_concept_kind="state_record",
+        source_concept_ref="curiosity.json#/topics/memory consolidation",
+        source_concept_sha256="a" * 64,
+    )
+
+    assert engine.add_goal(goal)
+    saved = json.loads(path.read_text(encoding="utf-8"))["goals"][goal.id]
+    restored = GoalEngine(None, persistence_file=str(path)).get_goal_by_id(goal.id)
+
+    assert saved["source_concept_kind"] == "state_record"
+    assert saved["source_concept_ref"] == "curiosity.json#/topics/memory consolidation"
+    assert saved["source_concept_sha256"] == "a" * 64
+    assert restored.source_concept_ref == goal.source_concept_ref
+    assert restored.source_concept_sha256 == goal.source_concept_sha256

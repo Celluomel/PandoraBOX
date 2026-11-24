@@ -226,10 +226,40 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
 
         restored = llm.history[0]["content"]
         self.assertTrue(receipt["restored"])
-        self.assertLessEqual(len(restored), 10_200)  # includes the session-time wrapper
+        self.assertEqual(llm.history[0]["role"], "system")
+        self.assertLessEqual(len(restored), 10_600)  # includes the system-context wrapper
         self.assertIn("ACTIVE OBJECTIVE", restored)
         self.assertIn("LATEST STATE", restored)
         self.assertIn("Middle of older session summary omitted", restored)
+        self.assertIn("Historical context only", restored)
+        self.assertIn("Prior assistant claims are unverified", restored)
+
+    def test_archived_claim_is_system_context_before_current_checking_turn(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "session.json"
+            summary_path = Path(folder) / "summary.json"
+            raw_path.write_text(json.dumps({"history": [
+                {"role": "user", "content": "checking"},
+            ]}), encoding="utf-8")
+            summary_path.write_text(json.dumps({
+                "text": (
+                    "Assistant replied/claimed: The user confirmed the next step. "
+                    "The marker is LUMINA-MEMORY-8B2R."
+                ),
+                "saved_at": "test",
+            }), encoding="utf-8")
+
+            with patch("managers.session_manager.SESSION_PATH", str(raw_path)), patch(
+                "managers.session_manager.SUMMARY_PATH", str(summary_path)
+            ):
+                session = SessionManager()
+                llm = SimpleNamespace(history=[])
+                session.load_on_boot(llm)
+
+        self.assertEqual(llm.history[0]["role"], "system")
+        self.assertEqual(llm.history[-1], {"role": "user", "content": "checking"})
+        self.assertIn("Prior assistant claims are unverified", llm.history[0]["content"])
+        self.assertIn("takes precedence", llm.history[0]["content"])
 
     def test_fallback_summary_stays_bounded_across_compressions(self):
         session = SessionManager.__new__(SessionManager)
@@ -277,7 +307,10 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
             {"role": "assistant", "content": "recent answer"},
         ])
         self.assertFalse(any(
-            str(item.get("content", "")).startswith("[MEMORY FROM PREVIOUS SESSION")
+            str(item.get("content", "")).startswith((
+                "[MEMORY FROM PREVIOUS SESSION",
+                "[ARCHIVED CONVERSATION CONTEXT",
+            ))
             for item in persisted
         ))
 
@@ -303,7 +336,9 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
                 count = session.restore_after_reload(reloaded)
 
         self.assertEqual(count, 3)
-        self.assertIn("[MEMORY FROM PREVIOUS SESSION", reloaded.history[0]["content"])
+        self.assertEqual(reloaded.history[0]["role"], "system")
+        self.assertIn("[ARCHIVED CONVERSATION CONTEXT", reloaded.history[0]["content"])
+        self.assertIn("current user message takes precedence", reloaded.history[0]["content"])
         self.assertEqual(reloaded.history[-2:], [
             {"role": "user", "content": "recent question"},
             {"role": "assistant", "content": "recent answer"},

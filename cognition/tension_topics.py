@@ -38,6 +38,7 @@ persists.
 from __future__ import annotations
 
 import json
+import hashlib
 import random
 
 from cognition.world_model import causal_belief_has_intervention_evidence
@@ -283,6 +284,188 @@ TENSION_TOPIC_GENERATORS = {
     'contradiction_pressure': generate_contradiction_topic,
     'knowledge_uncertainty':  generate_uncertainty_topic,
 }
+
+
+def _source_receipt(
+    *, topic: str, tension_key: str, store: str, pointer: str, record: dict,
+) -> dict:
+    """Return a content-free locator and fingerprint for a topic's source record."""
+    canonical = json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return {
+        "topic": topic,
+        "generator": f"{TENSION_TOPIC_GENERATORS[tension_key].__module__}."
+                     f"{TENSION_TOPIC_GENERATORS[tension_key].__name__}",
+        "source_kind": "state_record",
+        "source_ref": f"{store}#{pointer}",
+        "source_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
+def generate_topic_with_provenance(tension_key: str, persona_dir: Path) -> dict:
+    """Generate a tension topic and identify the exact persisted state record.
+
+    If the selected phrase cannot be matched back to a current source record,
+    the receipt says ``unresolved``. It never invents a user-turn source or
+    labels an unmatched phrase as evidence.
+    """
+    generator = TENSION_TOPIC_GENERATORS.get(tension_key)
+    if generator is None:
+        return {
+            "topic": "", "generator": "", "source_kind": "unavailable",
+            "source_ref": "", "source_sha256": "",
+        }
+    topic = str(generator(persona_dir) or "")
+    base = {
+        "topic": topic,
+        "generator": f"{generator.__module__}.{generator.__name__}",
+        "source_kind": "unresolved",
+        "source_ref": "",
+        "source_sha256": "",
+    }
+    directory = Path(persona_dir)
+
+    def read(name: str) -> dict:
+        try:
+            path = directory / name
+            return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            return {}
+
+    def key_part(value: str) -> str:
+        return str(value).replace("~", "~0").replace("/", "~1")
+
+    def found(store: str, pointer: str, record: dict) -> dict:
+        return _source_receipt(
+            topic=topic, tension_key=tension_key, store=store,
+            pointer=pointer, record=record,
+        )
+
+    if tension_key == "curiosity_drive":
+        data = read("curiosity.json")
+        topics = data.get("topics", {})
+        with_questions = [
+            (name, node) for name, node in topics.items()
+            if isinstance(node, dict) and node.get("questions")
+        ]
+        if with_questions:
+            name, node = max(with_questions, key=lambda item: item[1].get("curiosity", 0))
+            if node["questions"][-1] == topic:
+                return found("curiosity.json", f"/topics/{key_part(name)}", node)
+        unresearched = [
+            (name, node) for name, node in topics.items()
+            if isinstance(node, dict)
+            and node.get("times_researched", 0) == 0
+            and node.get("times_encountered", 0) >= 2
+        ]
+        if unresearched:
+            name, node = max(unresearched, key=lambda item: item[1].get("curiosity", 0))
+            if topic == f"I keep noticing '{name}' come up and I've never actually looked into it":
+                return found("curiosity.json", f"/topics/{key_part(name)}", node)
+
+    elif tension_key == "identity_stress":
+        data = read("self_concept.json")
+        beliefs = data.get("beliefs", {})
+        contested = [
+            (name, belief) for name, belief in beliefs.items()
+            if isinstance(belief, dict)
+            and not is_semantic_provenance_contamination(belief)
+            and belief.get("violations", 0) > belief.get("affirmations", 0)
+            and belief.get("statement")
+        ]
+        if contested:
+            name, belief = max(contested, key=lambda item: item[1].get("violations", 0))
+            expected = (
+                f"I keep telling myself '{belief['statement']}' but my actual "
+                "behavior doesn't back that up"
+            )
+            if topic == expected:
+                return found("self_concept.json", f"/beliefs/{key_part(name)}", belief)
+        uncertain = [
+            (name, belief) for name, belief in beliefs.items()
+            if isinstance(belief, dict)
+            and not is_semantic_provenance_contamination(belief)
+            and belief.get("confidence", 1.0) < 0.4
+            and belief.get("statement")
+        ]
+        if uncertain:
+            name, belief = min(uncertain, key=lambda item: item[1].get("confidence", 1.0))
+            if topic == f"I'm genuinely not sure if '{belief['statement']}' is even true anymore":
+                return found("self_concept.json", f"/beliefs/{key_part(name)}", belief)
+
+    elif tension_key == "contradiction_pressure":
+        data = read("contradictions.json")
+        candidates = [
+            (index, item) for index, item in enumerate(data.get("contradictions", []))
+            if isinstance(item, dict) and not item.get("confronted")
+            and item.get("claimed_belief") and item.get("actual_behavior")
+        ]
+        if candidates:
+            index, item = max(candidates, key=lambda pair: pair[1].get("discrepancy_score", 0))
+            expected = (
+                f"I claimed {item['claimed_belief']}, but what I actually did was "
+                f"{item['actual_behavior']} — that doesn't add up"
+            )
+            if topic == expected:
+                return found("contradictions.json", f"/contradictions/{index}", item)
+
+    elif tension_key == "knowledge_uncertainty":
+        data = read("world_model.json")
+        candidates = [
+            (index, item) for index, item in enumerate(data.get("causal_beliefs", []))
+            if isinstance(item, dict) and causal_belief_has_intervention_evidence(item)
+            and item.get("confidence", 1.0) < 0.4
+            and item.get("antecedent") and item.get("consequent")
+        ]
+        if candidates:
+            index, item = min(candidates, key=lambda pair: pair[1].get("confidence", 1.0))
+            expected = (
+                f"I'm still not confident whether {item['antecedent']} actually "
+                f"leads to {item['consequent']}, or if I just assumed that"
+            )
+            if topic == expected:
+                return found("world_model.json", f"/causal_beliefs/{index}", item)
+
+    elif tension_key == "social_drive":
+        data = read("thought_stream.json")
+        candidates = [
+            (index, item) for index, item in enumerate(data.get("open_questions", []))
+            if isinstance(item, dict) and item.get("text") and item.get("activation", 0) > 0.3
+        ]
+        if candidates:
+            index, item = max(candidates, key=lambda pair: pair[1].get("activation", 0))
+            if topic == f"Something I keep coming back to: {item['text']}":
+                return found("thought_stream.json", f"/open_questions/{index}", item)
+        data = read("contradictions.json")
+        candidates = [
+            (index, item) for index, item in enumerate(data.get("contradictions", []))
+            if isinstance(item, dict) and not item.get("confronted")
+            and item.get("claimed_belief") and item.get("actual_behavior")
+        ]
+        if candidates:
+            index, item = candidates[-1]
+            expected = (
+                f"I said {item['claimed_belief']}, but {item['actual_behavior']} — "
+                "I haven't actually worked out what that means"
+            )
+            if topic == expected:
+                return found("contradictions.json", f"/contradictions/{index}", item)
+        data = read("emotional_memory.json")
+        traces = data.get("traces", [])
+        recent = sorted(
+            [(index, item) for index, item in enumerate(traces)
+             if isinstance(item, dict) and item.get("description")
+             and item.get("goal_eligible") is True],
+            key=lambda pair: pair[1].get("timestamp", 0), reverse=True,
+        )[:5]
+        matching = [
+            pair for pair in recent
+            if topic == f"Following up on an explicitly unresolved thread: {pair[1]['description'][:150]}"
+        ]
+        if matching:
+            index, item = matching[0]
+            return found("emotional_memory.json", f"/traces/{index}", item)
+
+    return base
 
 # Single source of truth for the five tension-driven goals: their stable
 # name, fallback topic, and the generation THRESHOLD (the tension level at

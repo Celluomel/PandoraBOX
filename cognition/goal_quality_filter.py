@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from cognition.tension_topics import TENSION_TOPIC_GENERATORS, TENSION_GOALS
+from cognition.tension_topics import generate_topic_with_provenance, TENSION_GOALS
 
 logger = logging.getLogger(__name__)
 
@@ -479,12 +479,9 @@ class GoalQualityFilter:
             # goal can persist across several action cycles before
             # completing, and a topic frozen only at creation would still
             # repeat verbatim for the goal's whole lifetime otherwise).
-            generator = TENSION_TOPIC_GENERATORS.get(tension_key)
-            topic = generator(self.persona_dir) if generator else template['topic']
-            topic_source = (
-                f"{generator.__module__}.{generator.__name__}"
-                if generator else "cognition.tension_topics.TENSION_GOALS"
-            )
+            topic_receipt = generate_topic_with_provenance(tension_key, self.persona_dir)
+            topic = topic_receipt.get("topic") or template["topic"]
+            topic_source = topic_receipt.get("generator") or "cognition.tension_topics.TENSION_GOALS"
 
             new_goal = make_goal(
                 name=template['name'],
@@ -502,6 +499,9 @@ class GoalQualityFilter:
             # evidence-backed topics from rotating fallbacks without inventing
             # a conversational source.
             new_goal['source_concept_method'] = topic_source
+            new_goal['source_concept_kind'] = str(topic_receipt.get("source_kind") or "unresolved")
+            new_goal['source_concept_ref'] = str(topic_receipt.get("source_ref") or "")
+            new_goal['source_concept_sha256'] = str(topic_receipt.get("source_sha256") or "")
             # Skip if same topic already active — breaks the infinite 5-goal cycle
             new_stem = new_goal.get('name', '')[:25].lower()
             if new_stem in active_stems:
@@ -520,6 +520,9 @@ class GoalQualityFilter:
                 tension_source=tension_key,
                 tension_level=level,
                 source_concept_method=topic_source,
+                source_concept_kind=new_goal["source_concept_kind"],
+                source_concept_ref=new_goal["source_concept_ref"],
+                source_concept_sha256=new_goal["source_concept_sha256"],
             ))
             if not admitted:
                 logger.info(
