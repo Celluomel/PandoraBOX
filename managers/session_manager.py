@@ -39,6 +39,7 @@ SUMMARY_PATH   = "data/persona/session_summary.json"
 COMPRESS_TRIGGER = 16   # 80% of default _HISTORY_MAX=20
 COMPRESS_WINDOW  = 10   # number of oldest turns to compress into summary
 MAX_RAW_TURNS    = 20   # hard cap after compression
+MAX_SESSION_SUMMARY_CHARS = 10_000  # bounded restored context/prompt budget
 
 _COMPRESS_SYSTEM = """You are a conversation summarizer for an AI assistant named PandoraBOX.
 Given a list of conversation turns, write a dense factual summary that preserves:
@@ -53,9 +54,37 @@ Given a list of conversation turns, write a dense factual summary that preserves
 Keep the source distinction clear: a user request is not proof that an action happened, and an
 assistant statement is not proof that its claim was true. Preserve uncertainty instead of
 resolving it by inference. Write in third person past tense. Be dense and specific — this
-replaces the actual messages. Start with: "[CONTEXT FROM EARLIER IN THIS CONVERSATION]".
+replaces the actual messages. Update the prior summary using the new turns; do not append or
+repeat the prior summary verbatim. Start with: "[CONTEXT FROM EARLIER IN THIS CONVERSATION]".
 Maximum 600 words. No markdown headers.
 """
+
+
+def _bound_session_summary(value: Any) -> str:
+    """Bound restored/compressed conversational memory while retaining old and new context."""
+    text = str(value or "").strip()
+    if len(text) <= MAX_SESSION_SUMMARY_CHARS:
+        return text
+    marker = "\n[Middle of older session summary omitted to bound context.]\n"
+    remaining = MAX_SESSION_SUMMARY_CHARS - len(marker)
+    head_chars = remaining // 3
+    tail_chars = remaining - head_chars
+    return text[:head_chars].rstrip() + marker + text[-tail_chars:].lstrip()
+
+
+def _is_restored_session_summary(message: Any) -> bool:
+    """Identify the synthetic assistant history entry backed by session_summary.json."""
+    return (
+        isinstance(message, dict)
+        and str(message.get("role") or "").casefold() == "assistant"
+        and str(message.get("content") or "").lstrip().startswith("[MEMORY FROM PREVIOUS SESSION")
+    )
+
+
+def _raw_conversation_turns(history: Any) -> list[dict]:
+    if not isinstance(history, (list, tuple)):
+        return []
+    return [item for item in history if isinstance(item, dict) and not _is_restored_session_summary(item)]
 
 
 class SessionManager:
@@ -92,7 +121,7 @@ class SessionManager:
         histories in the background. A process restart must not depend on a
         later user turn or a graceful shutdown to save the latest answer.
         """
-        snapshot = list(history)
+        snapshot = _raw_conversation_turns(history)
         with self._lock:
             self._save_raw(snapshot)
             self._dirty = False
@@ -137,7 +166,7 @@ class SessionManager:
         Returns the history to restore afterward.
         """
         with self._lock:
-            snapshot = list(history)
+            snapshot = _raw_conversation_turns(history)
             self._save_raw(snapshot)
             logger.info(f"SessionManager: saved {len(snapshot)} turns before LLM reload")
             return snapshot
@@ -149,15 +178,19 @@ class SessionManager:
         """
         with self._lock:
             saved = self._load_raw()
-            if not saved:
-                # Try injecting summary at minimum
-                if self._summary:
-                    llm_manager.history = [
-                        {"role": "assistant", "content": self._summary}
-                    ]
-                    return 1
+            llm_manager.history = []
+            if self._summary:
+                llm_manager.history.append({
+                    "role": "assistant",
+                    "content": (
+                        "[MEMORY FROM PREVIOUS SESSION]\n"
+                        f"{self._summary}\n"
+                        "[END OF PREVIOUS SESSION MEMORY — restored after LLM reload]"
+                    ),
+                })
+            llm_manager.history.extend(saved[-MAX_RAW_TURNS:])
+            if not llm_manager.history:
                 return 0
-            llm_manager.history = saved[-MAX_RAW_TURNS:]
             logger.info(f"SessionManager: restored {len(llm_manager.history)} turns after LLM reload")
             return len(llm_manager.history)
 
@@ -170,7 +203,7 @@ class SessionManager:
         with self._lock:
             # Load compressed summary
             summary_data = self._load_summary()
-            self._summary = summary_data.get("text", "")
+            self._summary = _bound_session_summary(summary_data.get("text", ""))
             summary_age   = summary_data.get("saved_at", "")
 
             # Load raw recent turns
@@ -271,15 +304,13 @@ class SessionManager:
             if isinstance(m, dict) and m.get("content")
         )
 
-        new_summary = self._run_compression(turns_text)
-
-        # Prepend previous summary to new one if exists
-        if previous_summary:
-            new_summary = (
-                previous_summary.rstrip()
-                + "\n\n[ADDITIONAL CONTEXT]\n"
-                + new_summary.replace("[CONTEXT FROM EARLIER IN THIS CONVERSATION]\n", "")
-            )
+        # Re-summarize prior context with the newly archived turns. Concatenating
+        # summaries here made the prompt grow on every compression cycle.
+        new_summary = self._run_compression(
+            turns_text,
+            previous_summary=_bound_session_summary(previous_summary),
+        )
+        new_summary = _bound_session_summary(new_summary)
 
         # A newer exchange may have been checkpointed while the LLM summarized
         # this snapshot. Never replace it with the older `keep` tail.
@@ -298,16 +329,25 @@ class SessionManager:
         )
         return True
 
-    def _run_compression(self, turns_text: str) -> str:
+    def _run_compression(self, turns_text: str, previous_summary: str = "") -> str:
         """Run LLM compression or fallback to simple join."""
         if self._llm_fn:
             try:
+                prompt = ""
+                if previous_summary:
+                    prompt += (
+                        "Previously compressed conversation context (historical; assistant claims "
+                        "are not verified facts):\n\n"
+                        f"{_bound_session_summary(previous_summary)}\n\n"
+                        "Newly archived conversation turns to integrate:\n\n"
+                    )
+                prompt += f"Conversation turns to summarize:\n\n{turns_text}"
                 result = self._llm_fn(
-                    f"Conversation turns to summarize:\n\n{turns_text}",
+                    prompt,
                     _COMPRESS_SYSTEM,
                 )
                 if result and len(result) > 50:
-                    return result.strip()
+                    return _bound_session_summary(result)
             except Exception as e:
                 logger.warning(f"SessionManager compression LLM failed: {e}")
 
@@ -337,16 +377,23 @@ class SessionManager:
                 lines.append(f"User asked/stated: {user_text[:500]}")
             if assistant_text:
                 lines.append(f"Assistant replied/claimed: {assistant_text[:700]}")
-        return "\n".join(lines)
+        new_turn_summary = "\n".join(lines)
+        if previous_summary:
+            return _bound_session_summary(
+                _bound_session_summary(previous_summary)
+                + "\n\n[NEWER ARCHIVED EXCERPTS]\n"
+                + new_turn_summary
+            )
+        return _bound_session_summary(new_turn_summary)
 
     # ── I/O ───────────────────────────────────────────────────────────────────
     def _save_raw(self, history: List[Dict]):
         try:
             with open(SESSION_PATH, "w", encoding="utf-8") as f:
                 json.dump({
-                    "history":  history,
+                    "history":  _raw_conversation_turns(history),
                     "saved_at": datetime.datetime.now().isoformat(),
-                    "turns":    len(history),
+                    "turns":    len(_raw_conversation_turns(history)),
                 }, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"SessionManager: save_raw failed: {e}")
@@ -355,7 +402,7 @@ class SessionManager:
         try:
             with open(SESSION_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return data.get("history", [])
+            return _raw_conversation_turns(data.get("history", []))
         except (FileNotFoundError, json.JSONDecodeError):
             return []
 

@@ -178,6 +178,137 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
         self.assertIn("not independently verified", summary)
         self.assertIn("User asked/stated: Which checks remain?", summary)
 
+    def test_compression_rewrites_prior_summary_instead_of_appending_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "session.json"
+            summary_path = Path(folder) / "summary.json"
+            captured = {}
+
+            def summarize(prompt, _system):
+                captured["prompt"] = prompt
+                return "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nUpdated bounded summary."
+
+            with patch("managers.session_manager.SESSION_PATH", str(raw_path)), patch(
+                "managers.session_manager.SUMMARY_PATH", str(summary_path)
+            ):
+                session = SessionManager(llm_fn=summarize)
+                session._summary = "Previous active objective. " + ("historical detail " * 900)
+                history = [
+                    {"role": "user", "content": f"new archived user turn {i}"}
+                    for i in range(10)
+                ]
+                session._save_raw(history)
+
+                self.assertTrue(session._compress_unlocked())
+                saved = json.loads(summary_path.read_text(encoding="utf-8"))["text"]
+
+        self.assertIn("Previously compressed conversation context", captured["prompt"])
+        self.assertIn("new archived user turn 0", captured["prompt"])
+        self.assertEqual(saved, "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nUpdated bounded summary.")
+        self.assertNotIn("[ADDITIONAL CONTEXT]", saved)
+
+    def test_legacy_oversized_summary_is_bounded_when_restored(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "session.json"
+            summary_path = Path(folder) / "summary.json"
+            raw_path.write_text(json.dumps({"history": []}), encoding="utf-8")
+            summary_path.write_text(json.dumps({
+                "text": "ACTIVE OBJECTIVE " + ("middle " * 3000) + " LATEST STATE",
+                "saved_at": "test",
+            }), encoding="utf-8")
+
+            with patch("managers.session_manager.SESSION_PATH", str(raw_path)), patch(
+                "managers.session_manager.SUMMARY_PATH", str(summary_path)
+            ):
+                session = SessionManager()
+                llm = SimpleNamespace(history=[])
+                receipt = session.load_on_boot(llm)
+
+        restored = llm.history[0]["content"]
+        self.assertTrue(receipt["restored"])
+        self.assertLessEqual(len(restored), 10_200)  # includes the session-time wrapper
+        self.assertIn("ACTIVE OBJECTIVE", restored)
+        self.assertIn("LATEST STATE", restored)
+        self.assertIn("Middle of older session summary omitted", restored)
+
+    def test_fallback_summary_stays_bounded_across_compressions(self):
+        session = SessionManager.__new__(SessionManager)
+        session._llm_fn = None
+        previous = "Older objective. " + ("old context " * 1500)
+
+        summary = session._run_compression(
+            "USER: New request.\n\nASSISTANT: New answer.",
+            previous_summary=previous,
+        )
+
+        self.assertLessEqual(len(summary), 10_000)
+        self.assertIn("New request.", summary)
+        self.assertIn("New answer.", summary)
+
+    def test_restored_summary_is_not_duplicated_in_raw_session_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "session.json"
+            summary_path = Path(folder) / "summary.json"
+            synthetic = {
+                "role": "assistant",
+                "content": "[MEMORY FROM PREVIOUS SESSION]\nOld compressed context",
+            }
+            raw_path.write_text(json.dumps({"history": [
+                synthetic,
+                {"role": "user", "content": "recent question"},
+                {"role": "assistant", "content": "recent answer"},
+            ]}), encoding="utf-8")
+            summary_path.write_text(json.dumps({
+                "text": "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nCanonical summary",
+                "saved_at": "test",
+            }), encoding="utf-8")
+
+            with patch("managers.session_manager.SESSION_PATH", str(raw_path)), patch(
+                "managers.session_manager.SUMMARY_PATH", str(summary_path)
+            ):
+                session = SessionManager()
+                llm = SimpleNamespace(history=[])
+                session.load_on_boot(llm)
+                session.on_exchange_complete(llm.history)
+                persisted = json.loads(raw_path.read_text(encoding="utf-8"))["history"]
+
+        self.assertEqual(persisted, [
+            {"role": "user", "content": "recent question"},
+            {"role": "assistant", "content": "recent answer"},
+        ])
+        self.assertFalse(any(
+            str(item.get("content", "")).startswith("[MEMORY FROM PREVIOUS SESSION")
+            for item in persisted
+        ))
+
+    def test_llm_reload_restores_summary_and_raw_turns_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "session.json"
+            summary_path = Path(folder) / "summary.json"
+            raw_path.write_text(json.dumps({"history": [
+                {"role": "user", "content": "recent question"},
+                {"role": "assistant", "content": "recent answer"},
+            ]}), encoding="utf-8")
+            summary_path.write_text(json.dumps({
+                "text": "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nCanonical summary",
+                "saved_at": "test",
+            }), encoding="utf-8")
+
+            with patch("managers.session_manager.SESSION_PATH", str(raw_path)), patch(
+                "managers.session_manager.SUMMARY_PATH", str(summary_path)
+            ):
+                session = SessionManager()
+                session.load_on_boot(SimpleNamespace(history=[]))
+                reloaded = SimpleNamespace(history=[])
+                count = session.restore_after_reload(reloaded)
+
+        self.assertEqual(count, 3)
+        self.assertIn("[MEMORY FROM PREVIOUS SESSION", reloaded.history[0]["content"])
+        self.assertEqual(reloaded.history[-2:], [
+            {"role": "user", "content": "recent question"},
+            {"role": "assistant", "content": "recent answer"},
+        ])
+
     def test_checkpoint_is_not_blocked_by_slow_compression(self):
         with tempfile.TemporaryDirectory() as folder:
             raw_path = Path(folder) / "session.json"
