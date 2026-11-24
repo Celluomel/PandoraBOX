@@ -47,6 +47,7 @@ from cognition.memory_retrieval import (
 from cognition.turn_context_evidence import (
     audit_safe_turn_summary,
     deterministic_reasoning_dependencies,
+    verify_history_exchange_append,
     format_memory_for_prompt,
     memory_retrieval_evidence,
     memory_prompt_injection_evidence,
@@ -3791,19 +3792,26 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _record_exchange = getattr(_llm_manager, "record_exchange", None)
                     _history_before = getattr(_llm_manager, "history", None)
                     _history_before_count = len(_history_before) if isinstance(_history_before, list) else None
+                    _history_before_snapshot = tuple(_history_before) if isinstance(_history_before, list) else ()
                     _history_write_status = "not_enabled" if not record_history else (
                         "unavailable" if not callable(_record_exchange) else "failed"
                     )
                     _history_write_error = ""
+                    _history_append_verified = False
                     if record_history and callable(_record_exchange):
                         try:
                             _record_exchange(effective_input, _deterministic_response)
                             _history_after = getattr(_llm_manager, "history", None)
                             _history_after_count = len(_history_after) if isinstance(_history_after, list) else None
+                            _history_append_verified = verify_history_exchange_append(
+                                _history_before_snapshot,
+                                _history_after if isinstance(_history_after, list) else (),
+                                effective_input,
+                                _deterministic_response,
+                            )
                             _history_write_status = (
                                 "recorded_in_memory"
-                                if _history_before_count is not None
-                                and _history_after_count == _history_before_count + 2
+                                if _history_append_verified
                                 else "record_call_returned_unverified"
                             )
                         except Exception as _history_error:
@@ -3826,13 +3834,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "status": _history_write_status,
                             "record_history_enabled": bool(record_history),
                             "manager_available": _llm_manager is not None,
+                            "in_memory_tail_matches": _history_append_verified,
                             "before_message_count": _history_before_count,
                             "after_message_count": _history_after_count,
                             "appended_message_count": (
-                                _history_after_count - _history_before_count
-                                if isinstance(_history_before_count, int)
-                                and isinstance(_history_after_count, int)
-                                else None
+                                2 if _history_append_verified else None
                             ),
                             "error_type": _history_write_error,
                             "durable_persistence": "unverified",

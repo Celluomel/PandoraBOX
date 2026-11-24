@@ -11,7 +11,10 @@ from cognition.empathy_engine import (
     SIGNAL_EXPLORING,
     UserAffectModel,
 )
-from cognition.turn_context_evidence import audit_safe_turn_summary
+from cognition.turn_context_evidence import (
+    audit_safe_turn_summary,
+    verify_history_exchange_append,
+)
 from core.state import _persona_relational_memory
 
 
@@ -205,12 +208,29 @@ def test_route_and_history_receipts_keep_only_bounded_provenance():
         "before_message_count": 2,
         "after_message_count": 4,
         "appended_message_count": 2,
+        "in_memory_tail_matches": True,
         "durable_persistence": "unverified",
         "private_text": "must not appear",
     })
     assert history["appended_message_count"] == 2
+    assert history["in_memory_tail_matches"] is True
     assert history["durable_persistence"] == "unverified"
     assert "private_text" not in history
+
+
+def test_history_append_verification_survives_bounded_history_eviction():
+    before = [
+        {"role": "user", "content": f"old user {index}"}
+        if index % 2 == 0 else {"role": "assistant", "content": f"old reply {index}"}
+        for index in range(20)
+    ]
+    user_entry = {"role": "user", "content": "route follow-up"}
+    assistant_entry = {"role": "assistant", "content": "POST"}
+    after = [*before[2:], user_entry, assistant_entry]
+
+    assert len(after) == len(before)
+    assert verify_history_exchange_append(before, after, "route follow-up", "POST")
+    assert not verify_history_exchange_append(before, before, "route follow-up", "POST")
 
 
 def test_semantic_extraction_summary_exposes_persistence_without_concept_text():

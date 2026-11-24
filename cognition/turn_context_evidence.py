@@ -74,6 +74,33 @@ def deterministic_reasoning_dependencies(
     return tuple(sources)
 
 
+def verify_history_exchange_append(
+    before: Iterable[Any], after: Iterable[Any], prompt: str, response: str,
+) -> bool:
+    """Verify an exchange append even when bounded history trims old entries.
+
+    At the history cap an append can evict an equal number of older messages,
+    so list length does not prove whether this exchange was recorded. Verify
+    the final user/assistant entries by role, content, and object identity.
+    """
+    before_items = tuple(before) if isinstance(before, Iterable) else ()
+    after_items = tuple(after) if isinstance(after, Iterable) else ()
+    if len(after_items) < 2:
+        return False
+    previous_ids = {id(item) for item in before_items}
+    user_entry, assistant_entry = after_items[-2:]
+    if id(user_entry) in previous_ids or id(assistant_entry) in previous_ids:
+        return False
+    return (
+        isinstance(user_entry, Mapping)
+        and user_entry.get("role") == "user"
+        and user_entry.get("content") == str(prompt or "")
+        and isinstance(assistant_entry, Mapping)
+        and assistant_entry.get("role") == "assistant"
+        and assistant_entry.get("content") == str(response or "")
+    )
+
+
 def format_memory_for_prompt(memory: Mapping[str, Any], max_chars: int = 720) -> str:
     """Render stored conversation turns with explicit speaker provenance."""
     text = str(memory.get("text", "")).strip()
@@ -358,6 +385,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "status": str(value.get("status") or "unknown")[:40],
             "record_history_enabled": bool(value.get("record_history_enabled")),
             "manager_available": bool(value.get("manager_available")),
+            "in_memory_tail_matches": bool(value.get("in_memory_tail_matches")),
             "durable_persistence": str(value.get("durable_persistence") or "unverified")[:24],
         }
         for key in ("before_message_count", "after_message_count", "appended_message_count"):
