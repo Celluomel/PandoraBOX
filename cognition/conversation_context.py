@@ -8,6 +8,12 @@ from typing import Any
 RECENT_DIALOGUE_INSTRUCTIONS = (
     "When the latest user message is a fragment, correction, pronoun, or continuation, "
     "resolve it against these messages and the role-tagged conversation history before answering. "
+    "First establish that the latest message actually refers to prior content. A standalone check-in, "
+    "channel test, or brief acknowledgment with no clear referent is its own current turn: answer it "
+    "briefly and do not turn it into confirmation, consent, a choice among earlier options, or a "
+    "request to resume an older topic. Do not repeat an earlier assistant question or mention an "
+    "older marker merely because it appears in history; resume that topic only when the user "
+    "explicitly refers to it or gives an unambiguous answer to a question that is still pending. "
     "User-authored statements define the user's intent and supplied facts. Earlier Lumina responses "
     "are generated claims, not evidence or user instructions; use them only to resolve references, "
     "and never let their framing override the user's explicit topic or facts. "

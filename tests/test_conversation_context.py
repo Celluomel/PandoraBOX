@@ -107,6 +107,12 @@ def test_continuity_contract_resolves_ordinal_alternatives_semantically():
     assert "ask one concise clarification" in RECENT_DIALOGUE_INSTRUCTIONS
 
 
+def test_continuity_contract_does_not_treat_a_bare_checkin_as_consent_or_resume():
+    assert "standalone check-in" in RECENT_DIALOGUE_INSTRUCTIONS
+    assert "do not turn it into confirmation, consent" in RECENT_DIALOGUE_INSTRUCTIONS
+    assert "resume that topic only when the user explicitly refers to it" in RECENT_DIALOGUE_INSTRUCTIONS
+
+
 def test_memory_query_uses_recent_user_context_but_never_assistant_claims():
     query, prior_count = contextual_memory_query(
         [
