@@ -280,7 +280,15 @@ def test_periodic_module_governor_skip_is_distinct_from_cadence_skip():
     loop._goal_quality_filter = object()
     loop._module_tick_log = ModuleTickLog()
     loop._module_tick_log.register("goal_quality_filter", initialized=True)
-    loop._governor = SimpleNamespace(may_run=lambda _name: False)
+    loop._governor = SimpleNamespace(
+        may_run=lambda _name: False,
+        status=lambda: SimpleNamespace(
+            mode="structured",
+            total_pressure=0.31,
+            budget_remaining=0,
+            blocked_systems=["GQF(budget_exhausted)"],
+        ),
+    )
     loop._begin_cycle_evidence(20)
 
     assert not loop._periodic_module_due(
@@ -289,7 +297,15 @@ def test_periodic_module_governor_skip_is_distinct_from_cadence_skip():
 
     stage = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]
     assert stage["status"] == "skipped_governor"
-    assert stage["metrics"] == {"cycle": 20, "interval_cycles": 20}
+    assert stage["metrics"] == {
+        "cycle": 20,
+        "interval_cycles": 20,
+        "governor_subsystem": "GQF",
+        "governor_mode": "structured",
+        "governor_pressure": 0.31,
+        "governor_budget_remaining": 0,
+        "governor_block_reason": "budget_exhausted",
+    }
     module = loop.module_tick_snapshot()["goal_quality_filter"]
     assert module["tick_count"] == 0
     assert module["skip_count"] == 1
@@ -777,7 +793,7 @@ def test_phase2_governor_denial_receipt_explains_structured_mode_and_budget():
         blocked_systems=["Phase2Narrative(structured_mode)"],
     ))
 
-    metrics = loop._phase2_governor_skip_metrics("Phase2Narrative")
+    metrics = loop._governor_skip_metrics("Phase2Narrative")
 
     assert metrics == {
         "governor_subsystem": "Phase2Narrative",
@@ -792,7 +808,7 @@ def test_phase2_governor_skip_receipt_remains_safe_without_status_api():
     loop = make_loop()
     loop._governor = SimpleNamespace(may_run=lambda _name: False)
 
-    assert loop._phase2_governor_skip_metrics("Phase2ThreadIdentity") == {
+    assert loop._governor_skip_metrics("Phase2ThreadIdentity") == {
         "governor_subsystem": "Phase2ThreadIdentity",
     }
 

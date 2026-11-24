@@ -219,8 +219,8 @@ class InternalThoughtLoop:
             for key in ("beliefs_changed", "traits_changed", "confidence_updates", "narrative_updates")
         )
 
-    def _phase2_governor_skip_metrics(self, subsystem: str) -> dict[str, Any]:
-        """Capture why the governor denied a Phase 2 enrichment stage."""
+    def _governor_skip_metrics(self, subsystem: str) -> dict[str, Any]:
+        """Capture the policy reason and budget when the governor denies a stage."""
         evidence: dict[str, Any] = {"governor_subsystem": subsystem}
         governor = getattr(self, "_governor", None)
         status_fn = getattr(governor, "status", None)
@@ -2718,7 +2718,7 @@ class InternalThoughtLoop:
         elif not _phase2_eval_allowed:
             self._record_cycle_stage(
                 "phase2_advanced_evaluation", "skipped_governor",
-                metrics=self._phase2_governor_skip_metrics("Phase2ThoughtEval"),
+                metrics=self._governor_skip_metrics("Phase2ThoughtEval"),
             )
         else:
             try:
@@ -3390,7 +3390,7 @@ class InternalThoughtLoop:
                 elif not _phase2_narrative_allowed:
                     self._record_cycle_stage(
                         "phase2_narrative_synthesis", "skipped_governor",
-                        metrics=self._phase2_governor_skip_metrics("Phase2Narrative"),
+                        metrics=self._governor_skip_metrics("Phase2Narrative"),
                     )
                 else:
                     try:
@@ -3459,7 +3459,7 @@ class InternalThoughtLoop:
                 elif not _phase2_link_allowed:
                     self._record_cycle_stage(
                         "phase2_thread_identity_link", "skipped_governor",
-                        metrics=self._phase2_governor_skip_metrics("Phase2ThreadIdentity"),
+                        metrics=self._governor_skip_metrics("Phase2ThreadIdentity"),
                     )
                 else:
                     try:
@@ -3795,6 +3795,7 @@ class InternalThoughtLoop:
             return False
         governor = getattr(self, "_governor", None)
         if governor is not None and not governor.may_run(governor_name):
+            metrics.update(self._governor_skip_metrics(governor_name))
             self._record_cycle_stage(module_name, "skipped_governor", metrics=metrics)
             return False
         return True
