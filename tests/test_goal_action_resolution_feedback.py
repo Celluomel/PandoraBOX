@@ -1,9 +1,12 @@
 import json
+import asyncio
 import tempfile
 import unittest
+from contextlib import contextmanager
 from types import ModuleType
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 # Import the executor without triggering cognition.__init__'s optional FAISS
 # native loader; this suite exercises planner/receipt behavior only.
@@ -47,6 +50,49 @@ class GoalActionResolutionFeedbackTests(unittest.TestCase):
             _generation_completion_problem({"status": "ok", "completion_verified": True}),
             "",
         )
+
+    def test_provider_connect_timeout_defers_once_instead_of_failing_goal_action(self):
+        class OfflineLLM:
+            calls = 0
+
+            def generate_bare_result(self, *_args, **_kwargs):
+                self.calls += 1
+                return {"text": "", "status": "error", "reason": "ConnectTimeout"}
+
+        @contextmanager
+        def acquired_slot(**_kwargs):
+            yield True
+
+        executor = GoalActionExecutor.__new__(GoalActionExecutor)
+        llm = OfflineLLM()
+        with patch("core.llm_scheduler.llm_scheduler.sync_slot", side_effect=acquired_slot):
+            result = asyncio.run(executor._generate_background_llm(
+                llm, "hypothesis", "test_action", 100, 0.4,
+                execution_id="exec-1", cycle_id=7,
+            ))
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertTrue(result["defer_current_cycle"])
+        self.assertIn("provider transport unavailable", result["reason"])
+        self.assertEqual(llm.calls, 1)
+
+    def test_deferred_goal_action_records_nonfailure_on_origin_cycle(self):
+        record = Mock(return_value=True)
+        executor = GoalActionExecutor.__new__(GoalActionExecutor)
+        executor._pending_predictions = {}
+        executor._o = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=record))
+
+        executor._defer_async_action(
+            SimpleNamespace(id="goal-1"), "self_question",
+            "provider transport unavailable: ConnectTimeout",
+            execution_id="exec-1", cycle_id=7,
+        )
+
+        args, kwargs = record.call_args
+        self.assertEqual(args[:3], (7, "goal_action_executor.self_question", "deferred"))
+        self.assertEqual(kwargs["metrics"]["reason_code"], "provider_transport_unavailable")
+        self.assertNotIn("success", kwargs["metrics"])
+        self.assertFalse(kwargs["metrics"]["goal_state_persisted"])
 
     def test_terminal_plan_outcome_is_forwarded_to_tte_with_goal_provenance(self):
         recorded = []

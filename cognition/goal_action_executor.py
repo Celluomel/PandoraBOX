@@ -98,6 +98,20 @@ def _generation_completion_problem(generation: Dict[str, Any]) -> str:
         return "provider_completion_unverified"
     return ""
 
+
+_TRANSIENT_TRANSPORT_ERRORS = frozenset({
+    "connecttimeout", "connectionerror", "connectionreseterror",
+    "newconnectionerror", "proxyerror", "readtimeout", "timeout",
+})
+
+
+def _is_transient_provider_transport_error(generation: Dict[str, Any]) -> bool:
+    """Separate provider connectivity failures from cognitive action failures."""
+    if str(generation.get("status") or "").casefold() != "error":
+        return False
+    reason = str(generation.get("reason") or "").strip().rsplit(".", 1)[-1]
+    return reason.casefold() in _TRANSIENT_TRANSPORT_ERRORS
+
 # Rotation order per goal — ensures all types get exercised.
 # ORDER MATTERS:
 #   BISOCIATIVE precedes WEB_SEARCH so the hypothesis it generates seeds
@@ -1614,7 +1628,10 @@ class GoalActionExecutor:
                     topic[:30],
                     reason,
                 )
-                self._defer_async_action(goal, ACTION_SELF_QUESTION, reason)
+                self._defer_async_action(
+                    goal, ACTION_SELF_QUESTION, reason,
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
                 return
 
             # Some reasoning-capable local models can spend the small first
@@ -2031,7 +2048,10 @@ class GoalActionExecutor:
                     topic[:30],
                     reason,
                 )
-                self._defer_async_action(goal, ACTION_BISOCIATIVE, reason)
+                self._defer_async_action(
+                    goal, ACTION_BISOCIATIVE, reason,
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
                 return
 
             if generation["status"] == "empty":
@@ -2583,7 +2603,7 @@ class GoalActionExecutor:
         temperature: float,
         execution_id: str = "",
         cycle_id: Optional[int] = None,
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Any]:
         """Try a background inference twice without misclassifying contention."""
         from core.llm_scheduler import llm_scheduler
 
@@ -2623,7 +2643,23 @@ class GoalActionExecutor:
                             "reason": "" if str(text or "").strip()
                             else "provider returned no assistant content",
                         }
-            if result.get("status") != "deferred" or attempt == 1:
+            if _is_transient_provider_transport_error(result):
+                transport_reason = str(result.get("reason") or "provider transport error")
+                result = {
+                    **result,
+                    "status": "deferred",
+                    "reason": f"provider transport unavailable: {transport_reason}",
+                    "defer_current_cycle": True,
+                }
+                logger.info(
+                    "[GoalActionExecutor] Deferring %s after provider transport error (%s)",
+                    caller, transport_reason[:80],
+                )
+            if (
+                result.get("status") != "deferred"
+                or attempt == 1
+                or result.get("defer_current_cycle") is True
+            ):
                 break
             await asyncio.sleep(3.0)
         normalized = {
@@ -2637,9 +2673,14 @@ class GoalActionExecutor:
         ):
             if key in result:
                 normalized[key] = result[key]
+        if result.get("defer_current_cycle") is True:
+            normalized["defer_current_cycle"] = True
         return normalized
 
-    def _defer_async_action(self, goal, action_type: str, reason: str) -> None:
+    def _defer_async_action(
+        self, goal, action_type: str, reason: str, *,
+        execution_id: str = "", cycle_id: Optional[int] = None,
+    ) -> None:
         """Close an unexecuted prediction as deferred, never as an action failure."""
         prediction = self._pending_predictions.pop((str(goal.id), action_type), None)
         if prediction is not None:
@@ -2652,6 +2693,25 @@ class GoalActionExecutor:
                 logger.debug(
                     "[GoalActionExecutor] deferred prediction closure failed: %s", exc
                 )
+        reason_code = (
+            "provider_transport_unavailable"
+            if "provider transport unavailable" in str(reason).casefold()
+            else "provider_busy_or_deferred"
+        )
+        self._record_async_cycle_evidence(
+            cycle_id,
+            f"goal_action_executor.{action_type}",
+            "deferred",
+            output={"action": action_type, "reason_code": reason_code, "reason": str(reason)[:120]},
+            metrics={
+                "action": action_type,
+                "execution_ref": hashlib.sha256(
+                    str(execution_id).encode("utf-8")
+                ).hexdigest()[:20] if execution_id else "",
+                "reason_code": reason_code,
+                "goal_state_persisted": False,
+            },
+        )
         logger.debug(
             "[GoalActionExecutor] Deferred %s for goal %s (%s)",
             action_type,
