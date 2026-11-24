@@ -76,7 +76,8 @@ _HISTORICAL_REQUEST_PATTERNS = (
     re.compile(
         r"\b(?:what|which)\s+(?P<topic>[^?!.]{1,100}?)\s+"
         r"(?:did|have|had)\s+i\s+"
-        r"(?:give|gave|tell|told|provide|provided|share|shared|mention|mentioned|"
+        r"(?:(?:repeatedly|previously|earlier|specifically)\s+)?"
+        r"(?:give|gave|given|tell|told|provide|provided|share|shared|mention|mentioned|"
         r"state|stated|send|sent|write|wrote|report|reported)\s+"
         r"(?:you\s+)?",
         re.IGNORECASE,

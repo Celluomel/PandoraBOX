@@ -17,6 +17,16 @@
 
 **Suite de l’audit :** poursuivre la chaîne profil/mémoire et les effets internes en distinguant extraction, décision d’admission, persistance et réinjection; éviter de créer des faits personnels d’essai dans le profil réel. Ensuite couvrir recherche externe et décisions d’orientation, puis réponses sociales et introspectives, avec un tour et des effets aval reliés par identifiant. Les pistes globales restent ouvertes jusqu’à leurs critères de scénario complets.
 
+### Collision d’intention mémoire / route HTTP — défaut live trouvé, correction locale en cours
+
+**Échec live, tour `lumina-1795525105050864600-3` :** la question « Which instruction have I repeatedly given you about using a dictionary to route or answer questions? » a reçu l’abstention de route HTTP « I can’t confirm a unique route… ». Le reçu indique `explicit_memory_recall=false`, `api_route_query=true`; FAISS a néanmoins retourné quatre candidats faibles (`relevance` 0,362–0,440), sans que ceux-ci servent à la réponse. La génération primaire a été sautée et le résolveur déterministe a répondu. `pipeline_integrity=consistent` décrit ici la cohérence de flux, mais ne détecte pas l’erreur d’intention. La revue sémantique est seulement `scheduled_post_response`; aucune correction aval n’a empêché l’erreur visible.
+
+**Causes dans le code :** le détecteur de route HTTP considérait le mot générique « route » suffisant, même dans la construction verbale « to route or answer questions ». Le détecteur de rappel historique couvrait « what instructions did I give you », mais pas « which instruction have I repeatedly given you » : l’adverbe et la forme verbale `given` n’étaient pas admis. Ce sont deux erreurs de classification structurelle; aucun dictionnaire réponse→texte n’est impliqué.
+
+**Correctif local :** une question de route exige maintenant une mention HTTP/API/REST/endpoint/chemin/URL, ou une construction « route » liée à un service, serveur, chat, requête ou message. La reconnaissance de rappel historique accepte l’adverbe de fréquence et le participe `given`, puis conserve le sujet et son contexte (« dictionary … route ») pour la recherche source. Des tests vérifient le rappel explicite et garantissent que cette phrase n’entre pas dans le résolveur d’API. Les cinq suites mémoire, routage, reçus et exécution passent **184 tests, 9 avertissements existants et 23 sous-tests**; `py_compile` et `git diff --check` réussissent.
+
+**À vérifier après redémarrage groupé :** rejouer la paraphrase et confirmer `explicit_memory_recall=true`, `api_route_query=false`, candidat source `user_message` pertinent, réponse fondée sur le texte utilisateur antérieur, zéro appel provider et pas de modification du profil personnel. Puis rejouer le couple route→méthode pour s’assurer que le correctif de suivi reste actif. Le code n’est pas encore chargé dans l’instance live; score global inchangé à **3/10**.
+
 ## Point de contrôle actuel — 24 novembre 2026
 
 **Redémarrage demandé : effectué.** Aucun processus Lumina ni listener sur `8080`, `8765`, `8767` ou `8786` n’était présent. Une seule instance a été lancée avec `LUMINA_MODULE_EXECUTION_AUDIT=1`; PID API **36692**, interface `8080`, Brain API `8765`, pont `8786`. `/status` a confirmé `ready=true`, Gemma, FAISS, Persona et Orchestrator actifs.

@@ -79,6 +79,14 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("POST /chat", answer)
         self.assertNotIn("/api/v1/chat/lumina-brain", answer)
 
+    def test_general_question_about_route_as_a_verb_is_not_an_api_route_query(self):
+        question = (
+            "Which instruction have I repeatedly given you about using a dictionary "
+            "to route or answer questions?"
+        )
+        self.assertFalse(is_runtime_api_route_question(question))
+        self.assertFalse(is_architecture_query(question))
+
     def test_api_route_question_abstains_when_route_match_is_ambiguous(self):
         from types import SimpleNamespace
 

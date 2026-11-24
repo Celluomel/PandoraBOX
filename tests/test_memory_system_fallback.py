@@ -506,6 +506,16 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual(recalled["status"], "supported_verbatim_source")
         self.assertIn("Continue the cognitive harness audit", recalled["answer"])
 
+    def test_repeated_instruction_recall_accepts_adverbial_historical_verb(self):
+        query = (
+            "Which instruction have I repeatedly given you about using a dictionary "
+            "to route or answer questions?"
+        )
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        topic = extract_explicit_recall_topic(query).casefold()
+        self.assertIn("dictionary", topic)
+        self.assertIn("route", topic)
+
     def test_explicit_recall_can_retrieve_a_remember_instruction_as_source(self):
         self.rows = [{
             "id": 73, "faiss_id": 73,

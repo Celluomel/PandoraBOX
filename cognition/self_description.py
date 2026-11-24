@@ -119,8 +119,11 @@ def is_runtime_api_route_question(user_input: str) -> bool:
         r"\b(?:what|which|where|quel|quelle|quels|quelles|où)\b", text,
     ))
     asks_for_registered_route = bool(re.search(
-        r"\b(?:api|http|rest|endpoint|route|path|url|chemin|adresse)\b", text,
-    ))
+        r"\b(?:api|http|rest|endpoint|path|url|chemin|adresse)\b", text,
+    )) or bool(
+        re.search(r"\broute\b", text)
+        and re.search(r"\b(?:api|brain|chat|request|message|service|server)\b", text)
+    )
     return asks_for_location and asks_for_registered_route
 
 
