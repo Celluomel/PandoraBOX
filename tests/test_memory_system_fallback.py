@@ -330,6 +330,81 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual(receipt["vector_candidate_count"], 2)
         self.assertEqual(receipt["returned_count"], 2)
 
+    def test_faiss_widens_shared_index_search_until_owner_scoped_rows_appear(self):
+        now = datetime.now().isoformat()
+        rows = [
+            {"id": i, "faiss_id": i, "text": f"Other profile memory {i}",
+             "timestamp": now, "impact_score": 0.5, "memory_type": "project",
+             "memory_tier": "personal", "owner_user_id": "other"}
+            for i in range(1, 20)
+        ]
+        rows.append({
+            "id": 20, "faiss_id": 20, "text": "Fred audit objective",
+            "timestamp": now, "impact_score": 0.9, "memory_type": "user_message",
+            "memory_tier": "personal", "owner_user_id": "fred",
+        })
+
+        class _SharedIndex:
+            ntotal = 20
+
+            def __init__(self):
+                self.requested_counts = []
+
+            def search(self, _query, count):
+                self.requested_counts.append(count)
+                ids = np.arange(1, count + 1, dtype="int64")
+                return np.full((1, count), 0.2, dtype="float32"), ids.reshape(1, -1)
+
+        index = _SharedIndex()
+        system = self._system(embedder=_Embedder(), index=index)
+        system.persistence = _Persistence(rows)
+
+        memories, receipt = system.retrieve_memories_with_receipt(
+            "audit objective", owner_user_id="fred",
+        )
+
+        self.assertEqual(index.requested_counts, [15, 20])
+        self.assertEqual([row["owner_user_id"] for row in memories], ["fred"])
+        self.assertEqual(receipt["backend"], "faiss")
+        self.assertEqual(receipt["fallback_reason"], None)
+
+    def test_explicit_recall_accepts_determiner_led_french_topic(self):
+        query = "Rappelle-moi l’objectif principal de notre audit du harnais cognitif."
+
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        self.assertIn("objectif principal", extract_explicit_recall_topic(query).casefold())
+        self.assertIn("audit du harnais cognitif", extract_explicit_recall_topic(query).casefold())
+
+    def test_generic_history_recall_discards_tangential_user_source_and_abstains(self):
+        query = "Rappelle-moi l’objectif principal de notre audit du harnais cognitif."
+        tangential_source = {
+            "id": 9768,
+            "memory_type": "user_message",
+            "text": "User message: n'est-ce pas la structure même de ton harnais cognitif",
+            "relevance": 0.632,
+        }
+
+        filtered = filter_recall_query_records([tangential_source], query=query)
+        result = explicit_recall_abstention_result(query, filtered)
+
+        self.assertEqual(filtered, [])
+        self.assertEqual(result["status"], "abstained_no_source")
+
+    def test_generic_history_recall_keeps_a_source_with_subject_coverage(self):
+        query = "Rappelle-moi l’objectif principal de notre audit du harnais cognitif."
+        source = {
+            "memory_type": "user_message",
+            "text": "L'objectif principal de notre audit du harnais cognitif est de corriger le harnais cognitif dans l'exécution de son code.",
+            "relevance": 0.9,
+        }
+
+        filtered = filter_recall_query_records([source], query=query)
+
+        self.assertEqual(filtered, [source])
+
+    def test_direct_recall_grammar_does_not_match_a_recall_infinitive(self):
+        self.assertFalse(is_explicit_memory_recall_query("Rappelle-moi de vérifier demain."))
+
     def test_retrieval_receipt_names_lexical_fallback_and_reason_when_vectors_unavailable(self):
         system = self._system()
 

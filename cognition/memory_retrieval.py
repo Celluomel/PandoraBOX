@@ -222,6 +222,16 @@ _DIRECT_RECALL_PATTERNS = (
         r"(?:donn[ée]e?|formul[ée]e?|demand[ée]e?|pos[ée]e?)\b",
         re.IGNORECASE,
     ),
+    # A determiner-led noun phrase is a general grammatical form of direct
+    # recall (e.g. "Rappelle-moi l'objectif principal de notre audit"). Keep
+    # this structural so each domain does not need an expanding topic list.
+    re.compile(
+        r"\b(?:rappelle(?:-moi)?|rappeler)\s+"
+        r"(?:(?:uniquement|seulement)\s+)?"
+        r"(?:l['’](?=[\wÀ-ÖØ-öø-ÿ])|(?:la|le|les|mon|ma|mes|notre|nos|ton|ta|tes|votre|vos)\s+)"
+        r"[\wÀ-ÖØ-öø-ÿ'-]+(?:\s+[\wÀ-ÖØ-öø-ÿ'-]+){0,11}",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(?:do\s+you\s+remember|can\s+you\s+recall)\b", re.IGNORECASE),
     # Exact filenames are historical identifiers in chat: route a direct
     # "what is the filename/name of the file" question through source-backed
@@ -443,6 +453,12 @@ def filter_recall_query_records(
     for memory in memories:
         kind = str(memory.get("memory_type", "")).casefold()
         source_text = extract_user_authored_text(memory)
+        # Historical recall is specifically about what the user previously
+        # said. Internal summaries, assistant replies, and unrelated memory
+        # tiers may be useful for ordinary generation, but cannot serve as
+        # evidence for a remembered user statement.
+        if kind not in {"user_message", "episodic"} and memory.get("source") != "legacy_episodic_user_source":
+            continue
         if kind in {"user_message", "episodic"} and is_explicit_memory_recall_query(source_text):
             continue
         # A neighboring status question can share the broad subject words
@@ -461,13 +477,16 @@ def filter_recall_query_records(
             # to treat a neighboring conversation as evidence for a specific
             # historical request. Require both multiple matching terms and a
             # minimum fraction of the identifying topic for longer queries.
-            minimum_overlap = 1 if filename_lookup or len(focus) <= 2 else 2
-            minimum_ratio = 0.05 if filename_lookup else 0.2
+            minimum_overlap = (
+                min(len(focus), max(2, math.ceil(len(focus) * 0.5)))
+                if not filename_lookup else 1
+            )
+            minimum_ratio = 0.0 if filename_lookup else 0.5
             if len(overlap) < minimum_overlap or len(overlap) / max(1, len(focus)) < minimum_ratio:
                 continue
-        if focus and kind in {"user_message", "episodic"} and _historical_request_match(query or ""):
+        if focus and kind in {"user_message", "episodic"}:
             scored_user_sources.append((overlap_count, memory))
-        else:
+        elif not focus:
             filtered.append(memory)
 
     # For an explicit historical question, several neighboring user turns can
@@ -476,7 +495,9 @@ def filter_recall_query_records(
     # prevents a weak neighbor from entering the prompt as competing evidence.
     if scored_user_sources:
         best_overlap = max(score for score, _ in scored_user_sources)
-        minimum_relevant_overlap = max(2, math.ceil(best_overlap * 0.7))
+        minimum_relevant_overlap = (
+            1 if filename_lookup else max(2, math.ceil(best_overlap * 0.7))
+        )
         filtered.extend(
             memory for score, memory in scored_user_sources
             if score >= minimum_relevant_overlap

@@ -1256,13 +1256,15 @@ class EnhancedMemorySystem:
                 if self.faiss_index is None:
                     backend, fallback_reason = "lexical", "query_embedding_failed"
                 else:
-                    n = min(limit * 3, self.faiss_index.ntotal)
-                    distances, indices = self.faiss_index.search(q_vec, n)
-                    valid_ids = [int(i) for i in indices[0] if i != -1]
-                    vector_candidate_count = len(valid_ids)
-                    if not valid_ids:
-                        backend, fallback_reason = "lexical", "faiss_returned_no_ids"
-                    else:
+                    search_window = min(limit * 3, self.faiss_index.ntotal)
+                    distances = indices = None
+                    memories = []
+                    while search_window > 0:
+                        distances, indices = self.faiss_index.search(q_vec, search_window)
+                        valid_ids = [int(i) for i in indices[0] if i != -1]
+                        vector_candidate_count = len(valid_ids)
+                        if not valid_ids:
+                            break
                         try:
                             memories = self.persistence.get_memories_by_ids(
                                 valid_ids, owner_user_id=owner_user_id,
@@ -1272,39 +1274,67 @@ class EnhancedMemorySystem:
                             if owner_user_id:
                                 memories = [m for m in memories
                                             if m.get("owner_user_id") == owner_user_id]
-                        if not memories:
-                            backend, fallback_reason = "lexical", "faiss_ids_not_in_sqlite"
-                        else:
-                            dist_map = {
-                                int(indices[0][i]): distances[0][i]
-                                for i in range(len(indices[0])) if indices[0][i] != -1
-                            }
-                            scored = []
-                            for memory in memories:
-                                distance = dist_map.get(memory["faiss_id"], float("inf"))
-                                similarity = faiss_l2_relevance(distance)
-                                recency = self._recency_score(memory["timestamp"])
-                                mood_boost = 0.0
-                                if current_valence is not None:
-                                    memory_valence = memory.get("emotional_valence", "Neutral")
-                                    if current_valence > 0.15 and memory_valence == "Positive":
-                                        mood_boost = 0.05
-                                    elif current_valence < -0.15 and memory_valence == "Negative":
-                                        mood_boost = 0.05
-                                score = (
-                                    similarity * 0.65
-                                    + memory["impact_score"] * 0.2
-                                    + recency * 0.1
-                                    + mood_boost
-                                )
-                                scored.append((score, memory))
-                            scored.sort(key=lambda item: item[0], reverse=True)
-                            memories = [
-                                dict(memory, relevance=faiss_l2_relevance(
-                                    dist_map.get(memory["faiss_id"], float("inf"))
-                                ))
-                                for _, memory in scored[:limit]
-                            ]
+                        if memories or not owner_user_id or search_window >= self.faiss_index.ntotal:
+                            break
+                        # The vector index is shared across profiles, while
+                        # SQLite enforces owner scope. A small global top-k can
+                        # contain no rows for the active user even when their
+                        # memories exist farther down the ranking. Widen the
+                        # same query until scoped candidates appear or the
+                        # index is exhausted; never return another user's row.
+                        search_window = min(
+                            int(self.faiss_index.ntotal),
+                            max(search_window + 1, search_window * 2),
+                        )
+
+                    valid_ids = [int(i) for i in indices[0] if i != -1] if indices is not None else []
+                    vector_candidate_count = len(valid_ids)
+                    if not valid_ids:
+                        backend, fallback_reason = "lexical", "faiss_returned_no_ids"
+                    elif not memories:
+                        has_global_rows = False
+                        try:
+                            global_memories = self.persistence.get_memories_by_ids(valid_ids)
+                            has_global_rows = bool(global_memories)
+                        except Exception:
+                            pass
+                        fallback_reason = (
+                            "faiss_no_owner_scoped_candidates"
+                            if owner_user_id and has_global_rows
+                            else "faiss_ids_not_in_sqlite"
+                        )
+                        backend = "lexical"
+                    else:
+                        dist_map = {
+                            int(indices[0][i]): distances[0][i]
+                            for i in range(len(indices[0])) if indices[0][i] != -1
+                        }
+                        scored = []
+                        for memory in memories:
+                            distance = dist_map.get(memory["faiss_id"], float("inf"))
+                            similarity = faiss_l2_relevance(distance)
+                            recency = self._recency_score(memory["timestamp"])
+                            mood_boost = 0.0
+                            if current_valence is not None:
+                                memory_valence = memory.get("emotional_valence", "Neutral")
+                                if current_valence > 0.15 and memory_valence == "Positive":
+                                    mood_boost = 0.05
+                                elif current_valence < -0.15 and memory_valence == "Negative":
+                                    mood_boost = 0.05
+                            score = (
+                                similarity * 0.65
+                                + memory["impact_score"] * 0.2
+                                + recency * 0.1
+                                + mood_boost
+                            )
+                            scored.append((score, memory))
+                        scored.sort(key=lambda item: item[0], reverse=True)
+                        memories = [
+                            dict(memory, relevance=faiss_l2_relevance(
+                                dist_map.get(memory["faiss_id"], float("inf"))
+                            ))
+                            for _, memory in scored[:limit]
+                        ]
             if backend == "lexical":
                 memories = self._retrieve_lexically(
                     query, limit, current_valence=current_valence,

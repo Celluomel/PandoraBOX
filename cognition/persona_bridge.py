@@ -2617,7 +2617,15 @@ class PersonaBridge:
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
             _cognitive_audit_status_query = is_cognitive_audit_status_query(effective_input)
-            _factual_plan_query = LongHorizonPlanner.is_goal_plan_query(effective_input)
+            # Explicit requests to recall conversation history must stay on
+            # the source-backed memory route even when their subject contains
+            # goal/planning language ("Rappelle-moi l'objectif principal...").
+            # Otherwise the planner's current state can replace the historical
+            # fact the user asked to retrieve.
+            _factual_plan_query = (
+                not _explicit_memory_recall
+                and LongHorizonPlanner.is_goal_plan_query(effective_input)
+            )
             _closed_world_cognitive_report_query = (
                 is_closed_world_cognitive_report_query(effective_input)
                 or _factual_plan_query
@@ -3018,7 +3026,10 @@ class PersonaBridge:
             yield {"type": "web_sources", "sources": self._last_web_sources}
         self._last_emo_dict  = emo_dict
         self._last_cond_dict = cond_dict
-        _factual_self_report = "[Cognitive telemetry - factual self-report]" in system_prompt
+        _factual_self_report = (
+            "[Cognitive telemetry - factual self-report]" in system_prompt
+            and not _explicit_memory_recall
+        )
 
         # ── Phase A2: Inner Monologue, single-call mode ──────────────────────
         # Used to run a full blocking LLM call here (Pass 1) before the real
