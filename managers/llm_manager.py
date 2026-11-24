@@ -12,6 +12,17 @@ from managers.codex_app_server_provider import CodexAppServerProvider
 
 logger = logging.getLogger(__name__)
 
+
+def _lmstudio_request_timeout(kwargs: Dict[str, Any], default_read_timeout: float) -> tuple[float, float]:
+    """Bound local socket setup separately from model generation time."""
+    requested = kwargs.get("timeout", default_read_timeout)
+    if isinstance(requested, (tuple, list)) and len(requested) == 2:
+        connect_timeout = max(0.1, float(requested[0]))
+        read_timeout = max(0.1, float(requested[1]))
+        return connect_timeout, read_timeout
+    read_timeout = max(1.0, float(requested))
+    return min(3.0, read_timeout), read_timeout
+
 # Max conversation history entries kept in memory (each entry = 1 message).
 # Older messages are dropped to keep requests small and fast.
 _HISTORY_MAX = 20  # 10 user + 10 assistant turns
@@ -360,7 +371,7 @@ class LMStudioProvider(BaseLLMProvider):
             r = requests.post(
                 f"{self.base_url}/chat/completions",
                 json=request_body,
-                timeout=max(1.0, float(kwargs.get("timeout", 60)))
+                timeout=_lmstudio_request_timeout(kwargs, 60.0),
             )
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"]
@@ -422,7 +433,7 @@ class LMStudioProvider(BaseLLMProvider):
         response = requests.post(
             f"{native_base}/api/v1/chat",
             json=payload,
-            timeout=max(1.0, float(kwargs.get("timeout", 60))),
+            timeout=_lmstudio_request_timeout(kwargs, 60.0),
         )
         if response.status_code != 200:
             raise RuntimeError(f"LM Studio native chat status {response.status_code}")
@@ -477,7 +488,7 @@ class LMStudioProvider(BaseLLMProvider):
                 f"{self.base_url}/chat/completions",
                 json=request_body,
                 stream=True,
-                timeout=60
+                timeout=_lmstudio_request_timeout(kwargs, 60.0),
             ) as r:
                 if r.status_code != 200:
                     yield f"Error: LM Studio status {r.status_code}"
@@ -572,7 +583,7 @@ class LMStudioProvider(BaseLLMProvider):
                     "temperature": kwargs.get("temperature", 0.5),
                     "max_tokens":  kwargs.get("max_tokens", 300),
                 },
-                timeout=120,
+                timeout=_lmstudio_request_timeout(kwargs, 120.0),
             )
             if r.status_code == 200:
                 text = r.json()["choices"][0]["message"]["content"]
@@ -890,6 +901,7 @@ class LLMManager:
                 self.provider, "generate_background_result", None,
             )
             completion = None
+            connection_failure = None
             # LM Studio's native /api/v1/chat endpoint does not accept the
             # OpenAI-compatible response_format contract. Route structured
             # requests through chat completions so the schema is enforceable.
@@ -901,13 +913,23 @@ class LLMManager:
                         completion = {"text": str(completion or ""), "status": "unverified"}
                     text = completion.get("text", "") or ""
                 except Exception as native_error:
-                    logger.warning(
-                        "LM Studio native background call unavailable (%s); "
-                        "falling back to chat completions",
-                        type(native_error).__name__,
-                    )
-                    provider_call_count += 1
-                    text = self.provider._generate_messages(messages, **kwargs) or ""
+                    if isinstance(native_error, (requests.exceptions.ConnectionError,
+                                                  requests.exceptions.Timeout)):
+                        connection_failure = native_error
+                        logger.warning(
+                            "LM Studio background transport failed (%s); "
+                            "skipping same-host endpoint retries",
+                            type(native_error).__name__,
+                        )
+                        text = ""
+                    else:
+                        logger.warning(
+                            "LM Studio native background call unavailable (%s); "
+                            "falling back to chat completions",
+                            type(native_error).__name__,
+                        )
+                        provider_call_count += 1
+                        text = self.provider._generate_messages(messages, **kwargs) or ""
             else:
                 background_generate = getattr(
                     self.provider, "generate_background_messages", None,
@@ -917,16 +939,33 @@ class LLMManager:
                         provider_call_count += 1
                         text = background_generate(messages, **kwargs) or ""
                     except Exception as native_error:
-                        logger.warning(
-                            "Provider native background call unavailable (%s); "
-                            "falling back to chat completions",
-                            type(native_error).__name__,
-                        )
-                        provider_call_count += 1
-                        text = self.provider._generate_messages(messages, **kwargs) or ""
+                        if isinstance(native_error, (requests.exceptions.ConnectionError,
+                                                      requests.exceptions.Timeout)):
+                            connection_failure = native_error
+                            logger.warning(
+                                "Provider background transport failed (%s); "
+                                "skipping same-host endpoint retries",
+                                type(native_error).__name__,
+                            )
+                            text = ""
+                        else:
+                            logger.warning(
+                                "Provider native background call unavailable (%s); "
+                                "falling back to chat completions",
+                                type(native_error).__name__,
+                            )
+                            provider_call_count += 1
+                            text = self.provider._generate_messages(messages, **kwargs) or ""
                 else:
                     provider_call_count += 1
                     text = self.provider._generate_messages(messages, **kwargs) or ""
+            if connection_failure is not None:
+                return {
+                    "text": "",
+                    "status": "error",
+                    "reason": type(connection_failure).__name__,
+                    "provider_call_count": provider_call_count,
+                }
             stripped = str(text).strip()
             if not stripped:
                 # A few local OpenAI-compatible servers/models return an empty
