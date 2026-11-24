@@ -506,6 +506,7 @@ def filter_recall_query_records(
         str(query or ""),
         flags=re.IGNORECASE,
     ))
+    exact_value_lookup = bool(_EXACT_VALUE_RECALL_PATTERN.search(str(query or "")))
     filtered = []
     scored_user_sources = []
     for memory in memories:
@@ -538,11 +539,15 @@ def filter_recall_query_records(
             # historical request. Require both multiple matching terms and a
             # minimum fraction of the identifying topic for longer queries.
             minimum_overlap = (
-                1 if prior_question_recall else
+                1 if prior_question_recall or filename_lookup else
+                min(len(focus), max(1, math.ceil(len(focus) * 0.8)))
+                if exact_value_lookup else
                 min(len(focus), max(2, math.ceil(len(focus) * 0.5)))
-                if not filename_lookup else 1
             )
-            minimum_ratio = 0.0 if filename_lookup else 0.5
+            minimum_ratio = (
+                0.0 if filename_lookup else
+                0.8 if exact_value_lookup else 0.5
+            )
             if len(overlap) < minimum_overlap or len(overlap) / max(1, len(focus)) < minimum_ratio:
                 continue
         if focus and kind in {"user_message", "episodic"}:

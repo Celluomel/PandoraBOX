@@ -1110,6 +1110,24 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertIn("cobalt fox 8421", result["answer"])
         self.assertNotIn("web_search", result["answer"])
 
+    def test_exact_marker_recall_rejects_a_recent_source_missing_distinguishing_context(self):
+        query = "What was the test marker I gave you for the next turn in the cognitive harness audit?"
+        near_match = {
+            "memory_type": "user_message",
+            "text": (
+                "User message: For the cognitive harness audit, the marker "
+                "I used was LUMINA-MEMORY-8B2R."
+            ),
+            "relevance": 0.99,
+        }
+
+        eligible = filter_recall_query_records([near_match], query=query)
+
+        self.assertEqual(eligible, [])
+        abstention = explicit_recall_abstention_result(query, eligible)
+        self.assertEqual(abstention["status"], "abstained_insufficient_source_match")
+        self.assertNotIn("LUMINA-MEMORY-8B2R", abstention["answer"])
+
     def test_text_recall_excludes_visual_results_from_mixed_retrieval_pool(self):
         records = [
             {"memory_tier": "interaction", "memory_type": "user_message", "text": "audit priority"},
