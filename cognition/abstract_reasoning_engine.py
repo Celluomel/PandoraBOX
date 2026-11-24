@@ -103,6 +103,8 @@ class ReasoningResult:
     prompt_fragment: str      = ""
     llm_call_count: int       = 0
     reason_code:    str       = ""
+    completion_status: str    = "unverified"
+    completion_verified: bool = False
 
 
 class AbstractReasoningEngine:
@@ -213,7 +215,7 @@ class AbstractReasoningEngine:
                         previous = self._cache.pop(user_id, None)
                         if previous is not None:
                             self._continuity_cache[user_id] = previous
-                        if result.method == "failed":
+                        if result.method in {"failed", "unverified"}:
                             # Suppress repeated malformed/truncated calls during
                             # the normal per-user cooldown. Do not mark the new
                             # input as successfully analyzed.
@@ -405,7 +407,8 @@ Return only one JSON object with all of these fields:
                     _allow_interactive_turn=allow_interactive_turn,
                 )
                 completion = completion if isinstance(completion, dict) else {}
-                completion_status = str(completion.get("status") or "unverified")
+                completion_status = str(completion.get("status") or "unverified").strip().casefold()
+                completion_verified = completion.get("completion_verified") is True
                 call_count = max(0, int(completion.get("provider_call_count", 1)))
                 if completion_status == "deferred":
                     call_count = 0
@@ -413,17 +416,33 @@ Return only one JSON object with all of these fields:
                         user_id, abstract_score,
                         str(completion.get("reason") or "provider_deferred"),
                     )
-                if completion_status not in {"ok", "unverified"}:
+                if completion_status != "ok" or not completion_verified:
+                    result_method = (
+                        "failed" if completion_status in {"error", "empty"}
+                        else "unverified"
+                    )
                     return ReasoningResult(
-                        user_id=user_id, method="failed", abstract_score=abstract_score,
-                        reason_code=completion_status[:64], llm_call_count=call_count,
+                        user_id=user_id, method=result_method, abstract_score=abstract_score,
+                        reason_code=(
+                            completion_status[:64] if completion_status != "ok"
+                            else "provider_completion_unverified"
+                        ),
+                        llm_call_count=call_count,
+                        completion_status=completion_status,
+                        completion_verified=False,
                     )
                 raw = str(completion.get("text") or "")
             else:
-                call_count = 1
-                raw = str(self._llm.generate_bare(
-                    prompt, max_tokens=420, temperature=0.35,
-                ) or "")
+                # A legacy string-only provider cannot prove that its response
+                # completed normally. Do not spend an inference call whose
+                # result cannot be distinguished from a truncated response.
+                return ReasoningResult(
+                    user_id=user_id, method="unverified", abstract_score=abstract_score,
+                    reason_code="completion_evidence_unavailable",
+                    llm_call_count=0,
+                    completion_status="unverified",
+                    completion_verified=False,
+                )
             if not raw.strip():
                 return ReasoningResult(
                     user_id=user_id, method="failed", abstract_score=abstract_score,
@@ -471,6 +490,8 @@ Return only one JSON object with all of these fields:
                 abstract_score     = abstract_score,
                 prompt_fragment    = fragment,
                 llm_call_count     = call_count,
+                completion_status  = completion_status,
+                completion_verified=True,
             )
 
         except Exception as e:
