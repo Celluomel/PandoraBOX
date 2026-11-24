@@ -80,7 +80,7 @@ class AppSettings(BaseModel):
     # work (dedup, pruning, relevance ranking). FAST tier (local MiniLM) is
     # the default for hot paths and needs no config here.
     QUALITY_EMBED_MODEL: str = "text-embedding-nomic-embed-text-v1.5"
-    EMBED_API_BASE_URL:  str = "http://localhost:1234/v1"
+    EMBED_API_BASE_URL:  str = "http://127.0.0.1:1234/v1"
 
     # ── Phase 9: Fluid Voice ───────────────────────────────────────────────
     KOKORO_VOICE:            str  = "af_heart"        # Kokoro voice ID

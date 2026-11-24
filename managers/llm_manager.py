@@ -317,7 +317,7 @@ class OllamaProvider(BaseLLMProvider):
 
 
 class LMStudioProvider(BaseLLMProvider):
-    def __init__(self, model: str = "local-model", base_url: str = "http://localhost:1234/v1", **kwargs):
+    def __init__(self, model: str = "local-model", base_url: str = "http://127.0.0.1:1234/v1", **kwargs):
         super().__init__(model, **kwargs)
         self.base_url = base_url.rstrip('/')
 

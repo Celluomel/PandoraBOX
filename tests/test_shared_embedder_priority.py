@@ -3,10 +3,23 @@ from unittest.mock import patch
 
 import numpy as np
 
-from utils.shared_embedder import APIEmbedder, interactive_priority_active, set_interactive_priority
+from managers.llm_manager import LMStudioProvider
+from utils.shared_embedder import (
+    APIEmbedder,
+    DEFAULT_BASE_URL,
+    interactive_priority_active,
+    set_interactive_priority,
+)
 
 
 class InteractiveEmbeddingPriorityTests(unittest.TestCase):
+    def test_local_lm_studio_defaults_to_reachable_ipv4_loopback(self):
+        self.assertEqual(DEFAULT_BASE_URL, "http://127.0.0.1:1234/v1")
+        self.assertEqual(
+            LMStudioProvider().base_url,
+            "http://127.0.0.1:1234/v1",
+        )
+
     def test_interactive_turn_does_not_fall_back_to_local_embedding(self):
         with patch("utils.shared_embedder._interactive_priority.is_set", return_value=True), patch(
             "utils.shared_embedder._get_fast_embedder"

@@ -4997,3 +4997,11 @@ La clôture CDE est actuellement inatteignable dans le flux de production : `CDE
 **Vérification locale :** suites du cycle interne, du cycle de vie CDE et des preuves causales : **68 tests réussis**, 9 avertissements préexistants; `py_compile` et `git diff --check` passent. La régression vérifie qu’un refus GQF distingue `budget_exhausted` d’un simple saut de cadence. Le processus live PID `18280` exécute encore le code antérieur à cette correction locale; le reçu plus détaillé sera vérifiable après le prochain redémarrage groupé.
 
 **Suite immédiate :** la politique structured-mode mérite une validation distincte en mode exploratoire avant de conclure que Phase 2 fonctionne dans les deux régimes. Le défaut plus grave reste le cycle CDE/TTE sans producteur d’issue vérifiée décrit ci-dessus. L’audit n’est pas terminé; score maintenu à **3/10 (30 %)**.
+
+### 24 novembre — blocage de démarrage LM Studio : résolution IPv6 de `localhost`
+
+**Cause vérifiée :** après le redémarrage, les requêtes Lumina à `http://localhost:1234/v1` expiraient et laissaient les API Lumina sans réponse, alors que LM Studio répondait à `http://127.0.0.1:1234/v1/models`. `localhost` se résout d’abord vers `::1`, puis vers `127.0.0.1`; le socket d’inférence local est joignable en IPv4 seulement. Une requête `requests` depuis le même environnement Python reproduit le timeout sur `localhost` et la réponse sur `127.0.0.1`. Le modèle Gemma et Nomic étaient bien listés par LM Studio; ils n’étaient pas absents.
+
+**Correction appliquée :** les trois URL locales de `config.json` (`LLM_BASE_URL`, `LLM_PREVIOUS_BASE_URL`, `EMBED_API_BASE_URL`) utilisent maintenant `127.0.0.1`. Les valeurs par défaut du fournisseur LM Studio, de l’encodeur de qualité et de la configuration d’embedding ont été alignées sur IPv4 pour éviter de recréer le défaut sur une installation neuve. Aucun secret n’a été changé. La configuration utilisateur locale n’est pas ajoutée à Git.
+
+**Vérification locale :** **79 tests réussis**, 9 avertissements préexistants; compilation et `git diff --check` passent. Le chargement live après la correction est en cours; il doit confirmer que `/status`, l’interface et les appels Gemma/Nomic répondent sans timeout avant de considérer le défaut clos.

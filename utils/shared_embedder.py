@@ -50,7 +50,7 @@ _quality_request_lock = threading.Lock()
 # Defaults
 DEFAULT_FAST_MODEL    = "all-MiniLM-L6-v2"
 DEFAULT_QUALITY_MODEL = "text-embedding-nomic-embed-text-v1.5"
-DEFAULT_BASE_URL      = "http://localhost:1234/v1"
+DEFAULT_BASE_URL      = "http://127.0.0.1:1234/v1"
 QUALITY_REQUEST_TIMEOUT = 8
 
 
