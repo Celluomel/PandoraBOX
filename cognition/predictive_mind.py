@@ -44,6 +44,12 @@ class PredictionResult:
     error_level:   float
     surprise:      bool
     timestamp:     float = field(default_factory=time.time)
+    # Prediction outcomes may only feed dissonance when an independent label
+    # scores the same variable that was predicted. The default keeps legacy
+    # and heuristic results explicitly non-evidential.
+    evidence_status: str = "unvalidated"
+    evidence_ref:    str = ""
+    outcome_scope:   str = ""
 
 
 # Stopwords excluded from novelty detection

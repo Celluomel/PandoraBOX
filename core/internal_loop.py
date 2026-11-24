@@ -440,12 +440,17 @@ class InternalThoughtLoop:
         # signals into a single dominant thought per cycle.
         try:
             from cognition.thought_thread_engine       import ThoughtThreadEngine
-            from cognition.cognitive_dissonance_engine import CognitiveDissonanceEngine
+            from cognition.cognitive_dissonance_engine import (
+                CognitiveDissonanceEngine,
+                DEFAULT_PERSISTENCE_PATH as CDE_PERSISTENCE_PATH,
+            )
             from cognition.dominant_thought_selector   import DominantThoughtSelector
             from cognition.meta_thread_evaluator       import MetaThreadEvaluator
             from cognition.narrative_arc_writer        import NarrativeArcWriter
             self._tte = ThoughtThreadEngine()
-            self._cde = CognitiveDissonanceEngine()
+            self._cde = CognitiveDissonanceEngine(
+                persistence_path=CDE_PERSISTENCE_PATH,
+            )
             self._dts = DominantThoughtSelector()
             self._mte = MetaThreadEvaluator()
             self._naw = NarrativeArcWriter()
@@ -3234,6 +3239,9 @@ class InternalThoughtLoop:
                         "auto_resolved_event_count": int(_cde_report.get("auto_resolved_event_count", 0)),
                         "deferred_low_intensity_count": int(_cde_report.get("deferred_low_intensity_count", 0)),
                         "verified_resolved_event_count": int(_cde_report.get("verified_resolved_event_count", 0)),
+                        "prediction_detector_status": str(
+                            _cde_report.get("prediction_detector_status", "unreported")
+                        ),
                         "event_ids": ",".join(str(item.get("id", "")) for item in _cde_event_refs
                                               if isinstance(item, dict) and item.get("id")),
                         "event_types": ",".join(str(item.get("type", "")) for item in _cde_event_refs

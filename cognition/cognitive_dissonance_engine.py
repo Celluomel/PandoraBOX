@@ -24,11 +24,16 @@ Integration:
 from __future__ import annotations
 
 import logging
+import json
+import math
+import os
 import time
 import uuid
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
+from pathlib import Path
+import threading
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from cognition.world_model import causal_belief_has_intervention_evidence
@@ -42,6 +47,7 @@ logger = logging.getLogger(__name__)
 DISSONANCE_THRESHOLD = 0.35   # below this intensity → ignore
 CONFIDENCE_PENALTY   = 0.12   # per dissonance event applied to thread
 MAX_DISSONANCE_EVENTS = 20    # keep only most recent
+DEFAULT_PERSISTENCE_PATH = "data/persona/cognitive_dissonance_events.json"
 
 _EXPLORATION_ACTIONS = {
     "memory_recall", "web_search", "self_question",
@@ -106,8 +112,19 @@ class CognitiveDissonanceEngine:
     Instantiated once and owned by the InternalThoughtLoop.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, persistence_path: str | None = None) -> None:
+        # Keep the engine deterministic in isolated/unit use. Production wires
+        # an explicit persona data path from InternalThoughtLoop.
+        self._path = Path(persistence_path) if persistence_path else None
+        self._lock = threading.RLock()
         self._events: List[DissonanceEvent] = []
+        self._last_persistence_status = "not_attempted"
+        self._prediction_detector_status = "not_run"
+        self._load_failed = False
+        if self._path is None:
+            self._last_persistence_status = "disabled_in_memory_only"
+        else:
+            self._load_events()
         self.last_step_report: Dict[str, Any] = {
             "detected_event_count": 0,
             "meta_threads_spawned": 0,
@@ -116,8 +133,92 @@ class CognitiveDissonanceEngine:
             "deferred_low_intensity_count": 0,
             "verified_resolved_event_count": 0,
             "event_refs": [],
+            "event_store_status": self._last_persistence_status,
+            "prediction_detector_status": self._prediction_detector_status,
         }
         logger.info("[CDE] CognitiveDissonanceEngine initialised")
+
+    def _load_events(self) -> None:
+        """Restore stable CDE event IDs so persisted TTE links remain resolvable."""
+        if self._path is None:
+            self._last_persistence_status = "disabled_in_memory_only"
+            return
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            rows = raw.get("events", []) if isinstance(raw, dict) else []
+            if not isinstance(rows, list):
+                raise ValueError("CDE event journal events must be a list")
+            loaded = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    values = dict(row)
+                    values["type"] = DissonanceEventType(values["type"])
+                    event = DissonanceEvent(**values)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if event.id:
+                    loaded.append(event)
+            self._events = self._retain_events(loaded)
+            self._last_persistence_status = "loaded" if loaded else "loaded_empty"
+        except FileNotFoundError:
+            self._last_persistence_status = "new_store"
+        except Exception as exc:
+            self._load_failed = True
+            self._last_persistence_status = f"load_failed:{type(exc).__name__}"
+            logger.warning("[CDE] Event journal load failed: %s", type(exc).__name__)
+
+    def _save_events(self) -> bool:
+        """Atomically persist the bounded journal and verify the bytes round-trip."""
+        if self._path is None:
+            self._last_persistence_status = "disabled_in_memory_only"
+            return False
+        if self._load_failed:
+            self._last_persistence_status = "load_failed_preserved"
+            return False
+        temporary_path = self._path.with_name(self._path.name + ".tmp")
+        try:
+            with self._lock:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                retained_events = self._retained_events_locked()
+                payload = {
+                    "schema": "lumina_cde_events.v1",
+                    "events": [asdict(event) | {"type": event.type.value}
+                               for event in retained_events],
+                }
+                serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                temporary_path.write_text(serialized, encoding="utf-8")
+                os.replace(temporary_path, self._path)
+                saved = json.loads(self._path.read_text(encoding="utf-8"))
+                if saved != json.loads(serialized):
+                    raise OSError("CDE event journal read-back mismatch")
+                self._events = retained_events
+            self._last_persistence_status = "persisted"
+            return True
+        except Exception as exc:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._last_persistence_status = f"persistence_failed:{type(exc).__name__}"
+            logger.warning("[CDE] Event journal persistence failed: %s", type(exc).__name__)
+            return False
+
+    @staticmethod
+    def _retain_events(events: List[DissonanceEvent]) -> List[DissonanceEvent]:
+        """Keep every open event (TTE may reference it), plus recent resolved history."""
+        unresolved = [event for event in events if not event.resolved]
+        resolved = [event for event in events if event.resolved]
+        retained_ids = {event.id for event in unresolved}
+        retained_ids.update(event.id for event in resolved[-MAX_DISSONANCE_EVENTS:])
+        return sorted(
+            (event for event in events if event.id in retained_ids),
+            key=lambda event: (event.created_at, event.id),
+        )
+
+    def _retained_events_locked(self) -> List[DissonanceEvent]:
+        return self._retain_events(self._events)
 
     # ── Detection ─────────────────────────────────────────────────────────────
 
@@ -182,8 +283,10 @@ class CognitiveDissonanceEngine:
                 prior.resolution_status = "pending"
                 new_events.append(prior)
 
-        if len(self._events) > MAX_DISSONANCE_EVENTS:
-            self._events = self._events[-MAX_DISSONANCE_EVENTS:]
+        # The cap applies to resolved history only. Open events can be
+        # referenced by durable TTE meta-threads, so truncating by list age
+        # would orphan their event IDs before resolution.
+        self._events = self._retain_events(self._events)
 
         if new_events:
             logger.debug(f"[CDE] Detected {len(new_events)} new dissonance event(s)")
@@ -372,6 +475,10 @@ class CognitiveDissonanceEngine:
                 # intervention comparison and must not become a causal claim.
 
         logger.debug(f"[CDE] Verified resolutions: {sum(1 for e in events if e.resolved)}")
+        # Persist both newly detected and resolved events. TTE stores the
+        # event ID on its meta-thread; losing this journal on restart would
+        # leave that durable thread detached from its source observation.
+        self._save_events()
 
     def step(
         self,
@@ -448,6 +555,8 @@ class CognitiveDissonanceEngine:
                  "resolution_evidence_ref": str(event.resolution_evidence_ref or "")[:48]}
                 for event in list(report_events.values())[-20:]
             ],
+            "event_store_status": self._last_persistence_status,
+            "prediction_detector_status": self._prediction_detector_status,
         }
         return result
 
@@ -666,29 +775,59 @@ class CognitiveDissonanceEngine:
 
     def _detect_prediction_vs_reality(self, ctx: "CDEContext") -> List[DissonanceEvent]:
         """
-        Phase 5.3 — the event type that was missing: 'expected confidence
-        0.82, actual 0.61'. Reads PredictiveMind's real _results history
-        (Prediction.confidence vs PredictionResult.error_level) rather
-        than inventing a new tracking mechanism.
+        Compare predicted and observed intent only when an independent,
+        same-domain outcome receipt exists. Prediction confidence and error
+        magnitude are different quantities and must never be compared as if
+        one were the realized value of the other.
         """
         events: List[DissonanceEvent] = []
         pm = getattr(ctx, "predictive_mind", None)
-        results = list(getattr(pm, "_results", []))[-5:] if pm else []
+        if pm is None:
+            self._prediction_detector_status = "unavailable_no_predictive_mind"
+            return events
+        results = list(getattr(pm, "_results", []))[-5:]
+        if not results:
+            self._prediction_detector_status = "unavailable_no_outcome_results"
+            return events
+        rejected = 0
         for r in results:
-            pred_conf = getattr(getattr(r, "prediction", None), "confidence", None)
-            err = getattr(r, "error_level", None)
-            if pred_conf is None or err is None:
+            evidence_status = getattr(r, "evidence_status", "unvalidated")
+            evidence_ref = str(getattr(r, "evidence_ref", "") or "").strip()
+            outcome_scope = getattr(r, "outcome_scope", "")
+            prediction = getattr(r, "prediction", None)
+            predicted_intent = str(getattr(prediction, "expected_intent", "") or "").strip()
+            actual_intent = str(getattr(r, "actual_intent", "") or "").strip()
+            pred_conf = getattr(prediction, "confidence", None)
+            error_level = getattr(r, "error_level", None)
+            if (
+                evidence_status != "independently_validated"
+                or not evidence_ref
+                or outcome_scope != "intent"
+                or not predicted_intent
+                or not actual_intent
+                or not isinstance(pred_conf, (int, float))
+                or not math.isfinite(float(pred_conf))
+                or not 0.0 <= float(pred_conf) <= 1.0
+                or not isinstance(error_level, (int, float))
+                or not math.isfinite(float(error_level))
+                or not 0.0 <= float(error_level) <= 1.0
+            ):
+                rejected += 1
                 continue
-            realized = 1.0 - err   # actual outcome quality, in hindsight
-            gap = pred_conf - realized
-            if gap > 0.20:   # confidently expected better than what happened
+            if predicted_intent.casefold() != actual_intent.casefold() and float(pred_conf) >= 0.6:
                 events.append(DissonanceEvent(
                     id        = uuid.uuid4().hex[:12],
                     type      = DissonanceEventType.PREDICTION_VS_REALITY,
-                    predicted = {"confidence": round(pred_conf, 3)},
-                    actual    = {"confidence": round(realized, 3)},
-                    intensity = min(0.9, gap),
+                    evidence_ref = evidence_ref,
+                    predicted = {"intent": predicted_intent, "confidence": round(float(pred_conf), 3)},
+                    actual    = {"intent": actual_intent, "error_level": round(float(error_level), 3)},
+                    intensity = min(0.9, float(pred_conf) * max(float(error_level), 0.35)),
                 ))
+        self._prediction_detector_status = (
+            "unavailable_no_independent_same_domain_outcomes"
+            if rejected == len(results) and not events
+            else "validated_same_domain_outcome_checked"
+        )
         return events[:3]
 
     # ── Phase 5.3: self-question / ownership / competing hypotheses ────────

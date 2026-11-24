@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from datetime import datetime
+import json
 import time
 
 from cognition.cognitive_dissonance_engine import (
@@ -74,6 +75,161 @@ def test_repeated_detection_reuses_pending_event_and_escalation_reactivates_it()
     assert first[0].observation_count == 3
     assert first[0].resolution_status == "pending"
     assert first[0].intensity == 0.8
+
+
+def test_cde_event_id_and_resolution_state_survive_restart(tmp_path):
+    store = tmp_path / "cde-events.json"
+    engine = CognitiveDissonanceEngine(str(store))
+    event = _event(intensity=0.8, event_id="stable-event-id")
+    engine._events.append(event)
+    engine._detect_identity_vs_action = lambda _ctx: []
+    engine._detect_goal_vs_outcome = lambda _ctx: []
+    engine._detect_belief_vs_evidence = lambda _ctx: []
+    engine._detect_prediction_vs_reality = lambda _ctx: []
+    thread = SimpleNamespace(source="dissonance", current_state={
+        "cde_event_id": event.id,
+        "verified_outcome": {
+            "status": "success",
+            "evidence_ref": "observation:later-action-7",
+            "belief_statement": "A later matching action receipt counters the specific absence observation.",
+            "confidence": 0.75,
+        },
+    })
+    tte = SimpleNamespace(
+        all_threads=lambda: [thread],
+        resolve_thread=lambda _thread, _ctx, **kwargs: SimpleNamespace(
+            status=SimpleNamespace(value="completed"), **kwargs,
+        ),
+        spawn_thread=lambda *_args: None,
+    )
+
+    engine.step([], tte, CDEContext(), SimpleNamespace())
+
+    persisted = json.loads(store.read_text(encoding="utf-8"))
+    assert persisted["schema"] == "lumina_cde_events.v1"
+    assert persisted["events"][0]["id"] == event.id
+    assert persisted["events"][0]["resolved"] is True
+    assert engine.last_step_report["event_store_status"] == "persisted"
+
+    restored = CognitiveDissonanceEngine(str(store))
+    restored_event = restored._events[0]
+    assert restored_event.id == event.id
+    assert restored_event.resolved is True
+    assert restored_event.resolution_evidence_ref == "observation:later-action-7"
+
+
+def test_cde_persistence_failure_is_reported_without_claiming_durability(tmp_path):
+    blocked_path = tmp_path / "blocked.json"
+    blocked_path.mkdir()
+    engine = CognitiveDissonanceEngine(str(tmp_path / "working.json"))
+    engine._path = blocked_path
+    event = _event(event_id="not-durable")
+    engine._events.append(event)
+    engine._detect_identity_vs_action = lambda _ctx: []
+    engine._detect_goal_vs_outcome = lambda _ctx: []
+    engine._detect_belief_vs_evidence = lambda _ctx: []
+    engine._detect_prediction_vs_reality = lambda _ctx: []
+    engine.step([], SimpleNamespace(all_threads=lambda: []), CDEContext(), SimpleNamespace())
+
+    assert engine.last_step_report["event_store_status"].startswith("persistence_failed:")
+    assert event.resolved is False
+
+
+def test_cde_retains_open_event_links_beyond_resolved_history_limit(tmp_path):
+    store = tmp_path / "cde-events.json"
+    engine = CognitiveDissonanceEngine(str(store))
+    open_event = _event(event_id="open-event")
+    open_event.created_at = 1.0
+    engine._events.append(open_event)
+    engine._events.extend(
+        _event(event_id=f"resolved-{index}")
+        for index in range(25)
+    )
+    for event in engine._events[1:]:
+        event.resolved = True
+
+    assert engine._save_events() is True
+
+    restored = CognitiveDissonanceEngine(str(store))
+    retained_ids = {event.id for event in restored._events}
+    assert "open-event" in retained_ids
+    assert "resolved-0" not in retained_ids
+    assert len(retained_ids) == 21  # 1 pending + most recent 20 resolved
+
+
+def test_detection_does_not_evict_unresolved_events_referenced_by_meta_threads():
+    engine = CognitiveDissonanceEngine()
+    referenced = _event(event_id="referenced-pending-event")
+    engine._events.append(referenced)
+    def create_new_events(_ctx):
+        events = []
+        for index in range(25):
+            event = _event(event_id=f"new-{index}")
+            event.belief_ref = f"belief-{index}"
+            events.append(event)
+        return events
+
+    engine._detect_identity_vs_action = create_new_events
+    engine._detect_goal_vs_outcome = lambda _ctx: []
+    engine._detect_belief_vs_evidence = lambda _ctx: []
+    engine._detect_prediction_vs_reality = lambda _ctx: []
+
+    engine.detect(CDEContext())
+
+    retained_ids = {event.id for event in engine._events}
+    assert referenced.id in retained_ids
+    assert len(retained_ids) == 26
+
+
+def test_cde_does_not_overwrite_an_unreadable_existing_journal(tmp_path):
+    store = tmp_path / "cde-events.json"
+    original = b"{not valid json"
+    store.write_bytes(original)
+    engine = CognitiveDissonanceEngine(str(store))
+    engine._events.append(_event(event_id="must-not-replace-corrupt-history"))
+    engine._detect_identity_vs_action = lambda _ctx: []
+    engine._detect_goal_vs_outcome = lambda _ctx: []
+    engine._detect_belief_vs_evidence = lambda _ctx: []
+    engine._detect_prediction_vs_reality = lambda _ctx: []
+
+    engine.step([], SimpleNamespace(all_threads=lambda: []), CDEContext(), SimpleNamespace())
+
+    assert engine.last_step_report["event_store_status"] == "load_failed_preserved"
+    assert store.read_bytes() == original
+
+
+def test_prediction_detector_does_not_treat_heuristic_confidence_as_realized_outcome():
+    engine = CognitiveDissonanceEngine()
+    result = SimpleNamespace(
+        prediction=SimpleNamespace(expected_intent="factual", confidence=0.95),
+        actual_intent="social",
+        error_level=0.8,
+    )
+    ctx = CDEContext(predictive_mind=SimpleNamespace(_results=[result]))
+
+    assert engine._detect_prediction_vs_reality(ctx) == []
+    assert engine._prediction_detector_status == "unavailable_no_independent_same_domain_outcomes"
+
+
+def test_prediction_detector_requires_and_preserves_independent_same_domain_evidence():
+    engine = CognitiveDissonanceEngine()
+    result = SimpleNamespace(
+        prediction=SimpleNamespace(expected_intent="factual", confidence=0.95),
+        actual_intent="social",
+        error_level=0.8,
+        evidence_status="independently_validated",
+        evidence_ref="annotator:turn-51:label-2",
+        outcome_scope="intent",
+    )
+    ctx = CDEContext(predictive_mind=SimpleNamespace(_results=[result]))
+
+    events = engine._detect_prediction_vs_reality(ctx)
+
+    assert len(events) == 1
+    assert events[0].evidence_ref == "annotator:turn-51:label-2"
+    assert events[0].predicted["intent"] == "factual"
+    assert events[0].actual["intent"] == "social"
+    assert engine._prediction_detector_status == "validated_same_domain_outcome_checked"
 
 
 def test_resolution_requires_verified_outcome_receipt_before_personality_update():
