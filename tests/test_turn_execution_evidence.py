@@ -9,6 +9,8 @@ from cognition.ai_system import EnhancedAISystem
 from cognition.ai_system import generate_semantic_hash
 from cognition.persona_bridge import (
     PersonaBridge,
+    _is_factual_self_report_turn,
+    _should_schedule_semantic_review_post_response,
     _prior_assistant_evidence_detail,
     _prior_assistant_evidence_summary,
     _prior_assistant_trace_evidence,
@@ -552,6 +554,34 @@ def test_deterministic_reasoning_receipt_links_memory_and_planner_inputs():
         selected=True, cognitive_audit_report=True,
     ) == ("turn_input", "cognitive_audit_status_report")
     assert deterministic_reasoning_dependencies(selected=False, memory_recall=True) == ()
+
+
+def test_factual_plan_route_does_not_depend_on_prompt_budget_admitting_context():
+    assert _is_factual_self_report_turn(True, "short prompt", False) is True
+    assert _is_factual_self_report_turn(False, "[Cognitive telemetry - factual self-report]", False) is True
+    assert _is_factual_self_report_turn(True, "[Cognitive telemetry - factual self-report]", True) is False
+    assert _is_factual_self_report_turn(False, "ordinary prompt", False) is False
+
+
+def test_source_backed_deterministic_planner_answer_skips_uninformative_llm_review():
+    assert _should_schedule_semantic_review_post_response(
+        response_present=True,
+        generation_failed=False,
+        source_recall_attempt=False,
+        deterministic_affect_report=False,
+        deterministic_planner_answer=True,
+        peer_name=None,
+        state_signaled_depth_turn=True,
+    ) is False
+    assert _should_schedule_semantic_review_post_response(
+        response_present=True,
+        generation_failed=False,
+        source_recall_attempt=False,
+        deterministic_affect_report=False,
+        deterministic_planner_answer=False,
+        peer_name=None,
+        state_signaled_depth_turn=True,
+    ) is True
 
 
 def test_runtime_execution_evidence_snapshot_binds_exact_turn_and_manifest_counts():

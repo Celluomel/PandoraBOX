@@ -153,6 +153,43 @@ def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
     return hashlib.sha256(material).hexdigest(), summary
 
 
+def _is_factual_self_report_turn(
+    factual_plan_query: bool,
+    system_prompt: str,
+    explicit_memory_recall: bool,
+) -> bool:
+    """Keep factual routing authoritative even if prompt budgeting drops context."""
+    return bool(
+        not explicit_memory_recall
+        and (
+            factual_plan_query
+            or "[Cognitive telemetry - factual self-report]" in system_prompt
+        )
+    )
+
+
+def _should_schedule_semantic_review_post_response(
+    *,
+    response_present: bool,
+    generation_failed: bool,
+    source_recall_attempt: bool,
+    deterministic_affect_report: bool,
+    deterministic_planner_answer: bool,
+    peer_name: str | None,
+    state_signaled_depth_turn: bool,
+) -> bool:
+    """Schedule only reviews that can add evidence beyond deterministic receipts."""
+    return bool(
+        response_present
+        and not generation_failed
+        and not source_recall_attempt
+        and not deterministic_affect_report
+        and not deterministic_planner_answer
+        and not peer_name
+        and state_signaled_depth_turn
+    )
+
+
 def _runtime_execution_evidence_snapshot(trace: Any) -> dict[str, Any]:
     """Build a bounded, turn-specific snapshot for deterministic trace reports."""
     trace = trace if isinstance(trace, dict) else {}
@@ -1190,6 +1227,8 @@ class PersonaBridge:
             if status.startswith("abstained_")
             else "deterministic_affect_source_projection"
             if status == "passed_deterministic_source_projection"
+            else "deterministic_planner_source_projection"
+            if status == "passed_factual_planner_projection"
             else "review_not_required_single_pass"
             if status == "not_required_single_pass"
             else "review_scheduled_post_response"
@@ -1202,6 +1241,8 @@ class PersonaBridge:
                 if status == "passed_source_abstention"
                 else "deterministic_projection_of_live_modeled_affect_channels"
                 if status == "passed_deterministic_source_projection"
+                else "deterministic_projection_of_persisted_planner_snapshot"
+                if status == "passed_factual_planner_projection"
                 else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
             ),
             "stage_status": str(status)[:48],
@@ -3026,9 +3067,10 @@ class PersonaBridge:
             yield {"type": "web_sources", "sources": self._last_web_sources}
         self._last_emo_dict  = emo_dict
         self._last_cond_dict = cond_dict
-        _factual_self_report = (
-            "[Cognitive telemetry - factual self-report]" in system_prompt
-            and not _explicit_memory_recall
+        _factual_self_report = _is_factual_self_report_turn(
+            _factual_plan_query,
+            system_prompt,
+            _explicit_memory_recall,
         )
 
         # ── Phase A2: Inner Monologue, single-call mode ──────────────────────
@@ -4240,17 +4282,29 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         if (
             raw_response.strip() and not _generation_failed
             and not _source_recall_attempt and not _deterministic_affect_report
+            and not (
+                _factual_plan_query
+                and str(_deterministic_response or "").strip()
+            )
         ):
             # Conversation owns delivery. The former synchronous LLM review
             # could spend 1–2 extra generations and replace valid prose with a
             # refusal. Escalated review is scheduled after the answer and is
             # advisory only; ordinary turns stay on the single-generation path.
-            _semantic_review_post_response = bool(
-                not peer_name and (
+            _semantic_review_post_response = _should_schedule_semantic_review_post_response(
+                response_present=bool(raw_response.strip()),
+                generation_failed=_generation_failed,
+                source_recall_attempt=_source_recall_attempt,
+                deterministic_affect_report=_deterministic_affect_report,
+                deterministic_planner_answer=bool(
+                    _factual_plan_query and str(_deterministic_response or "").strip()
+                ),
+                peer_name=peer_name,
+                state_signaled_depth_turn=bool(
                     _closed_world_cognitive_report_query
                     or _goal_means_followup
                     or displayed_cognitive_trace is not None
-                )
+                ),
             )
             _semantic_status = (
                 "scheduled_post_response" if _semantic_review_post_response
@@ -4356,6 +4410,42 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 },
             )
             _response_source_stage = "semantic_answer_validation"
+        elif (
+            raw_response.strip() and not _generation_failed
+            and _factual_plan_query
+            and str(_deterministic_response or "").strip()
+        ):
+            expected_plan_answer = str(_deterministic_response).strip()
+            exact_result_match = raw_response.strip() == expected_plan_answer
+            if not exact_result_match:
+                raw_response = expected_plan_answer
+            _semantic_status = "passed_factual_planner_projection"
+            self._record_turn_stage(
+                "semantic_answer_validation", _semantic_status,
+                "Exact comparison with the deterministic answer rendered from the persisted planner snapshot; no LLM reviewer was called.",
+                output={
+                    "source": "planner_factual_snapshot",
+                    "validation_method": "exact_deterministic_projection_match",
+                    "response_matched_source": exact_result_match,
+                    "final_response_matches_source": raw_response.strip() == expected_plan_answer,
+                    "response_replaced": not exact_result_match,
+                },
+                consumes=("planner_factual_answer", "planner_factual_snapshot", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
+            self._record_semantic_validation_summary(
+                _audit_turn_id,
+                _semantic_status,
+                {
+                    "relevant": True,
+                    "claim_basis": "factual",
+                    "evidence_support": "supported",
+                    "contract_compliant": True,
+                    "validation_method": "exact_deterministic_projection_match",
+                },
+            )
+            _response_source_stage = "semantic_answer_validation"
+
         if _safety is not None:
             try:
                 _or = _safety.check_output(raw_response, user_id)

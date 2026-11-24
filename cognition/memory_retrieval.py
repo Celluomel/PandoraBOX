@@ -208,6 +208,36 @@ _SOURCE_ONLY_RECALL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_PRIOR_QUESTION_RECALL_PATTERNS = (
+    re.compile(
+        r"\b(?:rappelle(?:-moi)?|rappeler)\s+(?:uniquement\s+)?"
+        r"(?:la\s+)?question\b.{0,120}\b(?:que\s+je\s+(?:viens\s+de\s+)?poser|"
+        r"que\s+j['’]ai\s+pos[ée]e|pr[eé]c[eé]dente|derni[eè]re)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bquelle(?:\s+(?:[eé]tait|est))?\s+(?:ma\s+)?"
+        r"(?:derni[eè]re|pr[eé]c[eé]dente)\s+question\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bquelle(?:\s+(?:[eé]tait|est))?\s+(?:ma\s+)?question\s+"
+        r"(?:pr[eé]c[eé]dente|derni[eè]re)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:what\s+was|remind\s+me(?:\s+what)?|repeat)\s+"
+        r"(?:(?:my|the)\s+)?(?:previous|last|preceding|most\s+recent)\s+question\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwhat\s+(?:was\s+)?(?:(?:the|my)\s+)?"
+        r"(?:[\wÀ-ÖØ-öø-ÿ'-]+\s+){0,2}question\s+(?:that\s+)?"
+        r"(?:(?:did|do|have)\s+)?(?:i\s+)?(?:just\s+)?ask(?:ed)?\b",
+        re.IGNORECASE,
+    ),
+)
+
 _DIRECT_RECALL_PATTERNS = (
     re.compile(r"\b(?:do|did|can|could|will|would)\s+you\s+(?:remember|recall)\b", re.IGNORECASE),
     re.compile(r"\bwhat\s+(?:do|did|have|has|can)\s+you\s+(?:remember|recall)\b", re.IGNORECASE),
@@ -257,6 +287,12 @@ def _historical_request_match(text: str):
     return None
 
 
+def _is_prior_question_recall_query(text: str) -> bool:
+    """Identify requests to retrieve an earlier user question as a source."""
+    value = str(text or "")
+    return any(pattern.search(value) for pattern in _PRIOR_QUESTION_RECALL_PATTERNS)
+
+
 def faiss_l2_relevance(distance: float) -> float:
     """Map squared-L2 distance between unit vectors to non-negative cosine relevance.
 
@@ -281,6 +317,26 @@ def extract_explicit_recall_topic(text: str) -> str:
     remembered, rather than the current instruction about remembering it.
     """
     value = str(text or "").strip()
+    if _is_prior_question_recall_query(value):
+        # A prior-question request is anchored by turn order and interrogative
+        # form. If it names a subject, keep only that subject for retrieval;
+        # otherwise use a recency-based source lookup instead of embedding
+        # framing words such as "the question I just asked".
+        topic_match = re.search(
+            r"\b(?:au\s+sujet\s+de|[àa]\s+propos\s+de|concernant|"
+            r"about|regarding|on)\s+(?P<topic>[^?!.]{1,120})",
+            value,
+            flags=re.IGNORECASE,
+        )
+        if topic_match:
+            topic = topic_match.group("topic")
+            topic = re.split(
+                r"\b(?:r[eé]ponds?|r[eé]pondre|answer|respond|reply|"
+                r"sans\s+inventer|without\s+guessing)\b",
+                topic, maxsplit=1, flags=re.IGNORECASE,
+            )[0]
+            return topic.strip(" \t\r\n,;:?.!«»\"'")[:180]
+        return ""
     # Historical-request questions are recall requests even without the
     # literal verbs "remember" or "recall". Keep only their subject clause.
     asked_match = _historical_request_match(value)
@@ -414,7 +470,7 @@ def extract_user_authored_text(memory: dict) -> str:
 def is_explicit_memory_recall_query(text: str) -> bool:
     """Recognize explicit requests to retrieve earlier conversational facts."""
     value = " ".join(str(text or "").casefold().split())
-    if _historical_request_match(value) or any(
+    if _is_prior_question_recall_query(value) or _historical_request_match(value) or any(
         pattern.search(value) for pattern in _DIRECT_RECALL_PATTERNS
     ):
         return True
@@ -442,6 +498,7 @@ def filter_recall_query_records(
     before prompt injection; an empty result is preferable to a plausible
     answer assembled from a neighboring conversation topic.
     """
+    prior_question_recall = _is_prior_question_recall_query(query)
     focus = set(tokenize(_explicit_recall_focus(query))) if query else set()
     filename_lookup = bool(re.search(
         r"\b(?:filename|file\s*name|nom\s+du\s+fichier|nom\s+du\s+document)\b",
@@ -466,7 +523,9 @@ def filter_recall_query_records(
         # being requested. For explicit historical recall, interrogative user
         # turns are prompts, not source evidence; prefer declarative requests
         # or statements that can actually substantiate the answer.
-        if kind in {"user_message", "episodic"} and re.search(r"[?？]", source_text):
+        if kind in {"user_message", "episodic"} and re.search(r"[?？]", source_text) and not prior_question_recall:
+            continue
+        if prior_question_recall and not re.search(r"[?？]", source_text):
             continue
         overlap_count = 0
         if focus and kind in {"user_message", "episodic"}:
@@ -478,6 +537,7 @@ def filter_recall_query_records(
             # historical request. Require both multiple matching terms and a
             # minimum fraction of the identifying topic for longer queries.
             minimum_overlap = (
+                1 if prior_question_recall else
                 min(len(focus), max(2, math.ceil(len(focus) * 0.5)))
                 if not filename_lookup else 1
             )
@@ -502,6 +562,22 @@ def filter_recall_query_records(
             memory for score, memory in scored_user_sources
             if score >= minimum_relevant_overlap
         )
+    if prior_question_recall and filtered:
+        # Episodic and dedicated user-message rows can duplicate the same
+        # utterance. Choose the newest matching question by persistent memory
+        # order, with the dedicated source winning a same-turn tie.
+        def recency_key(memory: dict) -> tuple[int, str, int]:
+            try:
+                memory_id = int(memory.get("id") or memory.get("faiss_id") or 0)
+            except (TypeError, ValueError, OverflowError):
+                memory_id = 0
+            return (
+                memory_id,
+                str(memory.get("timestamp") or ""),
+                1 if memory.get("memory_type") == "user_message" else 0,
+            )
+
+        return [max(filtered, key=recency_key)]
     return filtered
 
 
@@ -603,7 +679,10 @@ def explicit_recall_source_result(
     # when the user did not literally ask for an exact quote. Return the
     # retrieved user statement verbatim instead of letting generation invent
     # a polished paraphrase of a historical instruction.
-    asks_source_only_recall = bool(_SOURCE_ONLY_RECALL_PATTERN.search(recall_clause))
+    asks_prior_question = _is_prior_question_recall_query(recall_clause)
+    asks_source_only_recall = bool(
+        _SOURCE_ONLY_RECALL_PATTERN.search(recall_clause) or asks_prior_question
+    )
     if not asks_exact_text and not asks_source_only_recall:
         return None
 
@@ -617,7 +696,15 @@ def explicit_recall_source_result(
         source_text = extract_user_authored_text(memory)
         source_terms = set(tokenize(source_text))
         overlap = len(focus & source_terms)
-        if overlap < 2:
+        if asks_prior_question:
+            # When the request identifies a topic, require a lexical anchor;
+            # when it asks only for the previous question, recency and the
+            # question-shaped user source are the evidence.
+            if focus and overlap < 1:
+                continue
+            if not focus and not re.search(r"[?？]", source_text):
+                continue
+        elif overlap < 2:
             continue
         if asks_source_only_recall:
             # Source-only recall needs stronger topic coverage than ordinary

@@ -314,6 +314,17 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
 
+    routing_fields = (
+        "factual_plan_query", "closed_world_report", "architecture_query",
+        "cognitive_trace_query", "runtime_execution_query", "explicit_memory_recall",
+    )
+    if all(isinstance(value.get(key), bool) for key in routing_fields):
+        return {
+            "type": "turn_evidence_routing_receipt",
+            "quality": "present",
+            **{key: value[key] for key in routing_fields},
+        }
+
     if value.get("type") == "cognitive_deliberation_receipt":
         receipt: dict[str, Any] = {
             "type": "cognitive_deliberation_receipt",

@@ -1534,15 +1534,36 @@ class LongHorizonPlanner:
                 f"receipt={execution_id or 'missing'}. Plan-step advancement: {effect_text}. "
                 f"Recorded result: {str(outcome.get('result') or 'missing')[:200]}"
             )
+        query = " ".join(str(user_input or "").casefold().split())
+        asks_for_plan = bool(re.search(
+            r"\b(?:plan|plans|planning|planification|planifications)\b", query,
+        ))
+        asks_for_goals = bool(re.search(
+            r"\b(?:goal|goals|objective|objectives|objectif|objectifs|but|buts)\b",
+            query,
+        ))
+        asks_for_multiple_goals = bool(re.search(
+            r"\b(?:goals|objectives|objectifs|buts)\b", query,
+        ))
+        show_goal_summary = not asks_for_plan or asks_for_goals
+        show_plan_summary = asks_for_plan
         lang = str(language or "auto").casefold().replace("_", "-")
         if lang.startswith("fr"):
-            lines = [
-                (
+            lines = []
+            if show_goal_summary and asks_for_multiple_goals:
+                lines.append(
                     f"{goal_count} objectif(s) actif(s) enregistré(s) : "
                     + (" ; ".join(goals) if goals else "aucun objectif actif vérifié.")
-                ),
-            ]
-            if plan:
+                )
+            elif show_goal_summary:
+                if goals:
+                    lines.append(
+                        f"L’objectif actif prioritaire enregistré est « {goals[0]} » "
+                        f"(activation la plus élevée parmi {goal_count} objectif(s) actif(s))."
+                    )
+                else:
+                    lines.append("Aucun objectif actif vérifié n’est enregistré.")
+            if show_plan_summary and plan:
                 lines.append(
                     f"Plan interne enregistré : « {plan['objective']} » — "
                     f"{plan['steps_completed']}/{plan['steps_total']} étapes terminées; "
@@ -1578,17 +1599,25 @@ class LongHorizonPlanner:
                     "Incertitudes enregistrées : " + "; ".join(uncertainties) + "."
                     if uncertainties else "Incertitudes enregistrées : aucune."
                 )
-            else:
+            elif show_plan_summary:
                 lines.append("Aucun plan opérationnel actif n’est enregistré.")
             lines.append("Ce compte rendu reflète l’état enregistré du système.")
         else:
-            lines = [
-                (
+            lines = []
+            if show_goal_summary and asks_for_multiple_goals:
+                lines.append(
                     f"{goal_count} recorded active goal(s): "
                     + ("; ".join(goals) if goals else "no verified active goal.")
-                ),
-            ]
-            if plan:
+                )
+            elif show_goal_summary:
+                if goals:
+                    lines.append(
+                        f"The highest-priority recorded active goal is “{goals[0]}” "
+                        f"(highest activation among {goal_count} active goal(s))."
+                    )
+                else:
+                    lines.append("No verified active goal is recorded.")
+            if show_plan_summary and plan:
                 lines.append(
                     f"Recorded internal plan: “{plan['objective']}” — "
                     f"{plan['steps_completed']}/{plan['steps_total']} steps complete; "
@@ -1621,7 +1650,7 @@ class LongHorizonPlanner:
                     "Recorded uncertainties: " + "; ".join(uncertainties) + "."
                     if uncertainties else "Recorded uncertainties: none recorded."
                 )
-            else:
+            elif show_plan_summary:
                 lines.append("No active operational plan is recorded.")
             lines.append("This report reflects the system’s recorded state.")
         return " ".join(lines)

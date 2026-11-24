@@ -83,7 +83,7 @@ def summarize_output(value: Any) -> dict[str, Any]:
                 receipt_fields[key] = value[key]
         if isinstance(value.get("persisted"), bool):
             receipt_fields["persisted"] = value["persisted"]
-        for key in ("detected", "event_emitted"):
+        for key in ("detected", "event_emitted", "factual_plan_context_included"):
             if isinstance(value.get(key), bool):
                 receipt_fields[key] = value[key]
         if receipt_fields:

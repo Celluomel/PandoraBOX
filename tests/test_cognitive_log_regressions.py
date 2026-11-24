@@ -284,6 +284,24 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertFalse(failed["persisted"])
         self.assertEqual(failed["interaction_count"], 12)
 
+    def test_turn_trace_exposes_routing_decisions_without_user_text(self):
+        summary = audit_safe_turn_summary({
+            "factual_plan_query": True,
+            "closed_world_report": True,
+            "architecture_query": False,
+            "cognitive_trace_query": False,
+            "runtime_execution_query": False,
+            "explicit_memory_recall": False,
+            "private_query": "do not expose",
+        })
+
+        self.assertEqual(summary["type"], "turn_evidence_routing_receipt")
+        self.assertTrue(summary["factual_plan_query"])
+        self.assertTrue(summary["closed_world_report"])
+        self.assertFalse(summary["explicit_memory_recall"])
+        self.assertNotIn("private_query", str(summary))
+        self.assertNotIn("do not expose", str(summary))
+
     def test_simple_thought_evaluator_can_timestamp_a_fresh_goal_candidate(self):
         class _Dal:
             def get_thoughts(self, **kwargs):

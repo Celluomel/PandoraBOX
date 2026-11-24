@@ -979,6 +979,101 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertIn("audit", topic)
         self.assertIn("final outcome", topic)
 
+    def test_prior_question_recall_matches_and_quotes_the_previous_user_question(self):
+        query = "Rappelle-moi la question que je viens de poser au sujet de tes objectifs actifs."
+        previous_question = {
+            "id": 9866,
+            "memory_type": "user_message",
+            "text": "User message: Quels sont tes objectifs actifs ?",
+            "relevance": 0.9,
+        }
+        duplicate_episode = {
+            "id": 9865,
+            "memory_type": "episodic",
+            "text": "Conversation — User: Quels sont tes objectifs actifs ? | Lumina: 5 objectifs enregistrés.",
+            "relevance": 0.95,
+        }
+        unrelated_question = {
+            "id": 9867,
+            "memory_type": "user_message",
+            "text": "User message: Quelle est la couleur de la caméra ?",
+            "relevance": 1.0,
+        }
+        current_recall_prompt = {
+            "id": 9868,
+            "memory_type": "user_message",
+            "text": f"User message: {query}",
+            "relevance": 1.0,
+        }
+
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        self.assertEqual(
+            extract_explicit_recall_topic(query).casefold(),
+            "tes objectifs actifs",
+        )
+        eligible = filter_recall_query_records(
+            [duplicate_episode, unrelated_question, current_recall_prompt, previous_question],
+            query=query,
+        )
+        self.assertEqual(eligible, [previous_question])
+        result = explicit_recall_source_result(query, eligible)
+        self.assertEqual(result["status"], "supported_verbatim_source")
+        self.assertIn("Quels sont tes objectifs actifs ?", result["answer"])
+
+    def test_unscoped_previous_question_recall_uses_most_recent_question_not_statement(self):
+        query = "Quelle était ma question précédente ?"
+        older_question = {
+            "id": 20,
+            "memory_type": "user_message",
+            "text": "User message: Quel est le statut du projet ?",
+        }
+        latest_statement = {
+            "id": 22,
+            "memory_type": "user_message",
+            "text": "User message: Le système est maintenant prêt.",
+        }
+        latest_question = {
+            "id": 23,
+            "memory_type": "user_message",
+            "text": "User message: Est-ce que la mémoire est restaurée ?",
+        }
+
+        eligible = filter_recall_query_records(
+            [older_question, latest_statement, latest_question], query=query,
+        )
+
+        self.assertEqual(eligible, [latest_question])
+        result = explicit_recall_source_result(query, eligible)
+        self.assertIn("Est-ce que la mémoire est restaurée ?", result["answer"])
+
+    def test_english_prior_question_recall_routes_to_source_text(self):
+        query = "What exact question did I just ask about memory recall?"
+        source = {
+            "id": 31,
+            "memory_type": "user_message",
+            "text": "User message: Why did the recent memory recall fail?",
+        }
+
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        self.assertIn("memory recall", extract_explicit_recall_topic(query).casefold())
+        eligible = filter_recall_query_records([source], query=query)
+        self.assertEqual(eligible, [source])
+        self.assertIn("Why did the recent memory recall fail?", explicit_recall_source_result(query, eligible)["answer"])
+
+    def test_english_prior_question_recall_accepts_unmodified_question_form(self):
+        query = "What question did I just ask about memory recall?"
+        source = {
+            "id": 32,
+            "memory_type": "user_message",
+            "text": "User message: Why did the recent memory recall fail?",
+        }
+
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        self.assertIn("memory recall", extract_explicit_recall_topic(query).casefold())
+        eligible = filter_recall_query_records([source], query=query)
+        self.assertEqual(eligible, [source])
+        self.assertIn("Why did the recent memory recall fail?", explicit_recall_source_result(query, eligible)["answer"])
+
     def test_copular_marker_recall_routes_to_the_matching_user_source(self):
         query = "What was the test marker I gave you for the next turn in the cognitive harness audit?"
         source = {

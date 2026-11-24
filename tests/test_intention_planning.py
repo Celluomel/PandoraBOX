@@ -1424,6 +1424,38 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertIn("grounded topic", english)
         self.assertIn("second topic", english)
 
+    def test_singular_active_goal_report_selects_highest_activation_without_mixing_plan(self):
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        planner.factual_self_report_snapshot = lambda: {
+            "active_goals": [
+                {"topic": "primary recorded goal"},
+                {"topic": "secondary recorded goal"},
+            ],
+            "active_goal_count": 5,
+            "dominant_plan": {
+                "objective": "independent aspiration plan",
+                "steps_completed": 1,
+                "steps_total": 4,
+                "steps_with_execution_evidence": 1,
+                "completed_steps_without_execution_evidence": 0,
+                "success_criteria_status": "unverified",
+                "next_operation": "memory_recall",
+                "next_operation_status": "pending",
+                "reasoning_confidence": 0.33,
+                "uncertainties": [],
+            },
+        }
+
+        answer = planner.factual_goal_plan_response(
+            "Quel est ton objectif actif actuel ?", "fr",
+        )
+
+        self.assertIn("primary recorded goal", answer)
+        self.assertIn("5 objectif(s) actif(s)", answer)
+        self.assertNotIn("secondary recorded goal", answer)
+        self.assertNotIn("independent aspiration plan", answer)
+        self.assertNotIn("memory_recall", answer)
+
     def test_factual_goal_report_includes_only_recorded_confidence_and_uncertainties(self):
         planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
         planner.factual_self_report_snapshot = lambda: {

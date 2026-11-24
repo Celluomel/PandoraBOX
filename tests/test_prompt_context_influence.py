@@ -112,6 +112,20 @@ class PromptContextInfluenceTests(unittest.TestCase):
         self.assertIn("self_correction", selected)
         self.assertNotIn("narrative_identity", selected)
 
+    def test_measured_live_planner_report_above_previous_cap_is_admitted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            budget = PromptContextBudget(str(Path(directory) / "contributions.json"))
+            budget.add("factual_telemetry", "long_horizon_plan", "p" * 1700)  # 425 estimated tokens
+            budget.add("identity", "narrative_identity", "n" * 1800)
+
+            assembled = budget.assemble()
+            entries = {entry.source: entry for entry in budget._entries}
+
+        self.assertTrue(entries["long_horizon_plan"].selected)
+        self.assertEqual(entries["long_horizon_plan"].tokens, 425)
+        self.assertIn("p" * 100, assembled)
+        self.assertLessEqual(budget._total_used, TOTAL_TOKEN_CAP)
+
     def test_compact_behavioral_user_model_survives_full_core_prompt_budget(self):
         with tempfile.TemporaryDirectory() as directory:
             budget = PromptContextBudget(str(Path(directory) / "contributions.json"))
