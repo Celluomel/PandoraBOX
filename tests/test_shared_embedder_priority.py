@@ -1,4 +1,5 @@
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 import numpy as np
@@ -44,6 +45,34 @@ class InteractiveEmbeddingPriorityTests(unittest.TestCase):
 
         self.assertEqual(vectors.shape, (1, 384))
         self.assertEqual(space_id, "sentence-transformers:all-MiniLM-L6-v2")
+
+    def test_transport_timeout_falls_back_once_then_short_circuits_retries(self):
+        class Fast:
+            model_name_or_path = "all-MiniLM-L6-v2"
+
+            def encode(self, texts, **_kwargs):
+                return np.ones((len(texts), 384), dtype="float32")
+
+        api = APIEmbedder("nomic-model", "http://127.0.0.1:1234/v1")
+        with patch.object(
+            api, "_post", side_effect=urllib.error.URLError(TimeoutError("timed out"))
+        ) as post, patch("utils.shared_embedder._get_fast_embedder", return_value=Fast()):
+            first, first_space = api.encode_with_metadata(["first batch"])
+            second, second_space = api.encode_with_metadata(["second batch"])
+
+        self.assertEqual(first.shape, (1, 384))
+        self.assertEqual(second.shape, (1, 384))
+        self.assertEqual(first_space, "sentence-transformers:all-MiniLM-L6-v2")
+        self.assertEqual(second_space, first_space)
+        post.assert_called_once()
+
+    def test_invalid_quality_response_does_not_enter_transport_backoff(self):
+        api = APIEmbedder("nomic-model", "http://127.0.0.1:1234/v1")
+        with patch.object(api, "_post", side_effect=ValueError("invalid response")):
+            with self.assertRaisesRegex(ValueError, "invalid response"):
+                api._encode_list(["probe"])
+
+        self.assertEqual(api._transport_backoff_until, 0.0)
 
     def test_quality_response_rejects_nonfinite_vectors(self):
         class Fast:

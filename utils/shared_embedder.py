@@ -35,6 +35,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
+import urllib.error
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,11 @@ DEFAULT_FAST_MODEL    = "all-MiniLM-L6-v2"
 DEFAULT_QUALITY_MODEL = "text-embedding-nomic-embed-text-v1.5"
 DEFAULT_BASE_URL      = "http://127.0.0.1:1234/v1"
 QUALITY_REQUEST_TIMEOUT = 8
+QUALITY_TRANSPORT_BACKOFF_SECONDS = 20
+
+
+class QualityEndpointBackoff(RuntimeError):
+    """The remote quality embedder recently failed at the transport layer."""
 
 
 def set_interactive_priority(active: bool) -> None:
@@ -116,6 +123,8 @@ class APIEmbedder:
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self.timeout = timeout
         self._dim = None
+        self._transport_backoff_until = 0.0
+        self._transport_backoff_lock = threading.Lock()
 
     @property
     def embedding_space_id(self):
@@ -136,6 +145,9 @@ class APIEmbedder:
         texts = [str(t) for t in texts]
         if _interactive_priority.is_set():
             raise RuntimeError("quality embeddings deferred during interactive turn")
+        with self._transport_backoff_lock:
+            if time.monotonic() < self._transport_backoff_until:
+                raise QualityEndpointBackoff("quality embedding endpoint transport backoff")
         # Do not let several background modules queue independent requests in
         # LM Studio. A caller that loses this non-blocking race falls back to
         # the local FAST tier instead of making the visible chat wait.
@@ -164,9 +176,25 @@ class APIEmbedder:
                     if out and vector.shape != np.asarray(out[0]).shape:
                         raise ValueError("embedding endpoint changed vector dimension within a batch")
                     out.append(vector)
-            return np.stack(out).astype("float32", copy=False)
+            result = np.stack(out).astype("float32", copy=False)
+            with self._transport_backoff_lock:
+                self._transport_backoff_until = 0.0
+            return result
+        except Exception as exc:
+            if self._is_transient_transport_error(exc):
+                with self._transport_backoff_lock:
+                    self._transport_backoff_until = (
+                        time.monotonic() + QUALITY_TRANSPORT_BACKOFF_SECONDS
+                    )
+            raise
         finally:
             _quality_request_lock.release()
+
+    @staticmethod
+    def _is_transient_transport_error(exc):
+        if isinstance(exc, urllib.error.HTTPError):
+            return exc.code == 429 or exc.code >= 500
+        return isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
 
     def encode(self, texts, **kw):
         vectors, _space_id = self.encode_with_metadata(texts, **kw)
@@ -189,7 +217,9 @@ class APIEmbedder:
         except Exception as e:
             if "deferred" in str(e):
                 raise
-            if "already in progress" in str(e):
+            if isinstance(e, QualityEndpointBackoff):
+                logger.debug("[embedder] QUALITY tier in transport backoff; using FAST tier")
+            elif "already in progress" in str(e):
                 logger.debug("[embedder] QUALITY tier yielded to interactive work: %s", e)
             else:
                 logger.warning(
