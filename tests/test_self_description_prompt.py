@@ -93,6 +93,51 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "no_unique_registered_route")
         self.assertIn("can’t confirm a unique route", answer)
 
+    def test_api_route_method_followup_verifies_prior_answer_against_live_routes(self):
+        from types import SimpleNamespace
+        from managers.llm_manager import LLMManager
+
+        api_app = SimpleNamespace(routes=[
+            SimpleNamespace(path="/chat", methods={"POST"}, name="chat", summary="Chat"),
+        ])
+        checkpoints = []
+        manager = object.__new__(LLMManager)
+        manager.history = []
+        manager._session = SimpleNamespace(
+            on_exchange_complete=lambda history: checkpoints.append(list(history))
+        )
+        manager.record_exchange(
+            "What exact API route receives chat?",
+            "The registered HTTP route for chat is `POST /chat`.",
+        )
+        answer, receipt = resolve_runtime_api_route_question(
+            "And which HTTP method does that route use?", api_app,
+            conversation_history=manager.history,
+        )
+
+        self.assertEqual(len(checkpoints), 1)
+        self.assertEqual(len(manager.history), 2)
+        self.assertEqual(receipt["status"], "matched_live_route_followup")
+        self.assertEqual(receipt["selected_route"]["method"], "POST")
+        self.assertEqual(receipt["prior_route_context"], "matched_current_route")
+        self.assertIn("POST method", answer)
+
+    def test_api_route_method_followup_rejects_stale_prior_assistant_route(self):
+        from types import SimpleNamespace
+
+        api_app = SimpleNamespace(routes=[
+            SimpleNamespace(path="/chat", methods={"POST"}, name="chat", summary="Chat"),
+        ])
+        history = [{"role": "assistant", "content": "The route is `POST /old-chat`."}]
+        answer, receipt = resolve_runtime_api_route_question(
+            "Which HTTP method does that route use?", api_app,
+            conversation_history=history,
+        )
+
+        self.assertEqual(receipt["status"], "unresolved_route_followup")
+        self.assertIsNone(receipt["selected_route"])
+        self.assertIn("no preceding exchange identifies a route", answer)
+
     def test_registered_cognitive_module_roles_include_exact_scope_and_nonclaims(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             description = SelfDescription(

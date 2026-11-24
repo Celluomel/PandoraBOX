@@ -181,6 +181,38 @@ def test_effect_receipt_summary_preserves_only_bounded_non_text_evidence():
     }
 
 
+def test_route_and_history_receipts_keep_only_bounded_provenance():
+    route = audit_safe_turn_summary({
+        "type": "api_route_answer_receipt",
+        "status": "matched_live_route_followup",
+        "source": "brain.api.routes",
+        "route_count": 21,
+        "selected_route": {"method": "POST", "path": "/chat", "handler": "chat"},
+        "resolution_source": "prior_assistant_route_verified_against_live_registry",
+        "prior_route_context": "matched_current_route",
+        "routes_sha256": "a" * 64,
+        "answer": "private answer text is not copied",
+    })
+    assert route["status"] == "matched_live_route_followup"
+    assert route["selected_route"] == {"method": "POST", "path": "/chat", "handler": "chat"}
+    assert "answer" not in route
+
+    history = audit_safe_turn_summary({
+        "type": "conversation_history_write_receipt",
+        "status": "recorded_in_memory",
+        "record_history_enabled": True,
+        "manager_available": True,
+        "before_message_count": 2,
+        "after_message_count": 4,
+        "appended_message_count": 2,
+        "durable_persistence": "unverified",
+        "private_text": "must not appear",
+    })
+    assert history["appended_message_count"] == 2
+    assert history["durable_persistence"] == "unverified"
+    assert "private_text" not in history
+
+
 def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
     summary = audit_safe_turn_summary({
         "type": "semantic_extraction_receipt",

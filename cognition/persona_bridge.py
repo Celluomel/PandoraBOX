@@ -3370,16 +3370,21 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             from cognition.self_description import resolve_runtime_api_route_question
             _deterministic_response, _api_route_answer_receipt = resolve_runtime_api_route_question(
                 effective_input,
+                conversation_history=_history_for_anchor,
             )
             self._record_turn_stage(
                 "api_route_answer",
                 str(_api_route_answer_receipt.get("status") or "unverified"),
-                "Answer selected only from a unique match in the current FastAPI route table; no matching source yields an explicit abstention.",
+                "Answer selected from the live FastAPI route table; route follow-ups require a prior explicit route that still matches the live registry.",
                 output={
                     **_api_route_answer_receipt,
                     "answer": _deterministic_response,
                 },
-                consumes=("runtime_api_surface", "turn_input"),
+                consumes=(
+                    ("runtime_api_surface", "conversation_history", "turn_input")
+                    if _api_route_answer_receipt.get("prior_route_context") != "not_used"
+                    else ("runtime_api_surface", "turn_input")
+                ),
                 turn_id=_audit_turn_id,
             )
         if _runtime_execution_query and not _explicit_memory_recall:
@@ -3784,14 +3789,57 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             )
                     _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                     _record_exchange = getattr(_llm_manager, "record_exchange", None)
+                    _history_before = getattr(_llm_manager, "history", None)
+                    _history_before_count = len(_history_before) if isinstance(_history_before, list) else None
+                    _history_write_status = "not_enabled" if not record_history else (
+                        "unavailable" if not callable(_record_exchange) else "failed"
+                    )
+                    _history_write_error = ""
                     if record_history and callable(_record_exchange):
                         try:
                             _record_exchange(effective_input, _deterministic_response)
+                            _history_after = getattr(_llm_manager, "history", None)
+                            _history_after_count = len(_history_after) if isinstance(_history_after, list) else None
+                            _history_write_status = (
+                                "recorded_in_memory"
+                                if _history_before_count is not None
+                                and _history_after_count == _history_before_count + 2
+                                else "record_call_returned_unverified"
+                            )
                         except Exception as _history_error:
+                            _history_write_error = type(_history_error).__name__
                             logger.warning(
                                 "Could not record locally resolved exchange: %s",
                                 _history_error,
                             )
+                    else:
+                        _history_after_count = _history_before_count
+                    if record_history and callable(_record_exchange) and _history_write_status == "failed":
+                        _history_after = getattr(_llm_manager, "history", None)
+                        _history_after_count = len(_history_after) if isinstance(_history_after, list) else None
+                    self._record_turn_stage(
+                        "conversation_history_write",
+                        _history_write_status,
+                        "Deterministic exchange history write; in-memory append is checked, durable session persistence is not independently confirmed here.",
+                        output={
+                            "type": "conversation_history_write_receipt",
+                            "status": _history_write_status,
+                            "record_history_enabled": bool(record_history),
+                            "manager_available": _llm_manager is not None,
+                            "before_message_count": _history_before_count,
+                            "after_message_count": _history_after_count,
+                            "appended_message_count": (
+                                _history_after_count - _history_before_count
+                                if isinstance(_history_before_count, int)
+                                and isinstance(_history_after_count, int)
+                                else None
+                            ),
+                            "error_type": _history_write_error,
+                            "durable_persistence": "unverified",
+                        },
+                        consumes=("conversation_history", "deterministic_reasoning"),
+                        turn_id=_audit_turn_id,
+                    )
                     for token in re.findall(r"\S+\s*|\s+", _deterministic_response):
                         asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
                     return

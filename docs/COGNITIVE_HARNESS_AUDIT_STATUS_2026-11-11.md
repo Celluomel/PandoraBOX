@@ -3,6 +3,18 @@
 **Date de mise à jour :** 24 novembre 2026
 **Statut :** audit global du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. La Phase 0 a identifié le veto du réviseur comme cause principale des refus et de la latence. La Phase 1 a déplacé cette revue après livraison et l’a rendue consultative pour les réponses ordinaires, sans supprimer les modules cognitifs ni les contrôles de sécurité. Le rejeu live final a terminé 23/23 tours, avec 0 réponse remplacée par le réviseur et 28 appels provider; sur les 19 cas comparables, la médiane est passée de 38,48 s à 11,78 s. Le flux progressif est maintenant implémenté localement avec vérification de préfixe et vérification finale; son chargement live et l’audit général des modules restent ouverts.
 
+### Mise à jour — suivi conversationnel des réponses déterministes, 24 novembre 2026
+
+**Cause identifiée :** les questions d’architecture désactivent l’ancrage conversationnel pour empêcher qu’une affirmation antérieure de Lumina soit traitée comme une preuve. Le résolveur des routes HTTP ne compensait pas ce choix : après `POST /chat`, « Which HTTP method does that route use? » cherchait une route dans les mots du nouveau message, sans valider la référence « that route » contre l’échange précédent. Il pouvait donc s’abstenir alors que la route était connue.
+
+**Correction locale :** le résolveur reçoit maintenant l’historique de la conversation pour les questions de suivi. Il n’utilise le couple `METHOD /path` précédent que si ce couple est toujours présent dans la table des routes FastAPI du processus courant. Une route périmée ou absente produit une abstention explicite. Les reçus précisent la source de résolution et le lien avec l’historique sans recopier son texte. L’écriture d’une réponse déterministe produit aussi un reçu indiquant si deux messages ont effectivement été ajoutés en mémoire; la persistance durable reste explicitement `unverified`.
+
+**Validation locale :** les suites ciblées auto-description, reçus et exécution de tour passent **108 tests, 9 avertissements existants et 6 sous-tests**; compilation Python et `git diff --check` passent. Le test de suivi utilise `LLMManager.record_exchange`, puis vérifie que la méthode récupérée (`POST`) correspond encore à une route live; un test séparé rejette une route périmée.
+
+**État du redémarrage/live :** les anciennes sessions Lumina contrôlées ont été arrêtées. Une nouvelle instance en mode audit a démarré; ses logs confirment l’ouverture de `8080`, `8765` et `8786`, la restauration de FAISS et l’état prêt du Brain. Les appels HTTP de statut et les sondes TCP lancés depuis ce canal d’exécution expirent malgré ces logs. Le scénario à deux tours n’est donc **pas validé live**; il ne faut pas le présenter comme tel. Le correctif et le rapport sont en attente de commit/push, sans modification des fichiers non suivis.
+
+**Prochaine étape de cette piste :** obtenir une réponse à deux tours sur l’instance chargée — demander la route de chat, puis « And which HTTP method does that route use? » — et vérifier `conversation_history_write=recorded_in_memory`, `api_route_answer=matched_live_route_followup`, `selected_route.method=POST` et la cohérence du pipeline. Le score global reste **3/10**; cette piste ne sera close qu’après preuve live du chemin complet et de ses effets aval.
+
 ## Point de contrôle actuel — 24 novembre 2026
 
 **Redémarrage demandé : effectué.** Aucun processus Lumina ni listener sur `8080`, `8765`, `8767` ou `8786` n’était présent. Une seule instance a été lancée avec `LUMINA_MODULE_EXECUTION_AUDIT=1`; PID API **36692**, interface `8080`, Brain API `8765`, pont `8786`. `/status` a confirmé `ready=true`, Gemma, FAISS, Persona et Orchestrator actifs.

@@ -317,6 +317,58 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
 
+    if value.get("type") == "api_route_answer_receipt":
+        receipt: dict[str, Any] = {
+            "type": "api_route_answer_receipt",
+            "status": str(value.get("status") or "unknown")[:40],
+            "source": str(value.get("source") or "unknown")[:40],
+            "resolution_source": str(value.get("resolution_source") or "unknown")[:64],
+            "prior_route_context": str(value.get("prior_route_context") or "unknown")[:48],
+        }
+        receipt["quality"] = (
+            "present" if receipt["status"] in {
+                "matched_registered_route", "matched_live_route_followup",
+            } else "empty" if receipt["status"] in {
+                "no_unique_registered_route", "unresolved_route_followup",
+            } else "unverified"
+        )
+        count = value.get("route_count")
+        if isinstance(count, int) and not isinstance(count, bool):
+            receipt["route_count"] = max(0, min(10000, count))
+        selected = value.get("selected_route")
+        if isinstance(selected, Mapping):
+            method = str(selected.get("method") or "").upper()
+            path = str(selected.get("path") or "")
+            handler = str(selected.get("handler") or "")
+            if re.fullmatch(r"[A-Z]{3,10}", method) and re.fullmatch(r"/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{0,240}", path):
+                receipt["selected_route"] = {
+                    "method": method,
+                    "path": path,
+                    "handler": handler[:80],
+                }
+        digest = str(value.get("routes_sha256") or "")
+        if re.fullmatch(r"[a-f0-9]{64}", digest):
+            receipt["routes_sha256"] = digest
+        return receipt
+
+    if value.get("type") == "conversation_history_write_receipt":
+        receipt = {
+            "type": "conversation_history_write_receipt",
+            "quality": "present" if value.get("status") == "recorded_in_memory" else "unverified",
+            "status": str(value.get("status") or "unknown")[:40],
+            "record_history_enabled": bool(value.get("record_history_enabled")),
+            "manager_available": bool(value.get("manager_available")),
+            "durable_persistence": str(value.get("durable_persistence") or "unverified")[:24],
+        }
+        for key in ("before_message_count", "after_message_count", "appended_message_count"):
+            number = value.get(key)
+            if isinstance(number, int) and not isinstance(number, bool):
+                receipt[key] = max(0, min(100000, number))
+        error_type = str(value.get("error_type") or "")
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", error_type):
+            receipt["error_type"] = error_type
+        return receipt
+
     routing_fields = (
         "factual_plan_query", "closed_world_report", "architecture_query",
         "cognitive_trace_query", "runtime_execution_query", "explicit_memory_recall",

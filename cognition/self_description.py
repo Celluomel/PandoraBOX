@@ -126,12 +126,81 @@ def is_runtime_api_route_question(user_input: str) -> bool:
 
 def resolve_runtime_api_route_question(
     user_input: str, api_app: Any = None,
+    conversation_history: Any = None,
 ) -> tuple[str | None, dict[str, Any]]:
-    """Answer a route question only from a unique match in the live route table."""
+    """Answer a route question from live routes, using only verified route follow-ups.
+
+    A prior assistant statement is usable only when its explicit METHOD /path
+    pair still exists in the current route table. This resolves references such
+    as "which method does that route use?" without treating prior model text as
+    authoritative evidence.
+    """
     if not is_runtime_api_route_question(user_input):
         return None, {"status": "not_applicable", "source": "brain.api.routes"}
 
     rows = _runtime_api_routes(api_app)
+    is_method_followup = bool(re.search(
+        r"\b(?:method|méthode)\b", str(user_input).casefold()
+    )) and bool(re.search(
+        r"\b(?:that|this|it|same|cette|cette[- ]ci|cette[- ]là|ce|cette route|cet endpoint|cette adresse)\b",
+        str(user_input).casefold(),
+    ))
+    if is_method_followup:
+        history = conversation_history if isinstance(conversation_history, (list, tuple)) else ()
+        prior_assistant = next((
+            item for item in reversed(history)
+            if isinstance(item, dict)
+            and str(item.get("role") or "").casefold().strip() == "assistant"
+            and isinstance(item.get("content"), str)
+        ), None)
+        prior_text = str(prior_assistant.get("content") or "") if prior_assistant else ""
+        route_match = re.search(
+            r"\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+(/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)",
+            prior_text,
+            re.IGNORECASE,
+        )
+        if route_match:
+            prior_method, prior_path = route_match.group(1).upper(), route_match.group(2).rstrip(".")
+            live_match = next((
+                (method, path, name) for method, path, name in rows
+                if method == prior_method and path == prior_path
+            ), None)
+            if live_match:
+                method, path, name = live_match
+                answer = (
+                    f"La route enregistrée utilise la méthode HTTP {method}."
+                    if re.search(r"\b(?:quelle|quelles|méthode|cette)\b", str(user_input).casefold())
+                    else f"The registered route uses the HTTP {method} method."
+                )
+                route_payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+                return answer, {
+                    "type": "api_route_answer_receipt",
+                    "status": "matched_live_route_followup",
+                    "source": "brain.api.routes",
+                    "route_count": len(rows),
+                    "selected_route": {"method": method, "path": path, "handler": name},
+                    "resolution_source": "prior_assistant_route_verified_against_live_registry",
+                    "prior_route_context": "matched_current_route",
+                    "routes_sha256": hashlib.sha256(route_payload.encode("utf-8")).hexdigest(),
+                }
+        route_payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        language_fr = bool(re.search(r"\b(?:quelle|quelles|méthode|cette)\b", str(user_input).casefold()))
+        return (
+            "Je ne peux pas déterminer la méthode : aucun échange précédent ne fournit une route encore enregistrée."
+            if language_fr else
+            "I can’t determine the method because no preceding exchange identifies a route that is still registered.",
+            {
+                "type": "api_route_answer_receipt",
+                "status": "unresolved_route_followup",
+                "source": "brain.api.routes",
+                "route_count": len(rows),
+                "selected_route": None,
+                "resolution_source": "no_verified_prior_route",
+                "prior_route_context": "missing_or_not_registered",
+                "routes_sha256": hashlib.sha256(route_payload.encode("utf-8")).hexdigest(),
+            },
+        )
+
     query_tokens = set(re.findall(r"[a-z0-9]+", str(user_input).casefold()))
     ranked: list[tuple[float, str, str, str]] = []
     for method, path, name in rows:
@@ -164,10 +233,13 @@ def resolve_runtime_api_route_question(
         selected = None
     route_payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     return answer, {
+        "type": "api_route_answer_receipt",
         "status": status,
         "source": "brain.api.routes",
         "route_count": len(rows),
         "selected_route": selected,
+        "resolution_source": "current_turn_route_match" if unique else "no_unique_current_turn_match",
+        "prior_route_context": "not_used",
         "routes_sha256": hashlib.sha256(route_payload.encode("utf-8")).hexdigest(),
     }
 
