@@ -1130,6 +1130,37 @@ def test_profile_context_budget_omission_is_not_reported_as_empty():
     assert omitted["budget_tokens"] == 75
 
 
+def test_affect_advisory_receipt_proves_injection_without_exposing_description():
+    bridge = _bridge()
+    bridge._record_turn_stage("turn_input", "received", output="How are you doing?")
+    private_description = "warm qualitative state that must stay out of trace"
+    receipt = {
+        "type": "affect_advisory_context_receipt",
+        "source": "emotional_state_manager_state_description",
+        "description_present": True,
+        "description_chars": len(private_description),
+        "description_sha256": "a" * 64,
+        "context_chars": 240,
+        "context_sha256": "b" * 64,
+        "description": private_description,
+    }
+
+    bridge._record_turn_stage(
+        "affect_advisory_context", "injected", output=receipt,
+        consumes=("turn_input",),
+    )
+
+    stage = bridge._last_turn_trace["stages"]["affect_advisory_context"]
+    summary = stage["output_summary"]
+    assert stage["consumes"][0]["stage"] == "turn_input"
+    assert summary["type"] == "affect_advisory_context_receipt"
+    assert summary["source"] == "emotional_state_manager_state_description"
+    assert summary["description_present"] is True
+    assert summary["description_sha256"] == "a" * 64
+    assert summary["context_sha256"] == "b" * 64
+    assert private_description not in repr(stage)
+
+
 def test_profile_context_receipts_are_linked_as_inputs_to_the_prompt_block():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -1202,6 +1233,10 @@ def test_prompt_assembly_declares_cognitive_context_as_an_input():
         element.value for element in consumes.elts
         if isinstance(element, ast.Constant)
     }
+    assert "affect_advisory_context" in {
+        element.value for element in consumes.elts
+        if isinstance(element, ast.Constant)
+    }
     system_prompt_mutations = [
         node.lineno for node in ast.walk(stream)
         if isinstance(node, (ast.Assign, ast.AugAssign))
@@ -1231,7 +1266,7 @@ def test_prompt_assembly_declares_cognitive_context_as_an_input():
         assert isinstance(turn_id, ast.Name) and turn_id.id == "_audit_turn_id"
 
 
-def test_memory_and_profile_context_stages_are_bound_to_prompt_turn():
+def test_memory_profile_and_affect_context_stages_are_bound_to_prompt_turn():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     bridge_class = next(
@@ -1243,7 +1278,10 @@ def test_memory_and_profile_context_stages_are_bound_to_prompt_turn():
         if isinstance(node, ast.FunctionDef)
         and node.name == "_build_prompt_and_cache"
     )
-    expected = {"user_profile_context", "memory_retrieval", "memory_prompt_context"}
+    expected = {
+        "user_profile_context", "memory_retrieval", "memory_prompt_context",
+        "affect_advisory_context",
+    }
     observed = set()
     for node in ast.walk(build_prompt):
         if not (

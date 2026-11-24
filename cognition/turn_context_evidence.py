@@ -344,6 +344,25 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
 
+    if value.get("type") == "affect_advisory_context_receipt":
+        receipt: dict[str, Any] = {
+            "type": "affect_advisory_context_receipt",
+            "quality": "present",
+            "source": "emotional_state_manager_state_description",
+        }
+        for key in ("description_present",):
+            if isinstance(value.get(key), bool):
+                receipt[key] = value[key]
+        for key in ("description_chars", "context_chars"):
+            number = value.get(key)
+            if isinstance(number, int) and not isinstance(number, bool):
+                receipt[key] = max(0, min(4000, number))
+        for key in ("description_sha256", "context_sha256"):
+            digest = str(value.get(key) or "")
+            if re.fullmatch(r"[a-f0-9]{64}", digest):
+                receipt[key] = digest
+        return receipt
+
     profile_receipt_types = {
         "behavioral_user_model_context_receipt": {
             "source": "world_model_behavioral_model",

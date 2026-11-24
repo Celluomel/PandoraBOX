@@ -198,6 +198,7 @@ def _runtime_execution_evidence_snapshot(trace: Any) -> dict[str, Any]:
     stages = stages if isinstance(stages, dict) else {}
     stage_names = (
         "turn_input", "input_safety", "self_description_context",
+        "affect_advisory_context",
         "memory_retrieval", "cognitive_prompt_context", "prompt_assembly",
         "primary_generation", "provider_completion", "response_finalization",
         "response_learning_and_memory", "organism_post_interaction",
@@ -3542,6 +3543,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 "turn_input", "memory_prompt_context", "user_profile_context",
                 "cognitive_prompt_context", "dominant_thought_context",
                 "conversation_continuity_context", "self_description_context",
+                "affect_advisory_context",
             ),
             turn_id=_audit_turn_id,
         )
@@ -6504,8 +6506,37 @@ Memory honesty — two distinct cases:
             )
             if not peer_name:
                 _description = str(mods.get("state_description", "") or "").strip()
-                from cognition.self_description import affect_advisory_context
-                system_prompt += "\n\n" + affect_advisory_context(_description)
+                try:
+                    from cognition.self_description import affect_advisory_context
+                    _affect_advisory = affect_advisory_context(_description)
+                    system_prompt += "\n\n" + _affect_advisory
+                    self._record_turn_stage(
+                        "affect_advisory_context", "injected",
+                        "Qualitative modeled-affect advisory appended to the response prompt; source text is not copied into the turn trace.",
+                        output={
+                            "type": "affect_advisory_context_receipt",
+                            "source": "emotional_state_manager_state_description",
+                            "description_present": bool(_description),
+                            "description_chars": len(_description),
+                            "description_sha256": (
+                                hashlib.sha256(
+                                    _description.encode("utf-8", errors="replace")
+                                ).hexdigest() if _description else ""
+                            ),
+                            "context_chars": len(_affect_advisory),
+                            "context_sha256": hashlib.sha256(
+                                _affect_advisory.encode("utf-8", errors="replace")
+                            ).hexdigest(),
+                        },
+                        consumes=("turn_input",),
+                        turn_id=audit_turn_id,
+                    )
+                except Exception as _affect_advisory_error:
+                    self._record_turn_stage(
+                        "affect_advisory_context", "failed",
+                        error_type=type(_affect_advisory_error).__name__,
+                        turn_id=audit_turn_id,
+                    )
             if _affect_self_report:
                 from cognition.self_description import affect_self_report_context
                 system_prompt += "\n\n" + affect_self_report_context(
