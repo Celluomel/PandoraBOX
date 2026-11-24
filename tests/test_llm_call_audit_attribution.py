@@ -7,7 +7,8 @@ import sys
 
 from core.turn_execution_context import current_turn_id
 from managers.llm_manager import (
-    LLMManager, current_llm_call_origin, current_llm_call_role,
+    LLMManager, current_llm_call_cycle_id, current_llm_call_execution_id,
+    current_llm_call_operation, current_llm_call_origin, current_llm_call_role,
 )
 
 
@@ -159,3 +160,107 @@ def test_provider_event_uses_executor_submission_for_generic_worker_origin():
     assert event["caller_file"] == "cognition/persona_bridge.py"
     assert event["executor_submission_origin"] == "cognition.persona_bridge._stream"
     assert event["causal_parent_turn_id"] == "turn-dispatched"
+
+
+def test_provider_event_keeps_goal_execution_and_cycle_provenance():
+    execution_token = current_llm_call_execution_id.set("action-42")
+    cycle_token = current_llm_call_cycle_id.set("91")
+    operation_token = current_llm_call_operation.set("gae_self_question")
+    role_token = current_llm_call_role.set("background")
+    origin_token = current_llm_call_origin.set(
+        "cognition.goal_action_executor._action_self_question"
+    )
+    try:
+        event = audit._call_metadata(
+            _Provider(), "generate_background_result", ("grounded prompt",), {},
+        )
+    finally:
+        current_llm_call_origin.reset(origin_token)
+        current_llm_call_role.reset(role_token)
+        current_llm_call_operation.reset(operation_token)
+        current_llm_call_cycle_id.reset(cycle_token)
+        current_llm_call_execution_id.reset(execution_token)
+
+    assert event["caller"] == "cognition.goal_action_executor._action_self_question"
+    assert event["execution"] == "background"
+    assert event["cognitive_execution_id"] == "action-42"
+    assert event["cognitive_cycle_id"] == "91"
+    assert event["cognitive_operation"] == "gae_self_question"
+    assert event["turn_id"] is None
+
+
+def test_background_manager_preserves_explicit_cognitive_context_in_worker():
+    observed = []
+
+    class Provider:
+        model = "test-model"
+
+        def generate_background_result(self, *_args, **_kwargs):
+            observed.append(audit._call_metadata(
+                self, "generate_background_result", ("prompt",), {},
+            ))
+            return {"text": "grounded insight", "status": "ok"}
+
+    manager = LLMManager(Provider())
+
+    async def run():
+        role_token = current_llm_call_role.set("background")
+        origin_token = current_llm_call_origin.set(
+            "cognition.goal_action_executor._generate_background_llm"
+        )
+        execution_token = current_llm_call_execution_id.set("action-async-8")
+        cycle_token = current_llm_call_cycle_id.set("203")
+        operation_token = current_llm_call_operation.set("gae_self_question")
+        try:
+            return await asyncio.to_thread(
+                manager.generate_bare_result, "grounded prompt",
+            )
+        finally:
+            current_llm_call_operation.reset(operation_token)
+            current_llm_call_cycle_id.reset(cycle_token)
+            current_llm_call_execution_id.reset(execution_token)
+            current_llm_call_origin.reset(origin_token)
+            current_llm_call_role.reset(role_token)
+
+    result = asyncio.run(run())
+
+    assert result["status"] == "ok"
+    assert len(observed) == 1
+    event = observed[0]
+    assert event["caller"] == "cognition.goal_action_executor._generate_background_llm"
+    assert event["cognitive_execution_id"] == "action-async-8"
+    assert event["cognitive_cycle_id"] == "203"
+    assert event["cognitive_operation"] == "gae_self_question"
+
+
+def test_goal_action_background_call_receipt_has_execution_and_cycle_ids():
+    from cognition.goal_action_executor import GoalActionExecutor
+
+    observed = []
+
+    class Provider:
+        model = "test-model"
+
+        def generate_background_result(self, *_args, **_kwargs):
+            observed.append(audit._call_metadata(
+                self, "generate_background_result", ("prompt",), {},
+            ))
+            return {"text": "A grounded hypothesis.", "status": "ok"}
+
+    result = asyncio.run(GoalActionExecutor(object())._generate_background_llm(
+        LLMManager(Provider()),
+        "grounded prompt",
+        caller="gae_self_question",
+        max_tokens=80,
+        temperature=0.5,
+        execution_id="action-live-path-5",
+        cycle_id=44,
+    ))
+
+    assert result["status"] == "ok"
+    assert len(observed) == 1
+    event = observed[0]
+    assert event["caller"] == "cognition.goal_action_executor._generate_background_llm"
+    assert event["cognitive_execution_id"] == "action-live-path-5"
+    assert event["cognitive_cycle_id"] == "44"
+    assert event["cognitive_operation"] == "gae_self_question"

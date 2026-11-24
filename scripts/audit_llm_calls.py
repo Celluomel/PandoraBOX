@@ -121,6 +121,9 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
     manager = sys.modules.get("managers.llm_manager")
     role_var = getattr(manager, "current_llm_call_role", None) if manager else None
     origin_var = getattr(manager, "current_llm_call_origin", None) if manager else None
+    execution_var = getattr(manager, "current_llm_call_execution_id", None) if manager else None
+    cycle_var = getattr(manager, "current_llm_call_cycle_id", None) if manager else None
+    operation_var = getattr(manager, "current_llm_call_operation", None) if manager else None
     try:
         call_role = str(role_var.get() or "") if role_var is not None else ""
     except Exception:
@@ -129,6 +132,18 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
         call_origin = str(origin_var.get() or "") if origin_var is not None else ""
     except Exception:
         call_origin = ""
+    try:
+        cognitive_execution_id = str(execution_var.get() or "") if execution_var is not None else ""
+    except Exception:
+        cognitive_execution_id = ""
+    try:
+        cognitive_cycle_id = str(cycle_var.get() or "") if cycle_var is not None else ""
+    except Exception:
+        cognitive_cycle_id = ""
+    try:
+        cognitive_operation = str(operation_var.get() or "") if operation_var is not None else ""
+    except Exception:
+        cognitive_operation = ""
     dispatch_origin = str(_executor_submission_origin.get() or "")
     # A ContextVar turn ID can flow into background work. Keep it as a
     # parent reference, but only number the call as a turn call when the
@@ -199,6 +214,9 @@ def _call_metadata(instance: Any, method: str, args: tuple[Any, ...], kwargs: di
         "executor_submission_origin": dispatch_origin or None,
         "invocation_chain": invocation_chain,
         "execution": call_role or ("foreground_turn" if turn_id else "background_or_unattributed"),
+        "cognitive_execution_id": cognitive_execution_id or None,
+        "cognitive_cycle_id": cognitive_cycle_id or None,
+        "cognitive_operation": cognitive_operation or None,
         "thread": threading.current_thread().name[:80],
         "prompt_chars": len(prompt),
         "prompt_sha256": hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest(),

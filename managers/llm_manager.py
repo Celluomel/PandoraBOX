@@ -21,6 +21,15 @@ _HISTORY_MAX = 20  # 10 user + 10 assistant turns
 # foreground inference for that turn.
 current_llm_call_role: ContextVar[str] = ContextVar("lumina_llm_call_role", default="")
 current_llm_call_origin: ContextVar[str] = ContextVar("lumina_llm_call_origin", default="")
+current_llm_call_execution_id: ContextVar[str] = ContextVar(
+    "lumina_llm_call_execution_id", default="",
+)
+current_llm_call_cycle_id: ContextVar[str] = ContextVar(
+    "lumina_llm_call_cycle_id", default="",
+)
+current_llm_call_operation: ContextVar[str] = ContextVar(
+    "lumina_llm_call_operation", default="",
+)
 
 
 def _llm_call_origin() -> str:
@@ -798,6 +807,16 @@ class LLMManager:
         retries internal to an adapter are outside this count.
         """
         allow_interactive_turn = bool(kwargs.pop("_allow_interactive_turn", False))
+        audit_origin = str(kwargs.pop("_audit_origin", current_llm_call_origin.get()) or "")
+        audit_execution_id = str(kwargs.pop(
+            "_audit_execution_id", current_llm_call_execution_id.get(),
+        ) or "")
+        audit_cycle_id = str(kwargs.pop(
+            "_audit_cycle_id", current_llm_call_cycle_id.get(),
+        ) or "")
+        audit_operation = str(kwargs.pop(
+            "_audit_operation", current_llm_call_operation.get(),
+        ) or "")
         provider_call_count = 0
         kwargs.setdefault("max_tokens", 1000)
         messages: List[Dict] = []
@@ -845,7 +864,15 @@ class LLMManager:
         role_token = current_llm_call_role.set(
             "foreground_auxiliary" if allow_interactive_turn else "background"
         )
-        origin_token = current_llm_call_origin.set(_llm_call_origin())
+        # Preserve explicit provenance supplied by a cognitive action across
+        # asyncio.to_thread(); otherwise use the immediate application caller.
+        inherited_origin = current_llm_call_origin.get()
+        origin_token = current_llm_call_origin.set(
+            audit_origin or inherited_origin or _llm_call_origin()
+        )
+        execution_token = current_llm_call_execution_id.set(audit_execution_id)
+        cycle_token = current_llm_call_cycle_id.set(audit_cycle_id)
+        operation_token = current_llm_call_operation.set(audit_operation)
         try:
             # Close the race where a user turn starts between the first marker
             # check and acquiring the provider lock.
@@ -976,6 +1003,9 @@ class LLMManager:
                 "provider_call_count": provider_call_count,
             }
         finally:
+            current_llm_call_operation.reset(operation_token)
+            current_llm_call_cycle_id.reset(cycle_token)
+            current_llm_call_execution_id.reset(execution_token)
             current_llm_call_origin.reset(origin_token)
             current_llm_call_role.reset(role_token)
             self._provider_lock.release()

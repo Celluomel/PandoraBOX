@@ -1596,6 +1596,8 @@ class GoalActionExecutor:
                 llm,
                 prompt,
                 caller="gae_self_question",
+                execution_id=execution_id,
+                cycle_id=cycle_id,
                 # Reasoning-capable local models may spend part of the
                 # completion budget before emitting assistant content. 120
                 # tokens made an otherwise valid autonomous action look like
@@ -1630,6 +1632,8 @@ class GoalActionExecutor:
                     llm,
                     retry_prompt,
                     caller="gae_self_question_retry",
+                    execution_id=execution_id,
+                    cycle_id=cycle_id,
                     max_tokens=900,
                     temperature=0.35,
                 )
@@ -2013,6 +2017,8 @@ class GoalActionExecutor:
                 llm,
                 prompt,
                 caller="gae_bisociative",
+                execution_id=execution_id,
+                cycle_id=cycle_id,
                 max_tokens=100,
                 temperature=0.88,
             )
@@ -2038,6 +2044,8 @@ class GoalActionExecutor:
                     llm,
                     retry_prompt,
                     caller="gae_bisociative_retry",
+                    execution_id=execution_id,
+                    cycle_id=cycle_id,
                     max_tokens=max(240, 3 * 100),
                     temperature=0.62,
                 )
@@ -2573,6 +2581,8 @@ class GoalActionExecutor:
         caller: str,
         max_tokens: int,
         temperature: float,
+        execution_id: str = "",
+        cycle_id: Optional[int] = None,
     ) -> Dict[str, str]:
         """Try a background inference twice without misclassifying contention."""
         from core.llm_scheduler import llm_scheduler
@@ -2593,6 +2603,12 @@ class GoalActionExecutor:
                             prompt,
                             max_tokens=max_tokens,
                             temperature=temperature,
+                            _audit_origin=(
+                                "cognition.goal_action_executor._generate_background_llm"
+                            ),
+                            _audit_execution_id=execution_id,
+                            _audit_cycle_id=cycle_id,
+                            _audit_operation=caller,
                         )
                     else:
                         text = await asyncio.to_thread(
