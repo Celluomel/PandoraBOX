@@ -36,6 +36,7 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
         bridge = PersonaBridge.__new__(PersonaBridge)
         bridge._response_turn_lock = asyncio.Lock()
         bridge._pending_profile_learning = {}
+        bridge._pending_memory_learning = {}
         bridge._last_turn_trace = {"turn_id": "turn-profile-2", "cognitive_scope_id": "fred"}
         bridge._turn_sequence = 0
         bridge._turn_trace_lock = threading.RLock()
@@ -43,8 +44,10 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
         bridge._turn_stage_health = {}
         profile_write_started = asyncio.Event()
         allow_profile_write = asyncio.Event()
+        memory_write_started = asyncio.Event()
+        allow_memory_write = asyncio.Event()
         implementation_started = asyncio.Event()
-        observed_barrier = []
+        observed_barriers = []
 
         async def exercise():
             loop = asyncio.get_running_loop()
@@ -56,6 +59,16 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
             predecessor = loop.create_task(profile_write())
             bridge._pending_profile_learning["fred"] = {
                 "future": predecessor,
+                "turn_id": "turn-profile-1",
+            }
+            async def memory_write():
+                memory_write_started.set()
+                await allow_memory_write.wait()
+                return {"status": "completed", "persisted": True}
+
+            memory_predecessor = loop.create_task(memory_write())
+            bridge._pending_memory_learning["fred"] = {
+                "future": memory_predecessor,
                 "turn_id": "turn-profile-1",
             }
 
@@ -73,8 +86,15 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
                         output={"type": "profile_learning_barrier_receipt", **barrier},
                         turn_id=kwargs["turn_id"],
                     )
+                    memory_barrier = kwargs["memory_learning_barrier"]
+                    bridge._record_turn_stage(
+                        "memory_learning_predecessor_barrier",
+                        "completed" if memory_barrier["status"] == "predecessor_completed" else "failed",
+                        output={"type": "memory_learning_barrier_receipt", **memory_barrier},
+                        turn_id=kwargs["turn_id"],
+                    )
                     implementation_started.set()
-                    observed_barrier.append(barrier)
+                    observed_barriers.extend((barrier, memory_barrier))
                     yield {
                         "__meta__": True,
                         "raw": "ok",
@@ -91,17 +111,26 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
 
             response_task = asyncio.create_task(consume())
             await profile_write_started.wait()
+            await memory_write_started.wait()
             await asyncio.sleep(0)
             self.assertFalse(implementation_started.is_set())
             allow_profile_write.set()
+            await asyncio.sleep(0)
+            self.assertFalse(implementation_started.is_set())
+            allow_memory_write.set()
             response_chunks = await response_task
             self.assertTrue(implementation_started.is_set())
             return response_chunks
 
         response_chunks = asyncio.run(exercise())
-        self.assertEqual(observed_barrier, [{
+        self.assertEqual(observed_barriers, [{
             "status": "predecessor_completed",
             "learning_status": "updated",
+            "persisted": True,
+            "predecessor_turn_id": "turn-profile-1",
+        }, {
+            "status": "predecessor_completed",
+            "learning_status": "completed",
             "persisted": True,
             "predecessor_turn_id": "turn-profile-1",
         }])
@@ -112,6 +141,11 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
         self.assertEqual(stage["status"], "completed")
         self.assertEqual(stage["output_summary"]["predecessor_turn_id"], "turn-profile-1")
         self.assertNotIn("profile_text", stage["output_summary"])
+        memory_stage = bridge.get_turn_trace(current_turn_id)["stages"][
+            "memory_learning_predecessor_barrier"
+        ]
+        self.assertEqual(memory_stage["status"], "completed")
+        self.assertEqual(memory_stage["output_summary"]["predecessor_turn_id"], "turn-profile-1")
 
     def test_chat_marker_covers_prompt_building_and_is_cleared_after_turn(self):
         class Provider:
@@ -258,6 +292,32 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
         asyncio.run(exercise())
         self.assertEqual(recorded[0][0][1], "scheduled_post_response")
         self.assertEqual(recorded[0][1]["turn_id"], "turn-phase1")
+
+    def test_post_response_scheduler_preserves_completed_learning_receipts(self):
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.RLock()
+        bridge._turn_trace_history = []
+        bridge._last_turn_trace = {
+            "turn_id": "turn-memory-1",
+            "stages": {"response_learning_and_memory": {"status": "completed"}},
+            "context_sources": {},
+            "stage_events": [],
+        }
+        bridge._post_response_tasks = set()
+
+        async def exercise():
+            task = bridge._schedule_post_response_collection(
+                asyncio.sleep(0), "turn-memory-1", ("response_learning_and_memory",)
+            )
+            await task
+
+        asyncio.run(exercise())
+        self.assertEqual(
+            bridge.get_turn_trace("turn-memory-1")["stages"][
+                "response_learning_and_memory"
+            ]["status"],
+            "completed",
+        )
 
     def test_depth_review_uses_the_stream_parameter_not_an_outer_local(self):
         import inspect

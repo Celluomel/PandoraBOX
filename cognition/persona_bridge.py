@@ -543,6 +543,7 @@ class PersonaBridge:
         # receipt by user so the next turn cannot assemble a stale profile
         # snapshot while the previous local write is still in flight.
         self._pending_profile_learning: dict[str, Any] = {}
+        self._pending_memory_learning: dict[str, Any] = {}
         self._init_lumina(external_llm_fn)
         # Wire CognitiveOrganism once ai_system is ready
         if self._system is not None:
@@ -703,50 +704,67 @@ class PersonaBridge:
                 audit_turn_id = _normalize_audit_turn_id(turn_id) or (
                     f"lumina-{time.time_ns()}-{self._turn_sequence + 1}"
                 )
-                profile_learning_barrier = {
-                    "status": "not_applicable_peer" if peer_name else "no_predecessor",
-                }
-                if not peer_name:
-                    pending_profiles = getattr(self, "_pending_profile_learning", {})
-                    predecessor_entry = pending_profiles.get(str(user_id or "default"))
-                    if predecessor_entry is not None:
-                        if isinstance(predecessor_entry, dict):
-                            predecessor = predecessor_entry.get("future")
-                            predecessor_turn_id = str(predecessor_entry.get("turn_id") or "")
-                        else:  # tolerate an in-flight future created by older code/tests
-                            predecessor = predecessor_entry
-                            predecessor_turn_id = ""
-                        try:
-                            predecessor_receipt = await asyncio.shield(predecessor)
-                        except Exception as exc:
-                            profile_learning_barrier = {
-                                "status": "predecessor_failed",
-                                "error_type": type(exc).__name__,
-                            }
-                        else:
-                            predecessor_status = (
-                                str(predecessor_receipt.get("status") or "unreported")
-                                if isinstance(predecessor_receipt, dict) else "unreported"
-                            )
-                            predecessor_persisted = (
-                                isinstance(predecessor_receipt, dict)
-                                and predecessor_receipt.get("persisted") is True
-                            )
-                            predecessor_completed_without_write = predecessor_status in {
-                                "no_explicit_profile_fact", "skipped_no_named_profile",
-                                "skipped_empty_message", "quarantined_ephemeral_profile_data",
-                            }
-                            profile_learning_barrier = {
-                                "status": (
-                                    "predecessor_completed"
-                                    if predecessor_persisted or predecessor_completed_without_write
-                                    else "predecessor_unverified"
-                                ),
-                                "learning_status": predecessor_status[:48],
-                                "persisted": predecessor_persisted,
-                                **({"predecessor_turn_id": predecessor_turn_id[:120]}
-                                   if predecessor_turn_id else {}),
-                            }
+                async def await_prior_learning(registry_name: str) -> dict[str, Any]:
+                    if peer_name:
+                        return {"status": "not_applicable_peer"}
+                    registry = getattr(self, registry_name, {})
+                    entry = registry.get(str(user_id or "default"))
+                    if entry is None:
+                        return {"status": "no_predecessor"}
+                    if isinstance(entry, dict):
+                        predecessor = entry.get("future")
+                        predecessor_turn_id = str(entry.get("turn_id") or "")
+                    else:  # tolerate an in-flight future created by older code/tests
+                        predecessor = entry
+                        predecessor_turn_id = ""
+                    if predecessor is None:
+                        return {"status": "predecessor_unverified"}
+                    try:
+                        receipt = await asyncio.shield(predecessor)
+                    except Exception as exc:
+                        return {
+                            "status": "predecessor_failed",
+                            "error_type": type(exc).__name__,
+                            **({"predecessor_turn_id": predecessor_turn_id[:120]}
+                               if predecessor_turn_id else {}),
+                        }
+                    learning_status = (
+                        str(receipt.get("status") or "unreported")
+                        if isinstance(receipt, dict) else "unreported"
+                    )
+                    persisted = (
+                        isinstance(receipt, dict) and receipt.get("persisted") is True
+                    )
+                    if learning_status in {"failed", "persistence_failed", "unreported"}:
+                        return {
+                            "status": "predecessor_failed",
+                            "learning_status": learning_status[:48],
+                            "persisted": persisted,
+                            **({"predecessor_turn_id": predecessor_turn_id[:120]}
+                               if predecessor_turn_id else {}),
+                        }
+                    completed_without_write = learning_status in {
+                        "no_explicit_profile_fact", "skipped_no_named_profile",
+                        "skipped_empty_message", "quarantined_ephemeral_profile_data",
+                    }
+                    return {
+                        "status": (
+                            "predecessor_completed"
+                            if persisted or completed_without_write or learning_status == "completed"
+                            else "predecessor_unverified"
+                        ),
+                        "learning_status": learning_status[:48],
+                        "persisted": persisted,
+                        **({"predecessor_turn_id": predecessor_turn_id[:120]}
+                           if predecessor_turn_id else {}),
+                    }
+
+                profile_learning_barrier = await await_prior_learning(
+                    "_pending_profile_learning"
+                )
+                memory_learning_barrier = await await_prior_learning(
+                    "_pending_memory_learning"
+                )
                 implementation = self._get_response_stream_impl(
                     user_text,
                     user_id=user_id,
@@ -762,6 +780,7 @@ class PersonaBridge:
                     turn_id=audit_turn_id,
                     debug_introspection=debug_introspection,
                     profile_learning_barrier=profile_learning_barrier,
+                    memory_learning_barrier=memory_learning_barrier,
                 ).__aiter__()
 
                 async def next_chunk_with_turn_context():
@@ -1937,6 +1956,7 @@ class PersonaBridge:
         turn_id: str = "",
         debug_introspection: bool = False,
         profile_learning_barrier: dict[str, Any] | None = None,
+        memory_learning_barrier: dict[str, Any] | None = None,
     ):
         """
         Main entry point for every user turn.
@@ -1969,6 +1989,29 @@ class PersonaBridge:
             }
             self._record_turn_stage(
                 "profile_learning_predecessor_barrier",
+                "completed" if barrier_status in {"no_predecessor", "predecessor_completed"}
+                else "failed" if barrier_status == "predecessor_failed"
+                else barrier_status,
+                output=barrier_output,
+                turn_id=audit_turn_id,
+            )
+        if isinstance(memory_learning_barrier, dict):
+            barrier_status = str(memory_learning_barrier.get("status") or "unverified")
+            barrier_output = {
+                "type": "memory_learning_barrier_receipt",
+                "status": barrier_status,
+                **({"learning_status": str(memory_learning_barrier["learning_status"])[:48]}
+                   if memory_learning_barrier.get("learning_status") else {}),
+                **({"error_type": str(memory_learning_barrier["error_type"])[:64]}
+                   if memory_learning_barrier.get("error_type") else {}),
+                **({"persisted": memory_learning_barrier["persisted"]}
+                   if isinstance(memory_learning_barrier.get("persisted"), bool) else {}),
+                **({"predecessor_turn_id": str(
+                    memory_learning_barrier["predecessor_turn_id"]
+                )[:120]} if memory_learning_barrier.get("predecessor_turn_id") else {}),
+            }
+            self._record_turn_stage(
+                "memory_learning_predecessor_barrier",
                 "completed" if barrier_status in {"no_predecessor", "predecessor_completed"}
                 else "failed" if barrier_status == "predecessor_failed"
                 else barrier_status,
@@ -2521,6 +2564,21 @@ class PersonaBridge:
 
         task.add_done_callback(_release)
         for stage_name in stage_names:
+            try:
+                existing_trace = self.get_turn_trace(turn_id)
+            except (AttributeError, TypeError):
+                existing_trace = None
+            existing_stage = (
+                existing_trace.get("stages", {}).get(str(stage_name), {})
+                if isinstance(existing_trace, dict) else {}
+            )
+            if isinstance(existing_stage, dict) and existing_stage.get("status") in {
+                "completed", "failed", "updated", "no_effect",
+                "skipped_no_prior_affect_read", "skipped_no_current_result",
+                "skipped_no_causal_pair", "skipped_no_independent_outcome_evidence",
+                "skipped_not_applicable", "skipped_by_scope",
+            }:
+                continue
             self._record_turn_stage(
                 str(stage_name), "scheduled_post_response",
                 output={"blocking": False}, turn_id=turn_id,
@@ -4718,7 +4776,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         _organism = self._organism
         # Complete the output-side cognitive stages before releasing the turn
         # lock, so a later turn cannot interleave with this one mid-learning.
-        post_tasks: list[tuple[str, asyncio.Future]] = []
+        post_tasks: list[tuple[str, Any]] = []
 
         # Goal-means applicability is handled in the primary generation by
         # the conditional protocol. Do not run a second provider call after
@@ -4812,17 +4870,43 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 turn_id=_audit_turn_id,
             )
         else:
-            post_tasks.append(("cognitive_post_turn", loop.run_in_executor(
-                None,
-                self._run_full_post_turn_lifecycle,
-                effective_input, user_id, raw_response,
-                emo_dict, cond_dict, _organism, not bool(peer_name), _audit_turn_id,
-                (
-                    "retrieval" if _explicit_memory_recall
-                    else "social" if _deterministic_affect_report
-                    else ""
-                ),
-            )))
+            memory_future = None
+            if not peer_name:
+                memory_future = loop.run_in_executor(
+                    None,
+                    self._run_response_learning_and_memory,
+                    effective_input, user_id, raw_response,
+                    emo_dict, cond_dict, _audit_turn_id,
+                )
+                pending_memory = getattr(self, "_pending_memory_learning", None)
+                if pending_memory is None:
+                    pending_memory = self._pending_memory_learning = {}
+                pending_memory[str(user_id or "default")] = {
+                    "future": memory_future,
+                    "turn_id": _audit_turn_id,
+                }
+                post_tasks.append(("response_learning_and_memory", memory_future))
+
+            async def _run_cognitive_lifecycle_after_memory():
+                if memory_future is not None:
+                    # Durable conversational memory must be committed before
+                    # subsequent turn retrieval; the remaining cognitive work
+                    # stays asynchronous and is not part of this barrier.
+                    await asyncio.shield(memory_future)
+                return await loop.run_in_executor(
+                    None,
+                    self._run_full_post_turn_lifecycle,
+                    effective_input, user_id, raw_response,
+                    emo_dict, cond_dict, _organism, not bool(peer_name), _audit_turn_id,
+                    (
+                        "retrieval" if _explicit_memory_recall
+                        else "social" if _deterministic_affect_report
+                        else ""
+                    ),
+                    not bool(peer_name),
+                )
+
+            post_tasks.append(("cognitive_post_turn", _run_cognitive_lifecycle_after_memory()))
 
         # Learn explicit profile statements after the visible response. This
         # is local and bounded, so it adds no latency or extra model call.
@@ -4881,6 +4965,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             consumes=("turn_input",),
                             turn_id=_audit_turn_id,
                         )
+                    elif stage_name == "response_learning_and_memory":
+                        if not isinstance(result, dict) or result.get("status") != "completed":
+                            failures.append(RuntimeError(
+                                "response learning and memory did not report completion"
+                            ))
                     elif stage_name == "goal_means_post_response" and isinstance(result, dict):
                         analysis_status = str(result.get("status") or "failed")
                         if analysis_status == "completed":
@@ -7197,6 +7286,48 @@ Memory honesty — two distinct cases:
             logger.exception("Streaming predictive context preparation failed")
             return ""
 
+    def _run_response_learning_and_memory(
+        self,
+        user_input: str,
+        user_id: str,
+        response: str,
+        emo_dict: dict,
+        cond_dict: dict,
+        audit_turn_id: str = "",
+    ) -> dict[str, Any]:
+        """Persist this human exchange before later turns can retrieve it."""
+        try:
+            receipt = self._system._post_response_processing(
+                user_id, user_input, response, emo_dict, cond_dict,
+            )
+            if not isinstance(receipt, dict):
+                receipt = {
+                    "status": "unreported",
+                    "failed_operations": ["missing_learning_receipt"],
+                }
+        except Exception as exc:
+            logger.exception("Response learning and memory failed for turn %s", audit_turn_id)
+            receipt = {
+                "status": "failed",
+                "failed_operations": ["post_response_processing_exception"],
+                "error_type": type(exc).__name__,
+            }
+        failed = receipt.get("status") != "completed"
+        self._record_turn_stage(
+            "response_learning_and_memory",
+            "failed" if failed else "completed",
+            str(receipt.get("status") or "unreported") if failed else "",
+            output=response_learning_evidence(receipt),
+            consumes=("turn_input", "response_finalization"),
+            turn_id=audit_turn_id,
+        )
+        if failed:
+            logger.warning(
+                "Post-response learning reported an incomplete result for turn %s",
+                audit_turn_id,
+            )
+        return receipt
+
     def _run_full_post_turn_lifecycle(
         self,
         user_input: str,
@@ -7208,6 +7339,7 @@ Memory honesty — two distinct cases:
         human_interaction: bool = True,
         audit_turn_id: str = "",
         semantic_turn_kind_hint: str = "",
+        response_learning_already_run: bool = False,
     ) -> bool:
         """
         Mirrors everything get_response() does AFTER _generate_response().
@@ -7327,29 +7459,13 @@ Memory honesty — two distinct cases:
                 "stuck_response_detection", "completed", turn_id=audit_turn_id,
             )
 
-            # 12: full post-response processing (relational memory, conditioning,
-            #     memory store, evolution pressure queue, self-concept update)
-            active_stage = "response_learning_and_memory"
-            learning_receipt = s._post_response_processing(
-                user_id, user_input, response, emo_dict, cond_dict,
-            )
-            if not isinstance(learning_receipt, dict):
-                learning_receipt = {
-                    "status": "unreported",
-                    "failed_operations": ["missing_learning_receipt"],
-                }
-            learning_failed = learning_receipt.get("status") != "completed"
-            self._record_turn_stage(
-                "response_learning_and_memory",
-                "failed" if learning_failed else "completed",
-                str(learning_receipt.get("status") or "unreported") if learning_failed else "",
-                output=response_learning_evidence(learning_receipt),
-                consumes=("turn_input", "response_finalization"),
-                turn_id=audit_turn_id,
-            )
-            if learning_failed:
-                logger.warning(
-                    "Post-response learning reported an incomplete result for turn %s",
+            # 12: response learning is independently persisted before a later
+            # turn's retrieval. Keep the legacy direct-call path for callers
+            # outside PersonaBridge's coordinated streaming lifecycle.
+            if not response_learning_already_run:
+                active_stage = "response_learning_and_memory"
+                self._run_response_learning_and_memory(
+                    user_input, user_id, response, emo_dict, cond_dict,
                     audit_turn_id,
                 )
 

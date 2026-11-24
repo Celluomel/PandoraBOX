@@ -363,7 +363,10 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 receipt[key] = digest
         return receipt
 
-    if value.get("type") == "profile_learning_barrier_receipt":
+    if value.get("type") in {
+        "profile_learning_barrier_receipt", "memory_learning_barrier_receipt",
+    }:
+        receipt_type = str(value.get("type"))
         status = str(value.get("status") or "unverified")[:40]
         if status not in {
             "no_predecessor", "not_applicable_peer", "predecessor_completed",
@@ -371,7 +374,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         }:
             status = "unverified"
         receipt = {
-            "type": "profile_learning_barrier_receipt",
+            "type": receipt_type,
             "status": status,
             "quality": (
                 "present" if status in {"no_predecessor", "predecessor_completed"}
