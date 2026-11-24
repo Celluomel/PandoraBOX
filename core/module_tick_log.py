@@ -42,7 +42,7 @@ def summarize_output(value: Any) -> dict[str, Any]:
         receipt_enum_fields = {
             "outcome_status", "status", "reason_code", "effect_status",
             "aspiration_planning", "goal_plan_schedule_status", "persistence_status",
-            "cag_status", "workspace_status",
+            "cag_status", "workspace_status", "durability", "organism_sync",
             "event_status",
             "affect_status", "tension_status", "curiosity_status",
         }
@@ -60,6 +60,11 @@ def summarize_output(value: Any) -> dict[str, Any]:
             "belief_count", "response_characters", "event_handler_count",
             "global_chapter_count", "tokenizable_word_count",
             "clustered_theme_count", "pivot_chapter_count", "arc_characters",
+            # Active Cognitive Context reports bounded state deltas so a turn
+            # trace can verify that maintenance actually advanced without
+            # exposing topic text or other prompt content.
+            "turn_count_before", "turn_count_after",
+            "topic_count_before", "topic_count_after",
         }
         for key in receipt_enum_fields:
             item = value.get(key)
@@ -70,7 +75,10 @@ def summarize_output(value: Any) -> dict[str, Any]:
             item = value.get(key)
             if isinstance(item, int) and not isinstance(item, bool):
                 receipt_fields[key] = item
-        for key in ("aspiration_plan_exists", "arc_changed"):
+        for key in (
+            "aspiration_plan_exists", "arc_changed",
+            "topic_decay_pass_ran", "prompt_fragment_invalidated",
+        ):
             if isinstance(value.get(key), bool):
                 receipt_fields[key] = value[key]
         if isinstance(value.get("persisted"), bool):

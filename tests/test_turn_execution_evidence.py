@@ -590,6 +590,36 @@ def test_runtime_execution_evidence_snapshot_binds_exact_turn_and_manifest_count
     assert summary["receipt_fields"]["tick_count"] == 244
 
 
+def test_active_context_receipt_keeps_safe_deltas_in_turn_trace_summary():
+    summary = summarize_output({
+        "type": "active_context_update_receipt",
+        "status": "maintenance_completed",
+        "turn_count_before": 7,
+        "turn_count_after": 8,
+        "topic_count_before": 2,
+        "topic_count_after": 2,
+        "topic_decay_pass_ran": True,
+        "prompt_fragment_invalidated": True,
+        "organism_sync": "skipped_not_due",
+        "durability": "in_memory_only",
+        "private_topic_text": "must not be copied into the trace",
+    })
+
+    receipt = summary["receipt_fields"]
+    assert receipt == {
+        "status": "maintenance_completed",
+        "durability": "in_memory_only",
+        "organism_sync": "skipped_not_due",
+        "turn_count_before": 7,
+        "turn_count_after": 8,
+        "topic_count_before": 2,
+        "topic_count_after": 2,
+        "topic_decay_pass_ran": True,
+        "prompt_fragment_invalidated": True,
+    }
+    assert "must not be copied" not in repr(summary)
+
+
 def test_runtime_execution_route_uses_originating_turn_trace_snapshot():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -1224,8 +1254,12 @@ def test_deferred_profile_and_post_turn_stages_keep_originating_turn_id():
         and argument.attr == "_run_full_post_turn_lifecycle"
     )
     lifecycle_arguments = lifecycle_submissions[0].args[lifecycle_index + 1:]
-    assert isinstance(lifecycle_arguments[-1], ast.Name)
-    assert lifecycle_arguments[-1].id == "_audit_turn_id"
+    # The optional semantic act hint is now passed after the turn ID, so assert
+    # the explicit provenance argument rather than coupling the test to arity.
+    assert any(
+        isinstance(argument, ast.Name) and argument.id == "_audit_turn_id"
+        for argument in lifecycle_arguments
+    )
 
 
 def test_architecture_claim_check_is_reported_as_scoped_not_general_validation():
