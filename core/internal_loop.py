@@ -48,6 +48,7 @@ import json
 import hashlib
 import inspect
 import logging
+import os
 import re
 import threading
 import time
@@ -391,6 +392,16 @@ class InternalThoughtLoop:
         self._cycle_evidence_lock = threading.RLock()
         self._cycle_evidence: deque[dict[str, Any]] = deque(maxlen=40)
         self._active_cycle_evidence: dict[str, Any] | None = None
+        self._cycle_evidence_audit_path: Path | None = None
+        self._cycle_evidence_persistence_status = "disabled"
+        self._cycle_evidence_load_failed = False
+        if os.getenv("LUMINA_MODULE_EXECUTION_AUDIT", "").strip().lower() in {"1", "true", "yes", "on"}:
+            configured_path = os.getenv(
+                "LUMINA_COGNITIVE_CYCLE_AUDIT_PATH",
+                "logs/cognitive_cycle_evidence.json",
+            )
+            self._cycle_evidence_audit_path = Path(configured_path)
+            self._load_cycle_evidence_audit()
         self._active_cycle_thread_id: int | None = None
         # Predictive models are shared by the background cycle and the live
         # response path. A first chat turn may arrive before slow-cycle
@@ -1143,6 +1154,7 @@ class InternalThoughtLoop:
         with self._cycle_evidence_lock:
             self._active_cycle_evidence = {
                 "cycle_id": int(cycle_id),
+                "process_id": os.getpid(),
                 "started_at": time.time(),
                 "status": "running",
                 "stages": [],
@@ -1255,6 +1267,7 @@ class InternalThoughtLoop:
             if error_type:
                 entry["error_type"] = str(error_type)[:80]
             receipt["stages"].append(entry)
+            self._save_cycle_evidence_audit_locked()
             return True
 
     @staticmethod
@@ -1310,6 +1323,64 @@ class InternalThoughtLoop:
             self._cycle_evidence.append(receipt)
             self._active_cycle_evidence = None
             self._active_cycle_thread_id = None
+            self._save_cycle_evidence_audit_locked()
+
+    def _load_cycle_evidence_audit(self) -> None:
+        """Restore a bounded, content-free cross-restart cycle receipt history."""
+        path = self._cycle_evidence_audit_path
+        if path is None:
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("schema") != "lumina_cognitive_cycle_evidence.v1":
+                raise ValueError("unexpected cycle evidence schema")
+            rows = payload.get("cycles")
+            if not isinstance(rows, list):
+                raise ValueError("cycle evidence cycles must be a list")
+            valid = [
+                row for row in rows
+                if isinstance(row, dict)
+                and isinstance(row.get("cycle_id"), int)
+                and isinstance(row.get("stages"), list)
+            ]
+            self._cycle_evidence.extend(valid[-self._cycle_evidence.maxlen:])
+            self._cycle_evidence_persistence_status = "loaded" if valid else "loaded_empty"
+        except FileNotFoundError:
+            self._cycle_evidence_persistence_status = "new_store"
+        except Exception as exc:
+            self._cycle_evidence_load_failed = True
+            self._cycle_evidence_persistence_status = f"load_failed_preserved:{type(exc).__name__}"
+            logger.warning("[InternalLoop] Cycle evidence journal load failed: %s", type(exc).__name__)
+
+    def _save_cycle_evidence_audit_locked(self) -> None:
+        """Atomically save bounded stage receipts; callers hold the evidence lock."""
+        path = self._cycle_evidence_audit_path
+        if path is None:
+            return
+        if self._cycle_evidence_load_failed:
+            self._cycle_evidence_persistence_status = "load_failed_preserved"
+            return
+        temporary = path.with_name(path.name + ".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema": "lumina_cognitive_cycle_evidence.v1",
+                "cycles": list(self._cycle_evidence)[-40:],
+            }
+            serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+            temporary.write_text(serialized, encoding="utf-8")
+            os.replace(temporary, path)
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            if persisted != json.loads(serialized):
+                raise OSError("cycle evidence journal read-back mismatch")
+            self._cycle_evidence_persistence_status = "persisted"
+        except Exception as exc:
+            try:
+                temporary.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._cycle_evidence_persistence_status = f"persistence_failed:{type(exc).__name__}"
+            logger.warning("[InternalLoop] Cycle evidence journal save failed: %s", type(exc).__name__)
 
     def cycle_evidence_snapshot(self, limit: int = 5) -> dict[str, Any]:
         """Expose recent bounded causal receipts; semantic correctness is not inferred."""
@@ -1324,6 +1395,7 @@ class InternalThoughtLoop:
             return {
                 "retained": len(self._cycle_evidence),
                 "capacity": 40,
+                "persistence_status": self._cycle_evidence_persistence_status,
                 "evidence_scope": "internal_cycle_execution_and_explicit_dataflow; semantic_quality_not_assessed",
                 "cycles": json.loads(json.dumps(cycles, default=str)),
             }

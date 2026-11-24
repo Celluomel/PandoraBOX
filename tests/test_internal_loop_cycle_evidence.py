@@ -1,5 +1,6 @@
 from collections import deque
 import hashlib
+import json
 import threading
 from types import SimpleNamespace
 
@@ -15,6 +16,9 @@ def make_loop():
     loop._cycle_evidence_lock = threading.RLock()
     loop._cycle_evidence = deque(maxlen=40)
     loop._active_cycle_evidence = None
+    loop._cycle_evidence_audit_path = None
+    loop._cycle_evidence_persistence_status = "disabled"
+    loop._cycle_evidence_load_failed = False
     loop._module_tick_wrapped = set()
     return loop
 
@@ -60,6 +64,49 @@ def test_failure_cycle_receipt_keeps_bounded_redacted_diagnostic():
     assert "sk-test" not in repr(receipt)
     assert "abc123" not in repr(receipt)
     assert len(receipt["error_summary"]) <= 240
+
+
+def test_audit_mode_cycle_receipts_persist_and_restore_across_restart(tmp_path):
+    path = tmp_path / "cycle-evidence.json"
+    loop = make_loop()
+    loop._cycle_evidence_audit_path = path
+    loop._cycle_evidence_persistence_status = "new_store"
+    loop._begin_cycle_evidence(41)
+    output_ref = loop._record_cycle_stage(
+        "cognitive_dissonance_engine", "completed",
+        output={"event_store_status": "persisted", "event_count": 4},
+        metrics={"prediction_detector_status": "unavailable_no_outcome_results"},
+    )
+    loop._finish_cycle_evidence("completed")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema"] == "lumina_cognitive_cycle_evidence.v1"
+    assert payload["cycles"][0]["process_id"] > 0
+    assert payload["cycles"][0]["stages"][0]["output_ref"] == output_ref
+    assert loop.cycle_evidence_snapshot()["persistence_status"] == "persisted"
+
+    restored = make_loop()
+    restored._cycle_evidence_audit_path = path
+    restored._load_cycle_evidence_audit()
+    snapshot = restored.cycle_evidence_snapshot()
+    assert snapshot["persistence_status"] == "loaded"
+    assert snapshot["cycles"][0]["cycle_id"] == 41
+    assert snapshot["cycles"][0]["stages"][0]["metrics"]["prediction_detector_status"] == "unavailable_no_outcome_results"
+
+
+def test_audit_cycle_receipt_does_not_overwrite_corrupt_journal(tmp_path):
+    path = tmp_path / "cycle-evidence.json"
+    original = b"not-json"
+    path.write_bytes(original)
+    loop = make_loop()
+    loop._cycle_evidence_audit_path = path
+    loop._load_cycle_evidence_audit()
+    loop._begin_cycle_evidence(42)
+    loop._record_cycle_stage("test_stage", "completed", output={"ok": True})
+    loop._finish_cycle_evidence("completed")
+
+    assert loop.cycle_evidence_snapshot()["persistence_status"] == "load_failed_preserved"
+    assert path.read_bytes() == original
 
 
 def test_cycle_receipt_keeps_boolean_action_effect_evidence_without_user_text():
