@@ -363,6 +363,36 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 receipt[key] = digest
         return receipt
 
+    if value.get("type") == "profile_learning_barrier_receipt":
+        status = str(value.get("status") or "unverified")[:40]
+        if status not in {
+            "no_predecessor", "not_applicable_peer", "predecessor_completed",
+            "predecessor_unverified", "predecessor_failed",
+        }:
+            status = "unverified"
+        receipt = {
+            "type": "profile_learning_barrier_receipt",
+            "status": status,
+            "quality": (
+                "present" if status in {"no_predecessor", "predecessor_completed"}
+                else "failed" if status == "predecessor_failed" else "unverified"
+            ),
+        }
+        learning_status = str(value.get("learning_status") or "")[:48]
+        if learning_status and learning_status.replace("_", "").isalnum():
+            receipt["learning_status"] = learning_status
+        if isinstance(value.get("persisted"), bool):
+            receipt["persisted"] = value["persisted"]
+        predecessor_turn_id = str(value.get("predecessor_turn_id") or "")[:120]
+        if predecessor_turn_id and all(
+            char.isalnum() or char in "-_." for char in predecessor_turn_id
+        ):
+            receipt["predecessor_turn_id"] = predecessor_turn_id
+        error_type = str(value.get("error_type") or "")[:64]
+        if error_type and error_type.replace("_", "").isalnum():
+            receipt["error_type"] = error_type
+        return receipt
+
     profile_receipt_types = {
         "behavioral_user_model_context_receipt": {
             "source": "world_model_behavioral_model",

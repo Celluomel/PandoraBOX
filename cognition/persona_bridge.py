@@ -539,6 +539,10 @@ class PersonaBridge:
         # scratch fields; serialize complete turns so human and peer streams
         # cannot overwrite each other's cognitive context.
         self._response_turn_lock = asyncio.Lock()
+        # Explicit profile learning runs after the visible response. Keep its
+        # receipt by user so the next turn cannot assemble a stale profile
+        # snapshot while the previous local write is still in flight.
+        self._pending_profile_learning: dict[str, Any] = {}
         self._init_lumina(external_llm_fn)
         # Wire CognitiveOrganism once ai_system is ready
         if self._system is not None:
@@ -699,6 +703,50 @@ class PersonaBridge:
                 audit_turn_id = _normalize_audit_turn_id(turn_id) or (
                     f"lumina-{time.time_ns()}-{self._turn_sequence + 1}"
                 )
+                profile_learning_barrier = {
+                    "status": "not_applicable_peer" if peer_name else "no_predecessor",
+                }
+                if not peer_name:
+                    pending_profiles = getattr(self, "_pending_profile_learning", {})
+                    predecessor_entry = pending_profiles.get(str(user_id or "default"))
+                    if predecessor_entry is not None:
+                        if isinstance(predecessor_entry, dict):
+                            predecessor = predecessor_entry.get("future")
+                            predecessor_turn_id = str(predecessor_entry.get("turn_id") or "")
+                        else:  # tolerate an in-flight future created by older code/tests
+                            predecessor = predecessor_entry
+                            predecessor_turn_id = ""
+                        try:
+                            predecessor_receipt = await asyncio.shield(predecessor)
+                        except Exception as exc:
+                            profile_learning_barrier = {
+                                "status": "predecessor_failed",
+                                "error_type": type(exc).__name__,
+                            }
+                        else:
+                            predecessor_status = (
+                                str(predecessor_receipt.get("status") or "unreported")
+                                if isinstance(predecessor_receipt, dict) else "unreported"
+                            )
+                            predecessor_persisted = (
+                                isinstance(predecessor_receipt, dict)
+                                and predecessor_receipt.get("persisted") is True
+                            )
+                            predecessor_completed_without_write = predecessor_status in {
+                                "no_explicit_profile_fact", "skipped_no_named_profile",
+                                "skipped_empty_message", "quarantined_ephemeral_profile_data",
+                            }
+                            profile_learning_barrier = {
+                                "status": (
+                                    "predecessor_completed"
+                                    if predecessor_persisted or predecessor_completed_without_write
+                                    else "predecessor_unverified"
+                                ),
+                                "learning_status": predecessor_status[:48],
+                                "persisted": predecessor_persisted,
+                                **({"predecessor_turn_id": predecessor_turn_id[:120]}
+                                   if predecessor_turn_id else {}),
+                            }
                 implementation = self._get_response_stream_impl(
                     user_text,
                     user_id=user_id,
@@ -713,6 +761,7 @@ class PersonaBridge:
                     cognitive_scope_id=cognitive_scope_id,
                     turn_id=audit_turn_id,
                     debug_introspection=debug_introspection,
+                    profile_learning_barrier=profile_learning_barrier,
                 ).__aiter__()
 
                 async def next_chunk_with_turn_context():
@@ -1887,6 +1936,7 @@ class PersonaBridge:
         cognitive_scope_id: str = "",
         turn_id: str = "",
         debug_introspection: bool = False,
+        profile_learning_barrier: dict[str, Any] | None = None,
     ):
         """
         Main entry point for every user turn.
@@ -1897,6 +1947,34 @@ class PersonaBridge:
         audit_turn_id = self._start_turn_trace(
             user_id, peer_name, cognitive_scope_id, turn_id
         )
+        if isinstance(profile_learning_barrier, dict):
+            barrier_status = str(profile_learning_barrier.get("status") or "unverified")
+            barrier_output = {
+                "type": "profile_learning_barrier_receipt",
+                "status": barrier_status,
+                **({
+                    "learning_status": str(profile_learning_barrier["learning_status"])[:48]
+                } if profile_learning_barrier.get("learning_status") else {}),
+                **({
+                    "error_type": str(profile_learning_barrier["error_type"])[:64]
+                } if profile_learning_barrier.get("error_type") else {}),
+                **({
+                    "persisted": profile_learning_barrier["persisted"]
+                } if isinstance(profile_learning_barrier.get("persisted"), bool) else {}),
+                **({
+                    "predecessor_turn_id": str(
+                        profile_learning_barrier["predecessor_turn_id"]
+                    )[:120]
+                } if profile_learning_barrier.get("predecessor_turn_id") else {}),
+            }
+            self._record_turn_stage(
+                "profile_learning_predecessor_barrier",
+                "completed" if barrier_status in {"no_predecessor", "predecessor_completed"}
+                else "failed" if barrier_status == "predecessor_failed"
+                else barrier_status,
+                output=barrier_output,
+                turn_id=audit_turn_id,
+            )
         if not self._ready or self._system is None:
             self._finish_turn_trace("not_ready", audit_turn_id)
             self._record_turn_stage("readiness", "failed", "PersonaBridge not ready")
@@ -4751,12 +4829,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         if not peer_name:
             try:
                 from managers.user_manager import user_manager
-                post_tasks.append(("human_profile_learning", loop.run_in_executor(
+                profile_future = loop.run_in_executor(
                     None, lambda: user_manager.learn_from_message(
                         user_id, effective_input, return_receipt=True,
                         source_turn_id=_audit_turn_id,
                     )
-                )))
+                )
+                pending_profiles = getattr(self, "_pending_profile_learning", None)
+                if pending_profiles is None:
+                    pending_profiles = self._pending_profile_learning = {}
+                pending_profiles[str(user_id or "default")] = {
+                    "future": profile_future,
+                    "turn_id": _audit_turn_id,
+                }
+                post_tasks.append(("human_profile_learning", profile_future))
             except Exception as _profile_error:
                 self._record_turn_stage(
                     "human_profile_learning", "failed", str(_profile_error),

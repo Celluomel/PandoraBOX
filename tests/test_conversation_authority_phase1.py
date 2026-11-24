@@ -32,6 +32,87 @@ def _bridge_for_review(manager):
 
 
 class ConversationAuthorityPhase1Tests(unittest.TestCase):
+    def test_next_turn_waits_for_prior_profile_learning_before_prompt_assembly(self):
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._response_turn_lock = asyncio.Lock()
+        bridge._pending_profile_learning = {}
+        bridge._last_turn_trace = {"turn_id": "turn-profile-2", "cognitive_scope_id": "fred"}
+        bridge._turn_sequence = 0
+        bridge._turn_trace_lock = threading.RLock()
+        bridge._turn_trace_history = []
+        bridge._turn_stage_health = {}
+        profile_write_started = asyncio.Event()
+        allow_profile_write = asyncio.Event()
+        implementation_started = asyncio.Event()
+        observed_barrier = []
+
+        async def exercise():
+            loop = asyncio.get_running_loop()
+            async def profile_write():
+                profile_write_started.set()
+                await allow_profile_write.wait()
+                return {"status": "updated", "persisted": True}
+
+            predecessor = loop.create_task(profile_write())
+            bridge._pending_profile_learning["fred"] = {
+                "future": predecessor,
+                "turn_id": "turn-profile-1",
+            }
+
+            def fake_impl(*_args, **kwargs):
+                async def stream():
+                    bridge._start_turn_trace("fred", turn_id=kwargs["turn_id"])
+                    bridge._record_turn_stage(
+                        "turn_input", "received", output="next turn",
+                        turn_id=kwargs["turn_id"],
+                    )
+                    barrier = kwargs["profile_learning_barrier"]
+                    bridge._record_turn_stage(
+                        "profile_learning_predecessor_barrier",
+                        "completed" if barrier["status"] == "predecessor_completed" else "failed",
+                        output={"type": "profile_learning_barrier_receipt", **barrier},
+                        turn_id=kwargs["turn_id"],
+                    )
+                    implementation_started.set()
+                    observed_barrier.append(barrier)
+                    yield {
+                        "__meta__": True,
+                        "raw": "ok",
+                        "speech": "ok",
+                        "emotion": "neutral",
+                        "intensity": 0.1,
+                    }
+                return stream()
+
+            bridge._get_response_stream_impl = fake_impl
+
+            async def consume():
+                return [chunk async for chunk in bridge.get_response_stream("next turn", "fred")]
+
+            response_task = asyncio.create_task(consume())
+            await profile_write_started.wait()
+            await asyncio.sleep(0)
+            self.assertFalse(implementation_started.is_set())
+            allow_profile_write.set()
+            response_chunks = await response_task
+            self.assertTrue(implementation_started.is_set())
+            return response_chunks
+
+        response_chunks = asyncio.run(exercise())
+        self.assertEqual(observed_barrier, [{
+            "status": "predecessor_completed",
+            "learning_status": "updated",
+            "persisted": True,
+            "predecessor_turn_id": "turn-profile-1",
+        }])
+        current_turn_id = response_chunks[-1]["turn_id"]
+        stage = bridge.get_turn_trace(current_turn_id)["stages"][
+            "profile_learning_predecessor_barrier"
+        ]
+        self.assertEqual(stage["status"], "completed")
+        self.assertEqual(stage["output_summary"]["predecessor_turn_id"], "turn-profile-1")
+        self.assertNotIn("profile_text", stage["output_summary"])
+
     def test_chat_marker_covers_prompt_building_and_is_cleared_after_turn(self):
         class Provider:
             def __init__(self):
