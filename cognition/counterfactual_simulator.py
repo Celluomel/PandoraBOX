@@ -45,6 +45,7 @@ MAX_RECENT_INTERACTIONS = 10     # how many past interactions to analyse per run
 CF_INTERVAL_CYCLES     = 5       # consolidation cycles between runs (~50 min)
 PCM_ENERGY_WEIGHT      = 0.55    # weight of PCM energy_delta in joint_score
 WSDM_ENGAGEMENT_WEIGHT = 0.45    # weight of WSDM engagement_signal in joint_score
+MIN_COUNTERFACTUAL_MARGIN = 0.02
 
 ALL_ACTION_TYPES = [
     "philosophical", "technical", "emotional", "creative",
@@ -64,6 +65,8 @@ class CounterfactualBranch:
     wsdm_calibrated:    Optional[float]   # WSDM calibrated confidence (None if uncal.)
     joint_score:        float             # composite ranking score
     was_actual:         bool = False      # True for the branch that actually happened
+    score_basis:        List[str] = field(default_factory=list)
+    ranking_eligible:   bool = False
 
 
 @dataclass
@@ -74,10 +77,13 @@ class CounterfactualQuery:
     actual_outcome:   str                                # positive/negative/neutral
     branches:         Dict[str, CounterfactualBranch]   # action_type -> branch
     best_alternative: Optional[str]      # highest joint_score non-actual branch
-    actual_rank:      int                # rank of actual action among all branches (1=best)
+    actual_rank:      Optional[int]      # rank only when the comparison is meaningful
     worst_actual:     bool               # True if actual was lowest-scoring branch
     source_ref:       str = ""            # stable, content-free PCM record identity
     computed_at:      float = field(default_factory=time.time)
+    evidence_status:  str = "model_prediction_only"
+    ranking_status:   str = "not_ranked"
+    ranking_margin:   Optional[float] = None
 
 
 class CounterfactualSimulator:
@@ -153,13 +159,22 @@ class CounterfactualSimulator:
                 self._run_pending = False
 
     def recent_findings(self, n: int = 5) -> List[Dict]:
-        """Return n most recent query results for prompt injection / dashboard."""
+        """Return only counterfactuals with independently validated outcomes."""
+        with self._lock:
+            validated = [
+                item for item in self._log
+                if isinstance(item, dict)
+                and item.get("evidence_status") == "outcome_validated"
+            ]
+            return list(validated[-n:])
+
+    def recent_predictions(self, n: int = 5) -> List[Dict]:
+        """Return model-only predictions for diagnostics, not as observed outcomes."""
         with self._lock:
             return list(self._log[-n:])
 
     def worst_actual_streak(self) -> int:
-        """Number of consecutive recent interactions where actual was worst-ranked.
-        A streak > 3 is a concrete signal for Phase 3.5 Introspective Observer."""
+        """Number of consecutive independently outcome-validated worst choices."""
         with self._lock:
             return self._worst_actual_streak_locked()
 
@@ -176,7 +191,8 @@ class CounterfactualSimulator:
         hangs permanently with no exception and nothing in the logs."""
         streak = 0
         for entry in reversed(self._log):
-            if entry.get("worst_actual"):
+            if (entry.get("evidence_status") == "outcome_validated"
+                    and entry.get("worst_actual")):
                 streak += 1
             else:
                 break
@@ -184,11 +200,18 @@ class CounterfactualSimulator:
 
     def status(self) -> Dict:
         with self._lock:
+            validated = [
+                item for item in self._log
+                if isinstance(item, dict)
+                and item.get("evidence_status") == "outcome_validated"
+            ]
             return {
                 "total_queries": len(self._log),
                 "worst_actual_streak": self._worst_actual_streak_locked(),
                 "last_run_cycle": self._last_run_cycle,
                 "recent": self._log[-3:] if self._log else [],
+                "recent_validated": validated[-10:],
+                "validated_query_count": len(validated),
             }
 
     # ── Core analysis ─────────────────────────────────────────────────────────
@@ -308,19 +331,59 @@ class CounterfactualSimulator:
                 )
                 branches[action_type] = branch
 
-            # Rank branches by joint_score (highest = best)
+            # A PCM energy estimate is an internal resource-cost prediction,
+            # not evidence that a conversational framing is better. Require
+            # both that estimate and independent WSDM engagement data before
+            # ranking alternatives. Missing engagement must not become a zero
+            # score that wins ties by action-list order.
             ranked = sorted(
-                branches.values(), key=lambda b: b.joint_score, reverse=True
+                (b for b in branches.values() if b.ranking_eligible),
+                key=lambda b: b.joint_score,
+                reverse=True,
             )
-            actual_rank = next(
-                (i + 1 for i, b in enumerate(ranked) if b.was_actual), len(ranked)
-            )
-            # Best alternative: highest-scoring branch that isn't the actual
-            best_alt_branch = next(
-                (b for b in ranked if not b.was_actual), None
-            )
-            best_alternative = best_alt_branch.action_type if best_alt_branch else None
-            worst_actual = (actual_rank == len(ranked))
+            actual_branch = next((b for b in ranked if b.was_actual), None)
+            alternatives = [b for b in ranked if not b.was_actual]
+            actual_rank = None
+            best_alternative = None
+            worst_actual = False
+            ranking_status = "insufficient_prediction_evidence"
+            ranking_margin = None
+            if actual_branch is not None and alternatives:
+                ranked_all = sorted(ranked, key=lambda b: b.joint_score, reverse=True)
+                actual_rank = next(
+                    i + 1 for i, branch in enumerate(ranked_all) if branch.was_actual
+                )
+                if any(
+                    branch is not actual_branch
+                    and abs(branch.joint_score - actual_branch.joint_score)
+                    < MIN_COUNTERFACTUAL_MARGIN
+                    for branch in ranked_all
+                ):
+                    actual_rank = None
+                alternatives.sort(key=lambda b: b.joint_score, reverse=True)
+                best_candidate = alternatives[0]
+                runner_up_score = (
+                    alternatives[1].joint_score if len(alternatives) > 1
+                    else float("-inf")
+                )
+                margin_over_runner_up = best_candidate.joint_score - runner_up_score
+                margin_over_actual = best_candidate.joint_score - actual_branch.joint_score
+                ranking_margin = round(margin_over_actual, 5)
+                if (margin_over_runner_up >= MIN_COUNTERFACTUAL_MARGIN
+                        and margin_over_actual >= MIN_COUNTERFACTUAL_MARGIN):
+                    best_alternative = best_candidate.action_type
+                    ranking_status = "prediction_only_clear_alternative"
+                else:
+                    ranking_status = "prediction_only_no_clear_winner"
+                    actual_rank = None
+
+                lowest = ranked_all[-1]
+                second_lowest = ranked_all[-2] if len(ranked_all) > 1 else None
+                worst_actual = bool(
+                    lowest.was_actual and second_lowest is not None
+                    and second_lowest.joint_score - lowest.joint_score
+                    >= MIN_COUNTERFACTUAL_MARGIN
+                )
 
             return CounterfactualQuery(
                 interaction_n    = interaction_n,
@@ -331,6 +394,9 @@ class CounterfactualSimulator:
                 actual_rank      = actual_rank,
                 worst_actual     = worst_actual,
                 source_ref       = self._source_record_ref(pcm_rec),
+                evidence_status  = "model_prediction_only",
+                ranking_status   = ranking_status,
+                ranking_margin   = ranking_margin,
             )
 
         except Exception as e:
@@ -403,6 +469,16 @@ class CounterfactualSimulator:
             wsdm_calibrated  = wsdm_conf_cal,
             joint_score      = joint_score,
             was_actual        = was_actual,
+            score_basis      = [
+                source for source, value, confidence in (
+                    ("pcm_energy", pcm_energy, pcm_conf_raw),
+                    ("wsdm_engagement", wsdm_engage, wsdm_conf_raw),
+                ) if value is not None and confidence is not None
+            ],
+            ranking_eligible = (
+                pcm_energy is not None and pcm_conf_raw is not None
+                and wsdm_engage is not None and wsdm_conf_raw is not None
+            ),
         )
 
     # ── Persistence ────────────────────────────────────────────────────────────

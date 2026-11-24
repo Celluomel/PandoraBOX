@@ -66,6 +66,7 @@ class FramingCandidate:
     wsdm_confidence:  Optional[float]
     joint_score:      float
     is_default:       bool = False
+    ranking_eligible: bool = False
 
 
 @dataclass
@@ -141,6 +142,10 @@ def _score_candidate(
         wsdm_confidence   = wsdm_conf_raw,
         joint_score       = joint_score,
         is_default        = is_default,
+        ranking_eligible  = (
+            pcm_energy is not None and pcm_conf_raw is not None
+            and wsdm_engage is not None and wsdm_conf_raw is not None
+        ),
     )
 
 
@@ -181,12 +186,17 @@ def deliberate(
             for action_type in ALL_ACTION_TYPES
         ]
 
-        # If every candidate has zero signal (no PCM data at all yet for
-        # any action type), there's nothing to deliberate over.
-        if all(c.joint_score == 0.0 for c in candidates):
+        # PCM predicts internal resource deltas, not answer quality. Without
+        # an independent WSDM engagement outcome, using that cost alone to
+        # steer the conversational framing can reward a style that is cheap
+        # for the model but irrelevant to the user. Compare only candidates
+        # supported by both outcome dimensions, and only if the default is
+        # itself among them.
+        comparable = [candidate for candidate in candidates if candidate.ranking_eligible]
+        if len(comparable) < 2 or not any(c.is_default for c in comparable):
             return None
 
-        ranked = sorted(candidates, key=lambda c: c.joint_score, reverse=True)
+        ranked = sorted(comparable, key=lambda c: c.joint_score, reverse=True)
         best = ranked[0]
         default = next(c for c in candidates if c.is_default)
         margin = round(best.joint_score - default.joint_score, 5)

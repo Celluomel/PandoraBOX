@@ -85,6 +85,7 @@ class MetaObservation:
     significance: float     # abs(delta_pct) — for sorting by importance
     computed_at:  float = field(default_factory=time.time)
     slow_cycle:   int   = 0
+    evidence_status: str = "computed_measurement"
 
 
 class IntrospectiveObserver:
@@ -166,7 +167,11 @@ class IntrospectiveObserver:
         """Return top-N most significant observations as a prompt fragment."""
         with self._lock:
             recent = sorted(
-                self._observations[-20:],
+                [
+                    observation for observation in self._observations[-20:]
+                    if observation.get("category") != "counterfactual"
+                    or observation.get("evidence_status") == "outcome_validated"
+                ],
                 key=lambda o: o.get("significance", 0),
                 reverse=True,
             )[:n]
@@ -588,10 +593,16 @@ class IntrospectiveObserver:
 
             status = cf_sim.status()
             streak = status.get("worst_actual_streak", 0)
-            recent = status.get("recent", [])
+            recent = status.get("recent_validated", [])
             total  = status.get("total_queries", 0)
 
             if not recent or total < 5:
+                return obs
+            recent = [
+                entry for entry in recent
+                if entry.get("evidence_status") == "outcome_validated"
+            ]
+            if len(recent) < 3:
                 return obs
 
             # Worst-actual streak
@@ -599,9 +610,8 @@ class IntrospectiveObserver:
                 obs.append(MetaObservation(
                     category     = "counterfactual",
                     observation  = (
-                        f"PandoraBOX has chosen the lowest-predicted action in "
-                        f"{streak} consecutive interactions — "
-                        f"consistently suboptimal action selection detected"
+                        f"Independently measured outcomes place the chosen "
+                        f"action lowest in {streak} consecutive interactions"
                     ),
                     metric       = "worst_actual_streak",
                     value_now    = float(streak),
@@ -611,6 +621,7 @@ class IntrospectiveObserver:
                     window_desc  = f"last {streak} interactions",
                     significance = streak * 10.0,
                     slow_cycle   = slow_cycle,
+                    evidence_status = "outcome_validated",
                 ))
 
             # Best alternative pattern
@@ -626,9 +637,8 @@ class IntrospectiveObserver:
                     obs.append(MetaObservation(
                         category     = "counterfactual",
                         observation  = (
-                            f"'{top_best}' was the best predicted alternative "
-                            f"in {int(pct)}% of recent interactions — "
-                            f"consider shifting toward this framing"
+                            f"Independent outcomes favored '{top_best}' in "
+                            f"{int(pct)}% of the validated comparison window"
                         ),
                         metric       = "best_alternative_frequency",
                         value_now    = top_count / len(recent),
@@ -638,6 +648,7 @@ class IntrospectiveObserver:
                         window_desc  = f"last {len(recent)} interactions",
                         significance = pct,
                         slow_cycle   = slow_cycle,
+                        evidence_status = "outcome_validated",
                     ))
 
             if worst_counts:
@@ -647,9 +658,9 @@ class IntrospectiveObserver:
                     obs.append(MetaObservation(
                         category     = "counterfactual",
                         observation  = (
-                            f"'{top_worst}' was the actual choice — and the "
-                            f"worst-predicted alternative — in {int(worst_pct)}% "
-                            f"of recent interactions — a recurring suboptimal pattern"
+                            f"Independent outcomes showed lower results for "
+                            f"'{top_worst}' in {int(worst_pct)}% of the "
+                            f"validated comparison window"
                         ),
                         metric       = "worst_actual_frequency",
                         value_now    = worst_count / len(recent),
@@ -659,6 +670,7 @@ class IntrospectiveObserver:
                         window_desc  = f"last {len(recent)} interactions",
                         significance = worst_pct,
                         slow_cycle   = slow_cycle,
+                        evidence_status = "outcome_validated",
                     ))
 
         except Exception as e:

@@ -612,12 +612,14 @@ class AutonomousExperimentationEngine:
             if cf_sim is not None:
                 cf_status = cf_sim.status()
                 streak    = cf_status.get("worst_actual_streak", 0)
-                recent_cf = cf_status.get("recent", [])
+                recent_cf = cf_status.get("recent_validated", [])
                 if recent_cf:
                     # Tally which actions ranked best vs worst across recent queries
                     best_counts: dict = {}
                     worst_counts: dict = {}
                     for entry in recent_cf:
+                        if entry.get("evidence_status") != "outcome_validated":
+                            continue
                         ba = entry.get("best_alternative")
                         aa = entry.get("actual_action")
                         wa = entry.get("worst_actual", False)
@@ -714,7 +716,11 @@ class AutonomousExperimentationEngine:
             if streak < 3:
                 return None
 
-            recent = status.get("recent", [])
+            recent = status.get("recent_validated", [])
+            recent = [
+                entry for entry in recent
+                if entry.get("evidence_status") == "outcome_validated"
+            ]
             if not recent:
                 return None
 
