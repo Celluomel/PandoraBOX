@@ -66,6 +66,19 @@ if sys.platform == 'win32':
                     _handler.setStream(_stream_replacements[_handler.stream])
                 except Exception:
                     pass
+            # Third-party modules may have attached a console handler to a
+            # stale stream (for example sys.__stderr__) before this bootstrap.
+            # Reconfigure the handler's actual stream too; changing only
+            # sys.stdout/sys.stderr leaves that handler on cp1252.
+            if isinstance(_handler, logging.StreamHandler) and not isinstance(
+                _handler, logging.FileHandler
+            ):
+                try:
+                    _handler.stream.reconfigure(
+                        encoding='utf-8', errors='backslashreplace'
+                    )
+                except Exception:
+                    pass
 
 logging.basicConfig(
     level=logging.INFO,
