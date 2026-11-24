@@ -3242,6 +3242,12 @@ class InternalThoughtLoop:
                         "prediction_detector_status": str(
                             _cde_report.get("prediction_detector_status", "unreported")
                         ),
+                        "event_store_status": str(
+                            _cde_report.get("event_store_status", "unreported")
+                        ),
+                        "event_store_event_count": int(
+                            _cde_report.get("event_store_event_count", -1)
+                        ),
                         "event_ids": ",".join(str(item.get("id", "")) for item in _cde_event_refs
                                               if isinstance(item, dict) and item.get("id")),
                         "event_types": ",".join(str(item.get("type", "")) for item in _cde_event_refs

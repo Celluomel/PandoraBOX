@@ -134,9 +134,14 @@ class CognitiveDissonanceEngine:
             "verified_resolved_event_count": 0,
             "event_refs": [],
             "event_store_status": self._last_persistence_status,
+            "event_store_event_count": len(self._events),
             "prediction_detector_status": self._prediction_detector_status,
         }
-        logger.info("[CDE] CognitiveDissonanceEngine initialised")
+        logger.info(
+            "[CDE] CognitiveDissonanceEngine initialised — event_store=%s events=%d",
+            self._last_persistence_status,
+            len(self._events),
+        )
 
     def _load_events(self) -> None:
         """Restore stable CDE event IDs so persisted TTE links remain resolvable."""
@@ -556,6 +561,7 @@ class CognitiveDissonanceEngine:
                 for event in list(report_events.values())[-20:]
             ],
             "event_store_status": self._last_persistence_status,
+            "event_store_event_count": len(self._events),
             "prediction_detector_status": self._prediction_detector_status,
         }
         return result

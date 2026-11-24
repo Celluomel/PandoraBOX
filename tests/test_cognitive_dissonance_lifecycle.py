@@ -110,6 +110,7 @@ def test_cde_event_id_and_resolution_state_survive_restart(tmp_path):
     assert persisted["events"][0]["id"] == event.id
     assert persisted["events"][0]["resolved"] is True
     assert engine.last_step_report["event_store_status"] == "persisted"
+    assert engine.last_step_report["event_store_event_count"] == 1
 
     restored = CognitiveDissonanceEngine(str(store))
     restored_event = restored._events[0]
