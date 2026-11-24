@@ -816,7 +816,7 @@ class InternalThoughtLoop:
             summary: dict[str, Any] = {"kind": "mapping", "field_count": len(value)}
             for key in (
                 "type", "status", "mode", "success", "created", "verified",
-                "outcome_status", "reason_code", "skipped",
+                "outcome_status", "reason_code", "persistence_status", "skipped",
                 "goal_state_persisted", "memory_retrieved", "thought_published",
                 "thought_stream_recorded", "workspace_broadcast",
                 "thought_id_ref",
@@ -866,6 +866,7 @@ class InternalThoughtLoop:
                 "winning_margin", "score", "confidence", "priority", "override",
                 "generation_blocked", "decision_fresh", "winner_age_cycles",
                 "cycle", "previous_scan_cycle", "drive_count",
+                "history_count",
             }
             numeric_summary = {
                 key: item for key, item in value.items()

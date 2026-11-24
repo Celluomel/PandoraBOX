@@ -129,6 +129,22 @@ def test_cycle_receipt_keeps_boolean_action_effect_evidence_without_user_text():
     assert "private recalled text" not in repr(summary)
 
 
+def test_cycle_receipt_distinguishes_in_memory_commit_from_persistence_checkpoint():
+    summary = InternalThoughtLoop._evidence_summary({
+        "outcome_status": "committed",
+        "reason_code": "commitment_added",
+        "cycle": 13906,
+        "history_count": 51,
+        "persistence_status": "deferred_by_checkpoint",
+        "topic": "private cognitive topic",
+    })
+
+    assert summary["outcome_status"] == "committed"
+    assert summary["persistence_status"] == "deferred_by_checkpoint"
+    assert summary["numeric_metrics"]["history_count"] == 51
+    assert "private cognitive topic" not in repr(summary)
+
+
 def test_phase2_narrative_delivery_receipt_links_synthesis_to_workspace_admission():
     loop = make_loop()
     loop._begin_cycle_evidence(24)
