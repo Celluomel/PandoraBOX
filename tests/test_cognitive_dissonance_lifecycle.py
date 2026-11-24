@@ -416,6 +416,57 @@ def test_later_successful_exploration_receipt_closes_only_its_linked_incident(tm
     assert engine.last_step_report["verified_action_counterevidence_count"] == 1
 
 
+def test_tte_goal_action_receipt_reaches_cde_and_closes_later_matching_event(tmp_path):
+    from cognition.thought_thread_engine import (
+        ThoughtThread, ThoughtThreadEngine, ThoughtThreadStatus, TTEContext,
+    )
+
+    event = _event(intensity=0.8, event_id="event-goal-action")
+    event.created_at = time.time() - 10
+    thread = ThoughtThread(
+        id="inquiry-goal-action", topic="dissonance:goal-action",
+        goal="Check whether exploration resumed", source="dissonance",
+        current_state={
+            "cde_event_id": event.id,
+            "action_receipts": [{
+                "execution_id": "exec-goal-action-1",
+                "cycle_id": 44,
+                "action": "web_search",
+                "success": True,
+                "evidence_ref": "execution:exec-goal-action-1",
+                "recorded_at": event.created_at + 2,
+            }],
+        },
+    )
+    tte = ThoughtThreadEngine(str(tmp_path / "threads.json"))
+    tte._threads[thread.id] = thread
+    engine = CognitiveDissonanceEngine()
+    engine._events.append(event)
+
+    engine.step([], tte, CDEContext(), TTEContext())
+
+    assert event.resolved is True
+    assert event.resolution_status == "verified_resolved"
+    assert event.resolution_evidence_ref == "goal_action:execution:exec-goal-action-1"
+    assert thread.status is ThoughtThreadStatus.COMPLETED
+    assert engine.last_step_report["goal_action_receipt_count"] == 1
+    assert engine.last_step_report["verified_action_counterevidence_count"] == 1
+
+
+def test_cde_step_report_separates_new_resolution_from_resolved_history():
+    engine = CognitiveDissonanceEngine()
+    historical = _event(intensity=0.8, event_id="historical-resolution")
+    historical.resolved = True
+    historical.resolution_status = "verified_resolved"
+    historical.resolution_evidence_ref = "prior:verified-evidence"
+    engine._events.append(historical)
+
+    engine.step([], SimpleNamespace(all_threads=lambda: []), CDEContext(), None)
+
+    assert engine.last_step_report["verified_resolved_event_count"] == 0
+    assert engine.last_step_report["resolved_event_history_count"] == 1
+
+
 def test_action_counterevidence_requires_later_success_and_matching_event_thread(tmp_path):
     from cognition.thought_thread_engine import (
         ThoughtThread, ThoughtThreadEngine, ThoughtThreadStatus, TTEContext,

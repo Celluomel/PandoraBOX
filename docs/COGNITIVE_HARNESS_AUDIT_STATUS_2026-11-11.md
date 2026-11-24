@@ -15,6 +15,20 @@
 
 **Progression :** le score global reste **3/10**. Cette correction améliore la distinction entre panne d’infrastructure et outcome cognitif, mais ne ferme pas encore une piste complète : il faut observer une action réelle différée, vérifier le reçu dans le cycle source, puis confirmer que l’objectif et l’apprentissage des outcomes n’ont pas été dégradés.
 
+### Vérification live TTE → GoalActionExecutor → CDE, et métriques de résolution, 24 novembre 2026
+
+**Preuve live, nouveau processus PID 684 :** le cycle 13899 a terminé `memory_recall` avec `success=true`, `goal_state_persisted=true`, `memory_retrieved=true`, `thought_stream_recorded=true` et `workspace_broadcast=true`. Le fichier TTE persistant contient le reçu correspondant (`cycle_id=13899`, action `memory_recall`, succès, référence `execution:…`) sur un thread issu de `goal_engine`. Dans le même cycle, le CDE avait `action_receipt_count=0`; les cycles 13900–13902 ont ensuite observé un reçu via le ConsequenceTracker. Cette séquence prouve que le reçu existe mais que le CDE ne consomme pas directement le contrat que GoalActionExecutor a déjà persisté dans le TTE.
+
+**Correction locale :** le CDE agrège maintenant les reçus d’action terminaux stockés dans les threads TTE et les utilise uniquement pour une contre-preuve étroitement liée : événement `IDENTITY_VS_ACTION` non résolu, thread CDE lié au même identifiant d’événement, action attendue, succès explicite, horodatage postérieur et référence d’exécution réelle. Un reçu d’action ne résout toujours pas un conflit général ni le critère global d’un objectif. Le rapport CDE et la trace de cycle distinguent maintenant les reçus GoalActionExecutor, les contre-preuves effectivement vérifiées, les nouveaux événements résolus pendant le tick et l’historique déjà résolu.
+
+**Autre défaut de provenance corrigé :** les cycles 13900–13902 affichaient `detected_event_count=0` et pourtant `verified_resolved_event_count=1`. Le code comptait les événements résolus conservés dans le journal, pas seulement ceux résolus pendant le tick courant. Le compteur est maintenant calculé sur les transitions du tick; `resolved_event_history_count` expose séparément le total historique. Le journal persistant contient des IDs dupliqués (`event-curiosity`, `event-a`) dont la forme correspond à des IDs de fixtures de test; leur origine exacte n’est pas établie. Les données de persona n’ont pas été modifiées.
+
+**Validation locale :** suites CDE, WorldModel causal, reçus du cycle, provenance des conséquences et actions d’objectif : **101 tests passés**, 9 avertissements de dépendances existants; `py_compile` et `git diff --check` passent.
+
+**Limite live :** PID 684 a été lancé avant ce correctif CDE; ses cycles ne peuvent pas valider ce code. Il reste actif en mode audit. Le profil Python le plus récent indique **278/587 fichiers exécutés**, aucun résumé de tour utilisateur. Les tests couvrent le chaînage de reçus et les cas de non-correspondance, mais la nouvelle résolution CDE exige un redémarrage groupé et une preuve live après chargement. Le résultat `memory_recall` live est un succès de comportement de la boucle interne, pas une preuve d’exactitude sémantique du souvenir rappelé.
+
+**Progression :** reste **3/10 pistes closes**. Le correctif ferme une lacune de liaison dans le chemin TTE/CDE, mais la piste complète attend encore une preuve live post-redémarrage et un résultat d’effet mesuré. La panne transport du fournisseur et son reçu différé restent également à vérifier live. Le score global ne monte pas sur la base des seuls tests locaux.
+
 ### Mise à jour — suivi conversationnel des réponses déterministes, 24 novembre 2026
 
 **Cause identifiée :** les questions d’architecture désactivent l’ancrage conversationnel pour empêcher qu’une affirmation antérieure de Lumina soit traitée comme une preuve. Le résolveur des routes HTTP ne compensait pas ce choix : après `POST /chat`, « Which HTTP method does that route use? » cherchait une route dans les mots du nouveau message, sans valider la référence « that route » contre l’échange précédent. Il pouvait donc s’abstenir alors que la route était connue.

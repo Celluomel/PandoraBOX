@@ -132,6 +132,9 @@ class CognitiveDissonanceEngine:
             "reobserved_event_count": 0,
             "deferred_low_intensity_count": 0,
             "verified_resolved_event_count": 0,
+            "verified_action_counterevidence_count": 0,
+            "goal_action_receipt_count": 0,
+            "resolved_event_history_count": 0,
             "event_refs": [],
             "event_store_status": self._last_persistence_status,
             "event_store_event_count": len(self._events),
@@ -497,6 +500,9 @@ class CognitiveDissonanceEngine:
         Main tick — called after TTE.step() in the slow cycle.
         Returns the updated thread list.
         """
+        previously_resolved_event_objects = {
+            id(event) for event in self._events if event.resolved
+        }
         events = self.detect(ctx)
         threads = self.apply_to_threads(events, threads)
         for event in events:
@@ -547,9 +553,21 @@ class CognitiveDissonanceEngine:
             "meta_threads_spawned": len(meta_threads),
             "auto_resolved_event_count": 0,
             "deferred_low_intensity_count": len(deferred),
-            "verified_resolved_event_count": sum(1 for event in report_events.values() if event.resolved),
+            # Distinguish outcomes observed in this tick from retained journal
+            # history. Counting every previously-resolved event made a stale
+            # success look like a fresh cognitive effect on every later cycle.
+            "verified_resolved_event_count": sum(
+                1 for event in self._events
+                if event.resolved and id(event) not in previously_resolved_event_objects
+            ),
+            "resolved_event_history_count": sum(
+                1 for event in self._events if event.resolved
+            ),
             "verified_action_counterevidence_count": int(
                 getattr(self, "_last_counterevidence_count", 0)
+            ),
+            "goal_action_receipt_count": int(
+                getattr(self, "_last_goal_action_receipt_count", 0)
             ),
             "event_refs": [
                 {"id": str(event.id), "type": event.type.value,
@@ -581,6 +599,7 @@ class CognitiveDissonanceEngine:
         resolve belief/outcome events from unrelated action success.
         """
         self._last_counterevidence_count = 0
+        self._last_goal_action_receipt_count = 0
         if tte is None or tte_ctx is None or not hasattr(tte, "resolve_thread"):
             return 0
 
@@ -593,12 +612,42 @@ class CognitiveDissonanceEngine:
             "no expression action taken": ("express", "respond"),
         }
         by_event = {}
+        goal_action_receipts = []
         for thread in threads:
             state = getattr(thread, "current_state", None)
+            stored_receipts = state.get("action_receipts", []) if isinstance(state, dict) else []
+            if isinstance(stored_receipts, list):
+                goal_action_receipts.extend(
+                    receipt for receipt in stored_receipts
+                    if isinstance(receipt, dict)
+                )
             event_id = state.get("cde_event_id") if isinstance(state, dict) else None
             if (getattr(thread, "source", "") == "dissonance" and event_id
                     and event_id not in by_event):
                 by_event[str(event_id)] = thread
+
+        # GoalActionExecutor persists terminal receipts on TTE goal threads.
+        # Keep that source separate from the ConsequenceTracker: these receipts
+        # are used only to close a matching, later identity/action observation.
+        self._last_goal_action_receipt_count = len(goal_action_receipts)
+        seen_receipts = set()
+        action_receipts = []
+        for source, receipts in (
+            ("consequence", ctx.action_receipts),
+            ("goal_thread", goal_action_receipts),
+        ):
+            for receipt in receipts or []:
+                if not isinstance(receipt, dict):
+                    continue
+                identity = str(
+                    receipt.get("event_id") or receipt.get("evidence_ref")
+                    or receipt.get("execution_id") or ""
+                ).strip()
+                key = (source, identity) if identity else (source, id(receipt))
+                if key in seen_receipts:
+                    continue
+                seen_receipts.add(key)
+                action_receipts.append((source, receipt))
 
         for event in events:
             if event.resolved or event.type != DissonanceEventType.IDENTITY_VS_ACTION:
@@ -607,7 +656,7 @@ class CognitiveDissonanceEngine:
             thread = by_event.get(str(event.id))
             if not expected_actions or thread is None:
                 continue
-            for receipt in ctx.action_receipts:
+            for source, receipt in action_receipts:
                 if not isinstance(receipt, dict) or receipt.get("success") is not True:
                     continue
                 action = str(receipt.get("action") or receipt.get("action_type") or "").casefold()
@@ -615,21 +664,29 @@ class CognitiveDissonanceEngine:
                     part in action for part in action_fragments[str(event.action_ref).casefold()]
                 ):
                     continue
-                timestamp = str(receipt.get("timestamp") or "").strip()
-                event_ref = str(receipt.get("event_id") or "").strip()
+                timestamp = receipt.get("timestamp") or receipt.get("recorded_at")
                 try:
-                    observed_at = datetime.fromisoformat(
-                        timestamp.replace("Z", "+00:00")
-                    ).timestamp()
-                except (TypeError, ValueError, OverflowError):
+                    if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
+                        observed_at = float(timestamp)
+                    else:
+                        observed_at = datetime.fromisoformat(
+                            str(timestamp or "").strip().replace("Z", "+00:00")
+                        ).timestamp()
+                except (TypeError, ValueError, OverflowError, OSError):
                     continue
-                # ConsequenceTracker timestamps are second-resolution ISO
-                # strings. Require a strictly later second than event creation;
-                # ambiguous same-second ordering is not evidence.
+                # Require a later timestamp and an explicit receipt reference;
+                # same-second ISO receipts remain ambiguous and are rejected.
+                event_ref = str(
+                    receipt.get("event_id") or receipt.get("evidence_ref")
+                    or receipt.get("execution_id") or ""
+                ).strip()
                 if observed_at <= event.created_at or not event_ref:
                     continue
 
-                evidence_ref = f"consequence:{event_ref}"[:200]
+                evidence_ref = (
+                    f"consequence:{event_ref}" if source == "consequence"
+                    else f"goal_action:{event_ref}"
+                )[:200]
                 outcome = (
                     f"A successful {action} action receipt was recorded after this "
                     "specific recent-absence observation. It is counterevidence to "

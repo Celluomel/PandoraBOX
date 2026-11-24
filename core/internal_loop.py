@@ -3311,6 +3311,15 @@ class InternalThoughtLoop:
                         "auto_resolved_event_count": int(_cde_report.get("auto_resolved_event_count", 0)),
                         "deferred_low_intensity_count": int(_cde_report.get("deferred_low_intensity_count", 0)),
                         "verified_resolved_event_count": int(_cde_report.get("verified_resolved_event_count", 0)),
+                        "verified_action_counterevidence_count": int(
+                            _cde_report.get("verified_action_counterevidence_count", 0)
+                        ),
+                        "goal_action_receipt_count": int(
+                            _cde_report.get("goal_action_receipt_count", 0)
+                        ),
+                        "resolved_event_history_count": int(
+                            _cde_report.get("resolved_event_history_count", 0)
+                        ),
                         "prediction_detector_status": str(
                             _cde_report.get("prediction_detector_status", "unreported")
                         ),
