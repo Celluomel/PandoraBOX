@@ -447,6 +447,45 @@ class UserManager:
                         summary["categories"][field_name]["legacy_unverified"] += 1
         return summary
 
+    def provenanced_profile_facts_for(self, user_id: str) -> list[dict]:
+        """Return only profile values backed by a user-origin source receipt."""
+        facts = []
+        with self._lock:
+            profile = self._users.get(user_id)
+            if profile is None or profile.id == self.GUEST_ID:
+                return facts
+            for kind, field_name in (
+                ("preference", "preferences"),
+                ("dislike", "dislikes"),
+                ("interest", "interests"),
+                ("characteristic", "characteristics"),
+            ):
+                values = getattr(profile, field_name, [])
+                provenance = profile.profile_fact_provenance
+                category = provenance.get(kind, {}) if isinstance(provenance, dict) else {}
+                for value in values:
+                    fact_key = hashlib.sha256(
+                        str(value).casefold().encode("utf-8")
+                    ).hexdigest()
+                    sources = category.get(fact_key, []) if isinstance(category, dict) else []
+                    valid_sources = [
+                        source for source in sources
+                        if isinstance(source, dict)
+                        and source.get("source_role") == "user"
+                        and bool(source.get("turn_id") or source.get("source_sha256"))
+                    ] if isinstance(sources, list) else []
+                    if not valid_sources:
+                        continue
+                    facts.append({
+                        "category": kind,
+                        "value": str(value),
+                        "source_sha256": hashlib.sha256(
+                            str(value).encode("utf-8", errors="replace")
+                        ).hexdigest(),
+                        "source_turn_id": str(valid_sources[-1].get("turn_id") or ""),
+                    })
+        return facts
+
     def prompt_context_for(self, user_id: str) -> str:
         """Return a small cached profile block for the critical chat path."""
         profile = self.get(user_id)

@@ -14,6 +14,8 @@ from cognition.persona_bridge import (
     _prior_assistant_evidence_detail,
     _prior_assistant_evidence_summary,
     _prior_assistant_trace_evidence,
+    _deterministic_projection_label,
+    _prompt_assembly_dependencies,
     _runtime_execution_evidence_snapshot,
     _turn_output_evidence,
     _workspace_focus_state_provenance,
@@ -397,6 +399,80 @@ def test_deterministic_affect_report_has_source_link_and_correct_validation_summ
     assert receipt["validation_method"] == "deterministic_template_from_structured_channels"
 
 
+def test_named_profile_projection_is_not_mislabeled_as_affect_projection():
+    bridge = _bridge()
+    bridge._record_turn_stage("turn_input", "received", output="profile preference?")
+    bridge._record_turn_stage(
+        "semantic_answer_validation", "passed_deterministic_source_projection",
+        output={
+            "source": "named_profile_facts_snapshot",
+            "validation_method": "exact_named_profile_projection_match",
+        }, consumes=("turn_input",),
+    )
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "passed_deterministic_source_projection", {
+            "relevant": True,
+            "claim_basis": "factual",
+            "evidence_support": "supported",
+            "contract_compliant": True,
+            "validation_method": "exact_named_profile_projection_match",
+        },
+    )
+
+    bridge._finish_turn_trace("completed")
+    receipt = bridge.get_turn_trace("turn-evidence-1")["semantic_answer_validation"]
+
+    assert receipt["status"] == "deterministic_named_profile_projection"
+    assert receipt["scope"] == "deterministic_projection_of_provenance_backed_named_profile"
+    assert receipt["validation_method"] == "exact_named_profile_projection_match"
+
+
+def test_prompt_assembly_declares_only_contexts_with_recorded_outputs():
+    dependencies = _prompt_assembly_dependencies({
+        "memory_prompt_context": {"status": "injected", "output_fingerprint": "a" * 64},
+        "dominant_thought_context": {"status": "empty"},
+        "self_description_context": {"status": "skipped_by_scope"},
+        "affect_advisory_context": {"status": "injected", "output_fingerprint": "b" * 64},
+    })
+
+    assert dependencies == (
+        "turn_input", "memory_prompt_context", "affect_advisory_context",
+    )
+
+
+def test_data_flow_integrity_ignores_contexts_not_consumed_by_prompt_assembly():
+    bridge = _bridge()
+    bridge._record_turn_stage("turn_input", "received", output="profile query")
+    bridge._record_turn_stage(
+        "prompt_assembly", "completed", output="prompt", consumes=("turn_input",),
+    )
+    bridge._last_turn_trace["stages"].update({
+        "readiness": {"status": "passed"},
+        "input_safety": {"status": "passed"},
+        "primary_generation": {"status": "skipped_deterministic"},
+        "deterministic_reasoning": {"status": "completed"},
+        "output_safety": {"status": "passed"},
+        "response_finalization": {"status": "completed"},
+        "response": {"status": "completed"},
+    })
+
+    bridge._finish_turn_trace("completed")
+    integrity = bridge.get_turn_trace("turn-evidence-1")["pipeline_integrity"]
+
+    assert integrity["execution_path"] == "deterministic_reasoning"
+    assert integrity["data_flow_issues"] == []
+    assert integrity["status"] == "consistent"
+
+
+def test_projection_label_defaults_to_affect_only_for_affect_method():
+    assert _deterministic_projection_label(
+        "deterministic_template_from_structured_channels"
+    ) == (
+        "deterministic_affect_source_projection",
+        "deterministic_projection_of_live_modeled_affect_channels",
+    )
+
+
 def test_factual_planner_projection_status_survives_turn_finalization():
     bridge = _bridge()
     bridge._record_turn_stage("turn_input", "received", output="Does 3/4 prove the goal is done?")
@@ -595,6 +671,9 @@ def test_deterministic_reasoning_receipt_links_memory_and_planner_inputs():
     assert deterministic_reasoning_dependencies(
         selected=True, cognitive_audit_report=True,
     ) == ("turn_input", "cognitive_audit_status_report")
+    assert deterministic_reasoning_dependencies(
+        selected=True, named_profile_facts=True,
+    ) == ("turn_input", "explicit_profile_facts_answer")
     assert deterministic_reasoning_dependencies(selected=False, memory_recall=True) == ()
 
 
@@ -1266,18 +1345,21 @@ def test_prompt_assembly_declares_cognitive_context_as_an_input():
         keyword.value for keyword in prompt_calls[0].keywords
         if keyword.arg == "consumes"
     )
-    assert "cognitive_prompt_context" in {
-        element.value for element in consumes.elts
-        if isinstance(element, ast.Constant)
+    assert isinstance(consumes, ast.Call)
+    assert isinstance(consumes.func, ast.Name)
+    assert consumes.func.id == "_prompt_assembly_dependencies"
+    dependency_helper = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_prompt_assembly_dependencies"
+    )
+    declared_contexts = {
+        node.value for node in ast.walk(dependency_helper)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
-    assert "self_description_context" in {
-        element.value for element in consumes.elts
-        if isinstance(element, ast.Constant)
-    }
-    assert "affect_advisory_context" in {
-        element.value for element in consumes.elts
-        if isinstance(element, ast.Constant)
-    }
+    assert "cognitive_prompt_context" in declared_contexts
+    assert "self_description_context" in declared_contexts
+    assert "affect_advisory_context" in declared_contexts
     system_prompt_mutations = [
         node.lineno for node in ast.walk(stream)
         if isinstance(node, (ast.Assign, ast.AugAssign))

@@ -69,7 +69,11 @@ from cognition.conversation_context import (
     recent_dialogue_anchor,
     recent_dialogue_messages,
 )
-from cognition.profile_flow import has_explicit_profile_learning_opt_out
+from cognition.profile_flow import (
+    has_explicit_profile_learning_opt_out,
+    is_explicit_named_profile_query,
+    render_explicit_profile_facts,
+)
 from cognition.stream_channels import ProgressiveOutputGate, strip_private_reasoning
 from core.turn_execution_context import (
     current_turn_id as _current_audit_turn_id,
@@ -160,6 +164,39 @@ def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
     return hashlib.sha256(material).hexdigest(), summary
 
 
+def _deterministic_projection_label(validation_method: str) -> tuple[str, str]:
+    """Name deterministic validation by the evidence actually projected."""
+    if validation_method == "exact_named_profile_projection_match":
+        return (
+            "deterministic_named_profile_projection",
+            "deterministic_projection_of_provenance_backed_named_profile",
+        )
+    if validation_method == "exact_deterministic_projection_match":
+        return (
+            "deterministic_planner_source_projection",
+            "deterministic_projection_of_persisted_planner_snapshot",
+        )
+    return (
+        "deterministic_affect_source_projection",
+        "deterministic_projection_of_live_modeled_affect_channels",
+    )
+
+
+def _prompt_assembly_dependencies(stages: dict[str, Any]) -> tuple[str, ...]:
+    """Report only context receipts that actually produced prompt input."""
+    dependencies = ["turn_input"]
+    for name in (
+        "memory_prompt_context", "user_profile_context",
+        "cognitive_prompt_context", "dominant_thought_context",
+        "conversation_continuity_context", "self_description_context",
+        "affect_advisory_context",
+    ):
+        stage = stages.get(name)
+        if isinstance(stage, dict) and stage.get("output_fingerprint"):
+            dependencies.append(name)
+    return tuple(dependencies)
+
+
 def _is_factual_self_report_turn(
     factual_plan_query: bool,
     system_prompt: str,
@@ -181,11 +218,12 @@ def _semantic_turn_kind_for_route(
     deterministic_affect_report: bool,
     closed_world_report: bool,
     explicit_profile_learning_opt_out: bool = False,
+    explicit_named_profile_query: bool = False,
 ) -> str:
     """Carry the already-resolved turn act into asynchronous semantic learning."""
     if explicit_memory_recall:
         return "retrieval"
-    if explicit_profile_learning_opt_out:
+    if explicit_profile_learning_opt_out or explicit_named_profile_query:
         return "instruction"
     if deterministic_affect_report:
         return "social"
@@ -1320,7 +1358,9 @@ class PersonaBridge:
             if status == "abstained_review_unavailable"
             else "response_replaced_after_review"
             if status.startswith("abstained_")
-            else "deterministic_affect_source_projection"
+            else _deterministic_projection_label(str(
+                review.get("validation_method") or ""
+            ))[0]
             if status == "passed_deterministic_source_projection"
             else "deterministic_planner_source_projection"
             if status == "passed_factual_planner_projection"
@@ -1334,7 +1374,9 @@ class PersonaBridge:
                 if status in {"passed_source_grounded", "abstained_source_mismatch"}
                 else "deterministic_recall_gate_abstained"
                 if status == "passed_source_abstention"
-                else "deterministic_projection_of_live_modeled_affect_channels"
+                else _deterministic_projection_label(str(
+                    review.get("validation_method") or ""
+                ))[1]
                 if status == "passed_deterministic_source_projection"
                 else "deterministic_projection_of_persisted_planner_snapshot"
                 if status == "passed_factual_planner_projection"
@@ -1730,6 +1772,19 @@ class PersonaBridge:
                 semantic_stage = stages.get("semantic_answer_validation")
                 if isinstance(semantic_stage, dict):
                     validation_status = str(semantic_stage.get("status") or "unknown")
+                    stage_receipt = semantic_stage.get("output_summary", {})
+                    stage_method = (
+                        str(stage_receipt.get("validation_method") or "")
+                        if isinstance(stage_receipt, dict) else ""
+                    )
+                    prior_semantic = trace.get("semantic_answer_validation", {})
+                    if isinstance(prior_semantic, dict):
+                        stage_method = str(
+                            prior_semantic.get("validation_method") or stage_method
+                        )
+                    projection_status, projection_scope = _deterministic_projection_label(
+                        stage_method
+                    )
                     semantic_summary = {
                         "status": (
                             "source_grounded_exact_match"
@@ -1744,7 +1799,7 @@ class PersonaBridge:
                             if validation_status == "abstained_review_unavailable"
                             else "response_replaced_after_review"
                             if validation_status.startswith("abstained_")
-                        else "deterministic_affect_source_projection"
+                        else projection_status
                         if validation_status == "passed_deterministic_source_projection"
                             else "deterministic_planner_source_projection"
                             if validation_status == "passed_factual_planner_projection"
@@ -1761,7 +1816,7 @@ class PersonaBridge:
                             }
                             else "deterministic_recall_gate_abstained"
                             if validation_status == "passed_source_abstention"
-                            else "deterministic_projection_of_live_modeled_affect_channels"
+                            else projection_scope
                             if validation_status == "passed_deterministic_source_projection"
                             else "deterministic_projection_of_persisted_planner_snapshot"
                             if validation_status == "passed_factual_planner_projection"
@@ -1769,7 +1824,6 @@ class PersonaBridge:
                         ),
                         "stage_status": validation_status,
                     }
-                    prior_semantic = trace.get("semantic_answer_validation", {})
                     if isinstance(prior_semantic, dict):
                         for key in (
                             "relevant", "claim_basis", "evidence_support",
@@ -2819,6 +2873,9 @@ class PersonaBridge:
         _cognitive_scope = str(cognitive_scope_id or user_id)
         _explicit_memory_recall = is_explicit_memory_recall_query(effective_input)
         _explicit_profile_opt_out = has_explicit_profile_learning_opt_out(effective_input)
+        _explicit_named_profile_query = (
+            is_explicit_named_profile_query(effective_input) and not bool(peer_name)
+        )
         _api_route_query = False
         # This flag is consumed later inside the streaming worker below. It
         # must live in this method's scope; the prompt builder runs in a
@@ -2847,6 +2904,7 @@ class PersonaBridge:
             # fact the user asked to retrieve.
             _factual_plan_query = (
                 not _explicit_memory_recall
+                and not _explicit_named_profile_query
                 and (
                     LongHorizonPlanner.is_goal_plan_query(effective_input)
                     or (
@@ -2861,15 +2919,18 @@ class PersonaBridge:
                 is_closed_world_cognitive_report_query(effective_input)
                 or _factual_plan_query
                 or _explicit_memory_recall
+                or _explicit_named_profile_query
                 or _api_route_query
             )
             _architecture_query = (
                 (_architecture_context_query or _cognitive_trace_query or _api_route_query)
                 and not _explicit_memory_recall
+                and not _explicit_named_profile_query
             )
             _internal_cognitive_query = (
                 is_internal_cognitive_query(effective_input)
                 or _explicit_memory_recall
+                or _explicit_named_profile_query
                 or _api_route_query
             )
             self._record_turn_stage(
@@ -2882,6 +2943,7 @@ class PersonaBridge:
                     "runtime_execution_query": bool(_runtime_execution_query),
                     "explicit_memory_recall": bool(_explicit_memory_recall),
                     "api_route_query": bool(_api_route_query),
+                    "explicit_named_profile_query": bool(_explicit_named_profile_query),
                 },
                 consumes=("turn_input",),
                 turn_id=_audit_turn_id,
@@ -2895,6 +2957,7 @@ class PersonaBridge:
             _factual_plan_query = False
             _internal_cognitive_query = False
             _api_route_query = False
+            _explicit_named_profile_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
             self._record_turn_stage(
                 "turn_evidence_routing", "failed",
@@ -3175,7 +3238,7 @@ class PersonaBridge:
                     turn_id=_audit_turn_id,
                 )
         if not peer_name:
-            if _architecture_query or _factual_plan_query:
+            if _architecture_query or _factual_plan_query or _explicit_named_profile_query:
                 # Closed-world self-reports must be grounded in the current
                 # registry/snapshot. Do not even advertise prior assistant
                 # continuity as an available source for these answers.
@@ -3278,10 +3341,13 @@ class PersonaBridge:
             yield {"type": "web_sources", "sources": self._last_web_sources}
         self._last_emo_dict  = emo_dict
         self._last_cond_dict = cond_dict
-        _factual_self_report = _is_factual_self_report_turn(
-            _factual_plan_query,
-            system_prompt,
-            _explicit_memory_recall,
+        _factual_self_report = (
+            _is_factual_self_report_turn(
+                _factual_plan_query,
+                system_prompt,
+                _explicit_memory_recall,
+            )
+            and not _explicit_named_profile_query
         )
 
         # ── Phase A2: Inner Monologue, single-call mode ──────────────────────
@@ -3712,6 +3778,74 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     consumes=("turn_input",),
                     turn_id=_audit_turn_id,
                 )
+        if _explicit_named_profile_query:
+            try:
+                from managers.user_manager import user_manager
+                _named_profile_facts = user_manager.provenanced_profile_facts_for(user_id)
+                _profile_answer = render_explicit_profile_facts(
+                    _named_profile_facts, effective_input,
+                )
+                _deterministic_response = str(_profile_answer.get("answer") or "")
+                _profile_fact_refs = sorted({
+                    str(item.get("source_sha256") or "")
+                    for item in _named_profile_facts
+                    if isinstance(item, dict) and item.get("source_sha256")
+                    and (
+                        not re.search(r"\b(?:preference|preferences|pr[eé]f[eé]rence|pr[eé]f[eé]rences)\b", effective_input, re.I)
+                        or item.get("category") == "preference"
+                    )
+                })
+                self._record_turn_stage(
+                    "named_profile_facts_snapshot",
+                    "captured" if _profile_fact_refs else "empty",
+                    "Read only UserManager values with a user-origin provenance receipt; legacy and behavioral-model entries are excluded.",
+                    output={
+                        "source": "named_user_manager_profile",
+                        "fact_count": int(_profile_answer.get("fact_count") or 0),
+                        "categories": _profile_answer.get("categories") or [],
+                        "fact_refs": _profile_fact_refs,
+                        "profile_provenance_summary": user_manager.profile_provenance_summary_for(user_id),
+                    },
+                    consumes=("turn_input",),
+                    turn_id=_audit_turn_id,
+                )
+                self._record_turn_stage(
+                    "explicit_profile_facts_answer",
+                    str(_profile_answer.get("status") or "unverified"),
+                    "Rendered directly from the captured named-profile snapshot; no LLM or behavioral memory supplied profile values.",
+                    output={
+                        "answer_sha256": hashlib.sha256(
+                            _deterministic_response.encode("utf-8", errors="replace")
+                        ).hexdigest(),
+                        "fact_count": int(_profile_answer.get("fact_count") or 0),
+                        "categories": _profile_answer.get("categories") or [],
+                    },
+                    consumes=("named_profile_facts_snapshot", "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
+            except Exception as _profile_read_error:
+                _deterministic_response = (
+                    "Je ne peux pas vérifier le profil utilisateur nommé actuellement."
+                    if re.search(r"\b(?:mon|ma|profil|quelle|quelles)\b", effective_input, re.I)
+                    else "I can't verify the named user profile right now."
+                )
+                self._record_turn_stage(
+                    "named_profile_facts_snapshot", "unavailable",
+                    error_type=type(_profile_read_error).__name__,
+                    consumes=("turn_input",),
+                    turn_id=_audit_turn_id,
+                )
+                self._record_turn_stage(
+                    "explicit_profile_facts_answer", "unavailable",
+                    "Profile lookup failed closed; no LLM inference was used.",
+                    output={
+                        "answer_sha256": hashlib.sha256(
+                            _deterministic_response.encode("utf-8", errors="replace")
+                        ).hexdigest(),
+                    },
+                    consumes=("named_profile_facts_snapshot", "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
         self._record_turn_stage(
             "deterministic_reasoning",
             "selected" if _deterministic_response else "not_selected",
@@ -3722,6 +3856,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _cognitive_audit_status_query and _deterministic_response
                 ),
                 api_route_answer=bool(_api_route_query and _deterministic_response),
+                named_profile_facts=bool(
+                    _explicit_named_profile_query and _deterministic_response
+                ),
             ),
             turn_id=_audit_turn_id,
         )
@@ -3793,15 +3930,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # contract has been applied. Recording it immediately after the base
         # builder produced a partial fingerprint that omitted later additions
         # (epistemic, relational, temporal, location, and voice contracts).
+        _recorded_stage_outputs = self._last_turn_trace.get("stages", {})
         self._record_turn_stage(
             "prompt_assembly", "completed", f"{len(system_prompt)} chars",
             output=system_prompt,
-            consumes=(
-                "turn_input", "memory_prompt_context", "user_profile_context",
-                "cognitive_prompt_context", "dominant_thought_context",
-                "conversation_continuity_context", "self_description_context",
-                "affect_advisory_context",
-            ),
+            consumes=_prompt_assembly_dependencies(_recorded_stage_outputs),
             turn_id=_audit_turn_id,
         )
 
@@ -4634,6 +4767,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         if (
             raw_response.strip() and not _generation_failed
             and not _source_recall_attempt and not _deterministic_affect_report
+            and not _explicit_named_profile_query
             and not (
                 _factual_plan_query
                 and str(_deterministic_response or "").strip()
@@ -4691,6 +4825,41 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "evidence_support": "supported",
                     "contract_compliant": True,
                     "validation_method": "deterministic_template_from_structured_channels",
+                },
+            )
+            _response_source_stage = "semantic_answer_validation"
+        elif (
+            raw_response.strip() and not _generation_failed
+            and _explicit_named_profile_query
+            and str(_deterministic_response or "").strip()
+        ):
+            expected_profile_answer = str(_deterministic_response).strip()
+            exact_result_match = raw_response.strip() == expected_profile_answer
+            if not exact_result_match:
+                raw_response = expected_profile_answer
+            _semantic_status = "passed_deterministic_source_projection"
+            self._record_turn_stage(
+                "semantic_answer_validation", _semantic_status,
+                "Exact comparison with the answer rendered from provenance-backed named-profile facts; no LLM reviewer was called.",
+                output={
+                    "source": "named_profile_facts_snapshot",
+                    "validation_method": "exact_named_profile_projection_match",
+                    "response_matched_source": exact_result_match,
+                    "final_response_matches_source": raw_response.strip() == expected_profile_answer,
+                    "response_replaced": not exact_result_match,
+                },
+                consumes=("explicit_profile_facts_answer", "named_profile_facts_snapshot", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
+            self._record_semantic_validation_summary(
+                _audit_turn_id,
+                _semantic_status,
+                {
+                    "relevant": True,
+                    "claim_basis": "factual",
+                    "evidence_support": "supported",
+                    "contract_compliant": True,
+                    "validation_method": "exact_named_profile_projection_match",
                 },
             )
             _response_source_stage = "semantic_answer_validation"
@@ -5024,6 +5193,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         deterministic_affect_report=_deterministic_affect_report,
                         closed_world_report=_closed_world_cognitive_report_query,
                         explicit_profile_learning_opt_out=_explicit_profile_opt_out,
+                        explicit_named_profile_query=_explicit_named_profile_query,
                     ),
                     not bool(peer_name),
                 )
@@ -5037,6 +5207,14 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 self._record_turn_stage(
                     "human_profile_learning", "skipped_explicit_opt_out",
                     "The user explicitly asked that this turn not be added to their profile.",
+                    output={"changed": False, "learning_scope": "none"},
+                    consumes=("turn_input",),
+                    turn_id=_audit_turn_id,
+                )
+            elif _explicit_named_profile_query:
+                self._record_turn_stage(
+                    "human_profile_learning", "skipped_profile_read_turn",
+                    "A read-only profile question is not a new user fact or preference.",
                     output={"changed": False, "learning_scope": "none"},
                     consumes=("turn_input",),
                     turn_id=_audit_turn_id,
@@ -5674,7 +5852,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # The FAISS store and visual session buffer are shared with the
             # human conversation. Peer turns use only their scoped transcript.
             _primary_memory_retrieval = None
-            if not peer_name:
+            if not peer_name and not _explicit_named_profile_query:
                 _retrieve_with_receipt = getattr(
                     s.memory_system, "retrieve_memories_with_receipt", None
                 )
@@ -5741,7 +5919,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # Visual tier — only retrieve visual memories for visual queries.
             # An explicit recall request can concern any domain; treating all
             # recall as visual was injecting irrelevant images into text recall.
-            if not peer_name and _is_visual:
+            if not peer_name and not _explicit_named_profile_query and _is_visual:
                 try:
                     _vis = s.memory_system.retrieve_by_tier(
                         _recall_query, tier="visual", limit=3, boost_impact=1.8,
@@ -5765,7 +5943,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     pass
 
             # Event tier (dreams, life events)
-            if not peer_name and (_is_event or _is_recall_request):
+            if not peer_name and not _explicit_named_profile_query and (_is_event or _is_recall_request):
                 try:
                     _evts = s.memory_system.retrieve_by_tier(
                         _recall_query, tier="event", limit=2, boost_impact=1.4,
@@ -5791,7 +5969,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # Explicit recall: use the normalized topic for the secondary lane
             # too; searching the full instruction reintroduces current-turn
             # wording and can retrieve records about the request itself.
-            if not peer_name and _is_recall_request:
+            if not peer_name and not _explicit_named_profile_query and _is_recall_request:
                 try:
                     _secondary = s.memory_system.retrieve_memories(
                         _recall_query, limit=4, owner_user_id=user_id,
@@ -5814,7 +5992,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
 
             # ── Session visual buffer — always checked on recall/visual queries ──
             # These are guaranteed fresh (written before FAISS async write completes)
-            if not peer_name and _is_visual and self._session_visuals:
+            if not peer_name and not _explicit_named_profile_query and _is_visual and self._session_visuals:
                 import time as _tsv
                 _seen_texts = {m.get('text','') for m in memories}
                 for _sv in reversed(self._session_visuals):  # most recent first
@@ -5840,7 +6018,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # evidence boundary once, after every lane has been merged and
             # before any memory is serialized into the prompt.
             _recall_candidate_count_before_filter = len(memories)
-            if not peer_name and _is_recall_request:
+            if not peer_name and not _explicit_named_profile_query and _is_recall_request:
                 memories = filter_recall_query_records(memories, query=user_input)
                 _memory_recall_result = exact_filename_recall_result(user_input, memories)
                 if _memory_recall_result is None:
@@ -5850,8 +6028,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
 
             self._record_turn_stage(
                 "memory_retrieval",
-                "skipped_by_scope" if peer_name else "completed",
-                "peer turn uses pair transcript only" if peer_name else f"{len(memories)} recalled items",
+                (
+                    "skipped_by_scope" if peer_name else
+                    "skipped_profile_read_turn" if _explicit_named_profile_query else
+                    "completed"
+                ),
+                (
+                    "peer turn uses pair transcript only" if peer_name else
+                    "Named-profile fact lookup is authoritative; conversation memories are not candidate sources."
+                    if _explicit_named_profile_query else
+                    f"{len(memories)} recalled items"
+                ),
                 output=memory_retrieval_evidence(
                     _recall_query,
                     memories,

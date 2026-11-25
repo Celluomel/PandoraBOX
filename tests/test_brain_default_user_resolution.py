@@ -79,6 +79,27 @@ def test_profile_fact_provenance_is_persisted_and_rendered_as_source_link(tmp_pa
     assert persisted_profile.profile_fact_provenance["preference"]
 
 
+def test_provenanced_profile_fact_reader_excludes_legacy_values(tmp_path):
+    manager = UserManager(path=Path(tmp_path) / "users.json")
+    profile = manager.create("Fred")
+    profile.preferences.append("legacy unverified preference")
+    manager._save()
+    manager.learn_from_message(
+        profile.id,
+        "I prefer concise technical answers.",
+        return_receipt=True,
+        source_turn_id="profile-source-1",
+    )
+
+    facts = manager.provenanced_profile_facts_for(profile.id)
+
+    assert len(facts) == 1
+    assert facts[0]["category"] == "preference"
+    assert facts[0]["value"] == "concise technical answers"
+    assert facts[0]["source_turn_id"] == "profile-source-1"
+    assert all("legacy" not in item["value"] for item in facts)
+
+
 def test_legacy_profile_facts_are_excluded_until_reasserted(tmp_path):
     manager = UserManager(path=Path(tmp_path) / "users.json")
     profile = manager.create("Fred")
