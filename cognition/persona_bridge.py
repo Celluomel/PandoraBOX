@@ -1741,6 +1741,8 @@ class PersonaBridge:
                             if validation_status.startswith("abstained_")
                         else "deterministic_affect_source_projection"
                         if validation_status == "passed_deterministic_source_projection"
+                            else "deterministic_planner_source_projection"
+                            if validation_status == "passed_factual_planner_projection"
                             else "review_not_required_single_pass"
                             if validation_status == "not_required_single_pass"
                             else "review_scheduled_post_response"
@@ -1756,6 +1758,8 @@ class PersonaBridge:
                             if validation_status == "passed_source_abstention"
                             else "deterministic_projection_of_live_modeled_affect_channels"
                             if validation_status == "passed_deterministic_source_projection"
+                            else "deterministic_projection_of_persisted_planner_snapshot"
+                            if validation_status == "passed_factual_planner_projection"
                             else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
                         ),
                         "stage_status": validation_status,
@@ -1788,6 +1792,11 @@ class PersonaBridge:
                         semantic_summary.setdefault(
                             "validation_method",
                             "deterministic_template_from_structured_channels",
+                        )
+                    elif validation_status == "passed_factual_planner_projection":
+                        semantic_summary.setdefault(
+                            "validation_method",
+                            "exact_deterministic_projection_match",
                         )
                     trace["semantic_answer_validation"] = semantic_summary
                 else:

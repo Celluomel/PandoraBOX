@@ -397,6 +397,47 @@ def test_deterministic_affect_report_has_source_link_and_correct_validation_summ
     assert receipt["validation_method"] == "deterministic_template_from_structured_channels"
 
 
+def test_factual_planner_projection_status_survives_turn_finalization():
+    bridge = _bridge()
+    bridge._record_turn_stage("turn_input", "received", output="Does 3/4 prove the goal is done?")
+    bridge._record_turn_stage(
+        "planner_factual_snapshot", "captured",
+        output={"plan_progress": [1, 4], "success_criteria_status": "unverified"},
+        consumes=("turn_input",),
+    )
+    bridge._record_turn_stage(
+        "planner_factual_answer", "rendered",
+        output={"snapshot_sha256": "a" * 64},
+        consumes=("turn_input", "planner_factual_snapshot"),
+    )
+    bridge._record_turn_stage(
+        "semantic_answer_validation", "passed_factual_planner_projection",
+        output={
+            "source": "planner_factual_snapshot",
+            "validation_method": "exact_deterministic_projection_match",
+            "response_replaced": False,
+        },
+        consumes=("planner_factual_answer", "planner_factual_snapshot", "turn_input"),
+    )
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "passed_factual_planner_projection", {
+            "relevant": True,
+            "claim_basis": "factual",
+            "evidence_support": "supported",
+            "contract_compliant": True,
+            "validation_method": "exact_deterministic_projection_match",
+        },
+    )
+
+    bridge._finish_turn_trace("completed")
+    receipt = bridge.get_turn_trace("turn-evidence-1")["semantic_answer_validation"]
+
+    assert receipt["status"] == "deterministic_planner_source_projection"
+    assert receipt["stage_status"] == "passed_factual_planner_projection"
+    assert receipt["scope"] == "deterministic_projection_of_persisted_planner_snapshot"
+    assert receipt["validation_method"] == "exact_deterministic_projection_match"
+
+
 def test_repaired_answer_receipt_proves_second_review_without_repair_text():
     bridge = _bridge()
     bridge._record_semantic_validation_summary(
