@@ -23,6 +23,7 @@ from cognition.memory_retrieval import (
     explicit_recall_archive_source_result,
     explicit_recall_abstention_result,
     should_defer_explicit_recall_to_archive,
+    is_exact_value_recall_query,
     filter_recall_query_records,
     filter_memories_by_modality,
     is_explicit_memory_recall_query,
@@ -783,6 +784,12 @@ class MemorySystemFallbackTests(unittest.TestCase):
         )
 
         self.assertIsNone(explicit_recall_archive_source_result("How are you?", archive))
+
+    def test_exact_value_classification_requires_explicit_historical_recall(self):
+        self.assertTrue(is_exact_value_recall_query(
+            "What was the test marker I gave you for the next turn in the cognitive harness audit?"
+        ))
+        self.assertFalse(is_exact_value_recall_query("What is a test marker?"))
 
     def test_one_phrase_response_format_does_not_request_verbatim_recall(self):
         query = (

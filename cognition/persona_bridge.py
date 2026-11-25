@@ -39,6 +39,7 @@ from cognition.memory_retrieval import (
     explicit_recall_archive_source_result,
     explicit_recall_abstention_result,
     extract_explicit_recall_topic,
+    is_exact_value_recall_query,
     filter_recall_query_records,
     filter_memories_by_modality,
     is_explicit_memory_recall_query,
@@ -3509,6 +3510,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "Exact recall was extracted from an explicitly provenance-labelled excerpt in the "
                         "compressed session archive. The answer identifies the archive as its source; it does "
                         "not claim independent verification against the raw transcript."
+                    )
+                    _consumes = ("memory_retrieval", "session_archive", "turn_input")
+                elif is_exact_value_recall_query(effective_input):
+                    # Exact-value memory recall must never fall through to free
+                    # generation when neither indexed memory nor a provenance-
+                    # labelled archive excerpt can support the requested value.
+                    _deterministic_response = str(_memory_recall_result.get("answer") or "")
+                    _detail = (
+                        "Exact-value recall found no eligible indexed source and no relevant, provenance-labelled "
+                        "excerpt in the compressed session archive. The source-based abstention is preserved; "
+                        "free generation is not allowed to guess the value."
                     )
                     _consumes = ("memory_retrieval", "session_archive", "turn_input")
                 else:

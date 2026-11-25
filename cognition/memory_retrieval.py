@@ -770,7 +770,7 @@ def explicit_recall_archive_source_result(
     if not is_explicit_memory_recall_query(query) or not str(archived_context or "").strip():
         return None
     query_text = str(query or "")
-    if not _EXACT_VALUE_RECALL_PATTERN.search(query_text):
+    if not is_exact_value_recall_query(query_text):
         return None
     focus = set(tokenize(_explicit_recall_focus(query_text)))
     if len(focus) < 2:
@@ -870,6 +870,14 @@ def should_defer_explicit_recall_to_archive(
     if not str(archived_context or "").strip() or not isinstance(recall_result, dict):
         return False
     return str(recall_result.get("status") or "").startswith("abstained_")
+
+
+def is_exact_value_recall_query(query: str) -> bool:
+    """Whether explicit historical recall asks for an exact value or token."""
+    return bool(
+        is_explicit_memory_recall_query(query)
+        and _EXACT_VALUE_RECALL_PATTERN.search(str(query or ""))
+    )
 
 
 def tokenize(text: str) -> List[str]:
