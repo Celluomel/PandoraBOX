@@ -100,7 +100,7 @@ Return exactly this structure:
 }}
 
 Rules:
-- Classify the incoming message's primary conversational act as exactly one of: topic, retrieval, social, instruction, feedback, other. Use "topic" for a substantive subject the user asks to explain, investigate, or discuss. Use "retrieval" when they ask what was said, decided, or observed earlier. Use "social" for greetings, thanks, and small talk. Use "instruction" for operational commands to the assistant/system. Use "feedback" for evaluation of a prior response. Use "other" when none fits. Classify the user's intent, not the assistant response.
+- Classify the incoming message's primary conversational act as exactly one of: topic, retrieval, social, instruction, feedback, decision, other. Use "topic" for a substantive subject the user asks to explain, investigate, or discuss. Use "retrieval" when they ask what was said, decided, or observed earlier. Use "social" for greetings, thanks, and small talk. Use "instruction" for operational commands to the assistant/system. Use "feedback" for evaluation of a prior response. Use "decision" for a request to compare feasible actions to achieve a concrete outcome. Use "other" when none fits. Classify the user's intent, not the assistant response.
 - Persist only concepts and relations grounded in the incoming message. Assistant wording is not evidence of an interlocutor's belief, fact, preference, or intent.
 - concepts: 0-8 lowercase nouns or noun phrases, max 3 words each; every concept needs an exact evidence phrase from the incoming message
 - relations: max 5, both endpoints must be concepts; evidence must directly support the relation in the incoming message
@@ -110,7 +110,7 @@ Rules:
 - NO extra keys, NO explanation"""
 
 _RELATION_TYPES = {"leads_to", "related_to", "part_of", "causes", "contradicts", "enables"}
-_TURN_KINDS = {"topic", "retrieval", "social", "instruction", "feedback", "other"}
+_TURN_KINDS = {"topic", "retrieval", "social", "instruction", "feedback", "decision", "other"}
 
 
 class SemanticExtractor:
@@ -230,7 +230,15 @@ class SemanticExtractor:
                     parsed = self._parse(user_input, response)
                 finally:
                     current_turn_id.reset(turn_context_token)
-                receipt["classification_source"] = "semantic_llm"
+                if trusted_hint == "decision" and len(parsed) >= 5:
+                    # The foreground decision analyzer already classified the
+                    # conversational act. Keep semantic concept extraction in
+                    # this post-response worker, but don't spend another model
+                    # call rediscovering whether the user asked for a decision.
+                    parsed = (*parsed[:4], "decision")
+                    receipt["classification_source"] = "upstream_turn_contract_plus_semantic_extraction"
+                else:
+                    receipt["classification_source"] = "semantic_llm"
             if len(parsed) >= 5:
                 concepts, relations, topic, cog_load, turn_kind = parsed[:5]
             else:
@@ -245,7 +253,7 @@ class SemanticExtractor:
             receipt["concepts_parsed"] = len(concepts)
             receipt["dominant_topic_selected"] = bool(topic and topic in concepts)
 
-            if turn_kind != "topic":
+            if turn_kind not in {"topic", "decision"}:
                 receipt.update({
                     "status": "completed",
                     "learning_status": "skipped_non_topic_turn",
@@ -262,7 +270,10 @@ class SemanticExtractor:
                 )
                 return receipt
 
-            receipt["learning_status"] = "accepted_topic_turn"
+            receipt["learning_status"] = (
+                "accepted_decision_turn" if turn_kind == "decision"
+                else "accepted_topic_turn"
+            )
 
             # Curiosity receives only the dominant concept selected from, and
             # grounded in, this human-authored turn. The old organism cycle

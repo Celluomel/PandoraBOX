@@ -292,6 +292,29 @@ def test_semantic_extraction_summary_preserves_non_topic_skip_reason():
     assert summary["observations_persisted"] == 0
 
 
+def test_semantic_extraction_summary_proves_decision_learning_without_text():
+    summary = audit_safe_turn_summary({
+        "type": "semantic_extraction_receipt",
+        "turn_kind": "decision",
+        "learning_status": "accepted_decision_turn",
+        "status": "completed",
+        "persistence_status": "confirmed",
+        "cag_status": "completed",
+        "workspace_status": "not_requested",
+        "concepts_parsed": 3,
+        "concepts_persisted": 3,
+        "curiosity_status": "no_grounded_dominant_topic",
+        "curiosity_topic_selected": False,
+        "concepts": ["private action details"],
+    })
+    assert summary["turn_kind"] == "decision"
+    assert summary["learning_status"] == "accepted_decision_turn"
+    assert summary["persistence_status"] == "confirmed"
+    assert summary["concepts_persisted"] == 3
+    assert summary["curiosity_topic_selected"] is False
+    assert "private action details" not in repr(summary)
+
+
 def test_app_state_resolves_relational_memory_from_its_actual_owner():
     relationship_store = object()
     persona = SimpleNamespace(relational_memory=relationship_store)

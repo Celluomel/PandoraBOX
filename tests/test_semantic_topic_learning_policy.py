@@ -42,6 +42,38 @@ def test_semantic_extractor_prefers_external_history_free_llm():
     assert _resolve_semantic_extractor_llm_fn(SimpleNamespace(), None) is None
 
 
+def test_semantic_learning_waits_off_turn_when_shared_provider_is_busy():
+    class Manager:
+        def __init__(self):
+            self.calls = 0
+
+        def generate_bare(self, prompt):
+            return "legacy path must not run"
+
+        def generate_bare_result(self, prompt, **kwargs):
+            self.calls += 1
+            assert kwargs["_audit_origin"] == "cognition.semantic_extractor._parse"
+            if self.calls == 1:
+                return {
+                    "status": "deferred",
+                    "reason": "interactive turn active",
+                    "provider_call_count": 0,
+                }
+            return {"status": "ok", "text": '{"turn_kind":"topic"}'}
+
+    manager = Manager()
+    learning_fn = _resolve_semantic_extractor_llm_fn(
+        SimpleNamespace(), manager.generate_bare,
+    )
+
+    with patch("cognition.persona_bridge.time.sleep") as pause:
+        result = learning_fn("extract from completed exchange")
+
+    assert result == '{"turn_kind":"topic"}'
+    assert manager.calls == 2
+    pause.assert_called_once_with(0.1)
+
+
 def test_source_recall_is_classified_by_semantic_extractor_not_a_lexical_gate():
     organism = _organism_stub()
 
@@ -137,6 +169,12 @@ def test_closed_world_report_route_is_forwarded_as_non_topic_learning_act():
         deterministic_affect_report=True,
         closed_world_report=True,
     ) == "social"
+    assert _semantic_turn_kind_for_route(
+        explicit_memory_recall=False,
+        deterministic_affect_report=False,
+        closed_world_report=False,
+        goal_means_decision=True,
+    ) == "decision"
     assert _semantic_turn_kind_for_route(
         explicit_memory_recall=False,
         deterministic_affect_report=False,

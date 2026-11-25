@@ -95,7 +95,41 @@ def _resolve_semantic_extractor_llm_fn(ai_system, external_llm_fn=None):
     candidate = external_llm_fn
     if not callable(candidate):
         candidate = getattr(ai_system, "_simple_llm_fn", None)
-    return candidate if callable(candidate) else None
+    if not callable(candidate):
+        return None
+
+    manager = getattr(candidate, "__self__", None)
+    background_result = getattr(manager, "generate_bare_result", None)
+    if not callable(background_result):
+        return candidate
+
+    def _semantic_learning_call(prompt: str) -> str:
+        # Semantic extraction is post-response learning, never part of the
+        # interactive answer path. If the next chat turn takes the shared
+        # provider first, keep this worker queued until the manager admits a
+        # background call; do not turn ordinary chat contention into an empty
+        # parse and silently lose the learning update.
+        while True:
+            result = background_result(
+                str(prompt or ""), max_tokens=400, temperature=0.1,
+                _audit_origin="cognition.semantic_extractor._parse",
+            )
+            if not isinstance(result, dict):
+                raise RuntimeError("semantic learning provider returned no result receipt")
+            if result.get("status") == "deferred":
+                time.sleep(0.1)
+                continue
+            if result.get("status") != "ok":
+                raise RuntimeError(
+                    "semantic learning provider failed: "
+                    + str(result.get("reason") or result.get("status") or "unknown")[:96]
+                )
+            text = str(result.get("text") or "").strip()
+            if not text:
+                raise RuntimeError("semantic learning provider returned empty content")
+            return text
+
+    return _semantic_learning_call
 
 _TURN_OUTPUT_UNSET = object()
 _SEARCH_CLASSIFIER_MAX_TOKENS = 48
@@ -374,6 +408,7 @@ def _semantic_turn_kind_for_route(
     explicit_memory_recall: bool,
     deterministic_affect_report: bool,
     closed_world_report: bool,
+    goal_means_decision: bool = False,
     explicit_profile_learning_opt_out: bool = False,
     explicit_named_profile_query: bool = False,
 ) -> str:
@@ -386,6 +421,8 @@ def _semantic_turn_kind_for_route(
         return "social"
     if closed_world_report:
         return "other"
+    if goal_means_decision:
+        return "decision"
     return ""
 
 
@@ -5617,6 +5654,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         explicit_memory_recall=_explicit_memory_recall,
                         deterministic_affect_report=_deterministic_affect_report,
                         closed_world_report=_closed_world_cognitive_report_query,
+                        goal_means_decision=_goal_means_analysis is not None,
                         explicit_profile_learning_opt_out=_explicit_profile_opt_out,
                         explicit_named_profile_query=_explicit_named_profile_query,
                     ),

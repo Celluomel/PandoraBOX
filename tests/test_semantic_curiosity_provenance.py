@@ -211,3 +211,43 @@ def test_trusted_upstream_act_skips_redundant_semantic_llm_and_learning():
         assert receipt["classification_source"] == "upstream_turn_contract"
         assert receipt["turn_kind"] == turn_kind
         assert receipt["learning_status"] == "skipped_non_topic_turn"
+
+
+def test_upstream_decision_classification_keeps_semantic_learning_in_background():
+    memory = Mock()
+    curiosity = Mock()
+    runtime_state = SimpleNamespace(acc=Mock())
+    provider_turn_ids = []
+
+    def extract_decision_concepts(_prompt):
+        from core.turn_execution_context import current_turn_id
+        provider_turn_ids.append(current_turn_id.get())
+        return json.dumps({
+            "turn_kind": "topic",  # upstream decision route is authoritative
+            "concepts": [{"name": "lavage auto", "evidence": "lavage auto"}],
+            "relations": [],
+            "dominant_topic": "lavage auto",
+            "cognitive_load": 0.2,
+        })
+
+    extractor = SemanticExtractor(
+        memory,
+        llm_fn=extract_decision_concepts,
+        organism=SimpleNamespace(curiosity=curiosity),
+    )
+    with patch("core.state.state", runtime_state):
+        receipt = extractor._extract(
+            "Dois-je prendre ma voiture pour aller au lavage auto ?",
+            "Prends la voiture.", None, None, "user_topic",
+            "turn-decision-learning", None, "decision",
+        )
+
+    assert provider_turn_ids == ["turn-decision-learning"]
+    assert receipt["classification_source"] == "upstream_turn_contract_plus_semantic_extraction"
+    assert receipt["turn_kind"] == "decision"
+    assert receipt["learning_status"] == "accepted_decision_turn"
+    memory.upsert_concept.assert_called_once_with("lavage auto", strength_boost=0.04)
+    memory.record_observation.assert_called_once()
+    curiosity.stimulate.assert_called_once_with(
+        "lavage auto", amount=0.15, source="user_semantic",
+    )
