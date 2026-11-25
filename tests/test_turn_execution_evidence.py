@@ -1558,6 +1558,40 @@ def test_turn_integrity_detects_stale_upstream_output_fingerprint():
     ]
 
 
+def test_archive_recall_receipt_links_archive_source_through_retrieval_consumers():
+    bridge = _bridge()
+    bridge._record_turn_stage("turn_input", "received", output="What code did I just ask you to retain?")
+    bridge._record_turn_stage(
+        "memory_retrieval", "completed", output={"candidate_count": 0},
+        consumes=("turn_input",),
+    )
+    bridge._record_turn_stage(
+        "session_archive_source", "available",
+        output={"source_sha256": "a" * 20, "character_count": 240},
+        consumes=("turn_input",),
+    )
+    bridge._record_turn_stage(
+        "session_archive_retrieval", "injected_for_explicit_recall",
+        output={"injected": True, "source_sha256": "a" * 20},
+        consumes=("turn_input", "session_archive_source"),
+    )
+    bridge._record_turn_stage(
+        "memory_prompt_context", "injected_archive_only",
+        output={"record_count": 0},
+        consumes=("memory_retrieval", "session_archive_retrieval"),
+    )
+    bridge._record_turn_stage(
+        "memory_recall_answer", "supported_compressed_archive_source",
+        output={"source_type": "compressed_session_archive_user_excerpt"},
+        consumes=("memory_retrieval", "session_archive_retrieval", "turn_input"),
+    )
+
+    bridge._finish_turn_trace("completed")
+
+    trace = bridge.get_last_turn_trace()
+    assert trace["pipeline_integrity"]["data_flow_issues"] == []
+
+
 def test_post_turn_stage_cannot_erase_data_flow_integrity_failure():
     bridge = _bridge()
     bridge._record_turn_stage("prompt", "completed", output="first prompt")

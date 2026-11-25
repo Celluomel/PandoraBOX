@@ -3568,7 +3568,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "compressed session archive. The answer identifies the archive as its source; it does "
                         "not claim independent verification against the raw transcript."
                     )
-                    _consumes = ("memory_retrieval", "session_archive", "turn_input")
+                    _consumes = ("memory_retrieval", "session_archive_retrieval", "turn_input")
                 elif is_exact_value_recall_query(effective_input):
                     # Exact-value memory recall must never fall through to free
                     # generation when neither indexed memory nor a provenance-
@@ -3579,7 +3579,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "excerpt in the compressed session archive. The source-based abstention is preserved; "
                         "free generation is not allowed to guess the value."
                     )
-                    _consumes = ("memory_retrieval", "session_archive", "turn_input")
+                    _consumes = ("memory_retrieval", "session_archive_retrieval", "turn_input")
                 else:
                     _memory_recall_result = {
                         "answer": "",
@@ -3595,7 +3595,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "instead of returning the empty-source abstention. The result must remain attributed and "
                         "must not be represented as a verbatim transcript."
                     )
-                    _consumes = ("memory_retrieval", "session_archive", "turn_input")
+                    _consumes = ("memory_retrieval", "session_archive_retrieval", "turn_input")
             else:
                 _deterministic_response = str(_memory_recall_result.get("answer") or "")
                 _detail = (
@@ -6219,6 +6219,21 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 _archive_owner, _is_recall_request and not bool(peer_name),
             )
             self._record_turn_stage(
+                "session_archive_source",
+                "available" if _session_archive else
+                "not_requested" if not _is_recall_request else "unavailable",
+                output={
+                    "available": bool(getattr(_archive_owner, "archived_conversation_context", "")),
+                    "source_sha256": hashlib.sha256(
+                        _session_archive.encode("utf-8", errors="replace")
+                    ).hexdigest()[:20] if _session_archive else None,
+                    "character_count": len(_session_archive),
+                    "compressed_not_verbatim": True,
+                },
+                consumes=("turn_input",),
+                turn_id=audit_turn_id,
+            )
+            self._record_turn_stage(
                 "session_archive_retrieval",
                 "injected_for_explicit_recall" if _session_archive else
                 "not_requested" if not _is_recall_request else "unavailable",
@@ -6228,14 +6243,14 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "character_count": len(_session_archive),
                     "compressed_not_verbatim": True,
                 },
-                consumes=("turn_input", "session_archive") if _session_archive else ("turn_input",),
+                consumes=("turn_input", "session_archive_source"),
                 turn_id=audit_turn_id,
             )
             self._record_turn_stage(
                 "memory_prompt_context",
                 "injected" if top_memories else "injected_archive_only" if _session_archive else "empty",
                 output=memory_prompt_injection_evidence(top_memories),
-                consumes=("memory_retrieval", "session_archive") if _session_archive else ("memory_retrieval",),
+                consumes=("memory_retrieval", "session_archive_retrieval") if _session_archive else ("memory_retrieval",),
                 turn_id=audit_turn_id,
             )
 
