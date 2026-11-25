@@ -159,17 +159,17 @@ class DecisionCommitmentLayer:
         # Apply IDX feedback — high drift damps novelty-seeking
         self._apply_idx_feedback()
 
-        # Persist every 5 cycles (was 10) — halves data-loss window on restart.
-        persisted = self._save() if cycle % 5 == 0 else None
+        # A workspace winner is a durable cognitive commitment. Persist it in
+        # the same tick so a restart cannot silently discard up to five slow
+        # cycles of decisions. The bounded history keeps this atomic write small.
+        persisted = self._save()
         return {
             "outcome_status": "committed",
             "reason_code": "commitment_added",
             "cycle": int(cycle),
             "history_count": len(self._history),
             "orientation": orient,
-            "persistence_status": (
-                "saved" if persisted else "failed"
-            ) if persisted is not None else "deferred_by_checkpoint",
+            "persistence_status": "saved" if persisted else "failed",
         }
 
     def get_dominant_orientation(self, window: int = 20) -> str:

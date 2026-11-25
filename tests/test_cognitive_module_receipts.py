@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,7 +37,7 @@ def test_restructuring_tick_reports_cadence_and_persisted_work(tmp_path, monkeyp
     assert (Path(tmp_path) / "restructure.json").exists()
 
 
-def test_commitment_tick_receipt_distinguishes_commit_from_checkpoint(tmp_path):
+def test_commitment_tick_persists_each_workspace_decision(tmp_path):
     layer = DecisionCommitmentLayer.__new__(DecisionCommitmentLayer)
     layer._o = SimpleNamespace(energy=None)
     layer._path = Path(tmp_path) / "commitments.json"
@@ -51,6 +52,8 @@ def test_commitment_tick_receipt_distinguishes_commit_from_checkpoint(tmp_path):
     assert receipt["outcome_status"] == "committed"
     assert receipt["reason_code"] == "commitment_added"
     assert receipt["history_count"] == 1
-    assert receipt["persistence_status"] == "deferred_by_checkpoint"
-    assert not layer._path.exists()
+    assert receipt["persistence_status"] == "saved"
+    persisted = json.loads(layer._path.read_text(encoding="utf-8"))
+    assert persisted["history"][-1]["cycle"] == 11
+    assert persisted["history"][-1]["topic"] == "curiosity_learn"
 
