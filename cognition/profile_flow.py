@@ -2,7 +2,30 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+_PROFILE_LEARNING_OPTOUT_PATTERNS = (
+    re.compile(
+        r"\b(?:do\s+not|don't|never)\s+.{0,100}\b"
+        r"(?:add|put|include|save|store|record|learn)\b.{0,80}\b"
+        r"(?:to|in|into|on)\s+(?:my|the\s+user)\s+profile\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bne\s+(?:l['’])?(?:ajoute|mets|inscris|enregistre|"
+        r"stocke|apprends|consigne)\b.{0,80}\bpas\b.{0,80}\b"
+        r"(?:dans|à|sur)\s+(?:mon|notre)\s+profil\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def has_explicit_profile_learning_opt_out(user_text: str) -> bool:
+    """Recognize an explicit request not to add this turn to a user profile."""
+    text = " ".join(str(user_text or "").split())
+    return any(pattern.search(text) for pattern in _PROFILE_LEARNING_OPTOUT_PATTERNS)
 
 
 def update_behavioral_user_profile(
@@ -18,6 +41,15 @@ def update_behavioral_user_profile(
     """Update a human profile and return a safe receipt; never learn from peer turns."""
     if not human_interaction:
         return {"status": "skipped_by_scope", "changed": False}
+    if has_explicit_profile_learning_opt_out(user_text):
+        return {
+            "status": "skipped_explicit_opt_out",
+            "changed": False,
+            "persisted": False,
+            "learning_scope": "none",
+            "extracted_count": 0,
+            "categories_updated": [],
+        }
     if world_model is None or not callable(getattr(world_model, "update_from_interaction", None)):
         return {"status": "unavailable", "changed": False}
     try:

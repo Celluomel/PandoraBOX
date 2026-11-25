@@ -765,6 +765,81 @@ _EXACT_VALUE_TYPE_RE = re.compile(
 )
 
 
+def recent_dialogue_recall_source_result(
+    query: str, history: Sequence[dict], *, max_messages: int = 6,
+) -> dict | None:
+    """Resolve an exact-value recall from nearby user-authored chat turns.
+
+    Immediate dialogue is a separate evidence lane from FAISS and archived
+    memory: turn order bounds the candidate set, role provenance excludes
+    assistant claims, and the requested value type plus shared content terms
+    must identify a unique source. It does not turn a neighboring topic into
+    evidence or relax the historical-memory matching thresholds.
+    """
+    query_text = str(query or "").strip()
+    if not is_exact_value_recall_query(query_text) or not isinstance(history, (list, tuple)):
+        return None
+
+    requested_types = set(tokenize(" ".join(_EXACT_VALUE_TYPE_RE.findall(query_text))))
+    focus = set(tokenize(_explicit_recall_focus(query_text)))
+    if not requested_types or not focus:
+        return None
+
+    recent = list(history)[-max(0, int(max_messages)):]
+    normalized_query = " ".join(query_text.casefold().split())
+    if recent and isinstance(recent[-1], dict):
+        last = recent[-1]
+        if (
+            str(last.get("role") or "").casefold().strip() == "user"
+            and " ".join(str(last.get("content") or "").casefold().split()) == normalized_query
+        ):
+            recent.pop()
+
+    candidates: list[tuple[int, int, str]] = []
+    for recency, item in enumerate(reversed(recent)):
+        if not isinstance(item, dict) or str(item.get("role") or "").casefold().strip() != "user":
+            continue
+        source_text = " ".join(str(item.get("content") or "").split()).strip()
+        if not source_text:
+            continue
+        source_terms = set(tokenize(source_text))
+        if not (requested_types & source_terms):
+            continue
+        overlap = len(focus & source_terms)
+        if overlap < 2:
+            continue
+        candidates.append((overlap, recency, source_text))
+
+    if not candidates:
+        return None
+    best_overlap = max(item[0] for item in candidates)
+    best = [item for item in candidates if item[0] == best_overlap]
+    if len(best) != 1:
+        return None
+
+    _, recency, source_text = best[0]
+    excerpt = source_text[:800]
+    source_key = hashlib.sha256(source_text.encode("utf-8", errors="replace")).hexdigest()
+    is_french = bool(re.search(
+        r"\b(?:quel(?:le)?s?|formulation|citation|texte|mot|demand[ée]s?|rappelle|"
+        r"qu['’]est-ce|ai-je|dans\s+l['’]échange)\b",
+        query_text, re.IGNORECASE,
+    ))
+    return {
+        "answer": (
+            f'Source utilisateur du dialogue récent (extrait exact) : « {excerpt} »'
+            if is_french else
+            f'Recent user-authored dialogue source (verbatim): “{excerpt}”'
+        ),
+        "status": "supported_recent_dialogue_source",
+        "source_ref": hashlib.sha256(
+            f"recent-user-dialogue:{recency}:{source_key}".encode("utf-8")
+        ).hexdigest()[:20],
+        "source_type": "recent_user_dialogue",
+        "relevance": None,
+    }
+
+
 def explicit_recall_archive_source_result(
     query: str, archived_context: str,
 ) -> dict | None:

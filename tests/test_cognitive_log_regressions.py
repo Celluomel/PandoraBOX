@@ -291,6 +291,15 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertIsNone(unknown["categories_updated"])
         self.assertIsNone(unknown["extracted_count"])
 
+        opted_out = audit_safe_turn_summary({
+            "status": "skipped_explicit_opt_out", "changed": False,
+            "persisted": False, "learning_scope": "none",
+            "categories_updated": [], "extracted_count": 0,
+        })
+        self.assertEqual(opted_out["quality"], "skipped")
+        self.assertFalse(opted_out["changed"])
+        self.assertEqual(opted_out["learning_scope"], "none")
+
     def test_turn_trace_exposes_routing_decisions_without_user_text(self):
         summary = audit_safe_turn_summary({
             "factual_plan_query": True,

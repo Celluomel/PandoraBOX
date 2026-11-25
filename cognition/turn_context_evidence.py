@@ -773,10 +773,10 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         status = str(value.get("status", ""))[:48]
         persisted_value = value.get("persisted")
         persisted = persisted_value if isinstance(persisted_value, bool) else None
-        if status in {"persistence_failed", "failed"} or persisted is False:
-            quality = "failed"
-        elif status in {"skipped_by_scope", "skipped_no_named_profile", "skipped_empty_message"}:
+        if status.startswith("skipped_"):
             quality = "skipped"
+        elif status in {"persistence_failed", "failed"} or persisted is False:
+            quality = "failed"
         elif status in {"no_explicit_profile_fact", "no_profile_returned", "quarantined_ephemeral_profile_data"}:
             quality = "empty"
         elif persisted is True:

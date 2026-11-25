@@ -29,6 +29,7 @@ from cognition.memory_retrieval import (
     is_explicit_memory_recall_query,
     is_visual_memory_query,
     merge_user_authored_memories,
+    recent_dialogue_recall_source_result,
 )
 from cognition.turn_context_evidence import format_memory_for_prompt
 
@@ -1206,6 +1207,49 @@ class MemorySystemFallbackTests(unittest.TestCase):
         abstention = explicit_recall_abstention_result(query, eligible)
         self.assertEqual(abstention["status"], "abstained_insufficient_source_match")
         self.assertNotIn("LUMINA-MEMORY-8B2R", abstention["answer"])
+
+    def test_immediate_exact_value_recall_uses_unique_recent_user_source(self):
+        query = "Quel code témoin ai-je demandé de retenir pour cette question ?"
+        history = [
+            {
+                "role": "user",
+                "content": (
+                    "Pour ce test temporaire de continuité uniquement, retiens le code témoin "
+                    "NIMBUS-472 pour ma prochaine question; ne l'ajoute pas à mon profil."
+                ),
+            },
+            {"role": "assistant", "content": "Je le garderai en contexte immédiat."},
+        ]
+
+        result = recent_dialogue_recall_source_result(query, history)
+
+        self.assertEqual(result["status"], "supported_recent_dialogue_source")
+        self.assertEqual(result["source_type"], "recent_user_dialogue")
+        self.assertIn("NIMBUS-472", result["answer"])
+        self.assertIsNone(result["relevance"])
+
+    def test_immediate_exact_value_recall_never_treats_assistant_claim_as_source(self):
+        query = "Quel code témoin ai-je demandé de retenir pour cette question ?"
+        history = [
+            {"role": "assistant", "content": "Le code témoin était NIMBUS-472."},
+        ]
+        self.assertIsNone(recent_dialogue_recall_source_result(query, history))
+
+    def test_immediate_exact_value_recall_rejects_mismatch_and_ambiguous_sources(self):
+        query = "Quel code témoin ai-je demandé de retenir pour cette question ?"
+        checksum_only = [{
+            "role": "user",
+            "content": "Pour le test, le checksum témoin est NIMBUS-472.",
+        }]
+        self.assertIsNone(recent_dialogue_recall_source_result(query, checksum_only))
+
+        ambiguous = [
+            {"role": "user", "content": "Retiens le code témoin ALPHA-123 pour la question."},
+            {"role": "assistant", "content": "Noté."},
+            {"role": "user", "content": "Retiens le code témoin BETA-456 pour la question."},
+            {"role": "assistant", "content": "Noté."},
+        ]
+        self.assertIsNone(recent_dialogue_recall_source_result(query, ambiguous))
 
     def test_text_recall_excludes_visual_results_from_mixed_retrieval_pool(self):
         records = [

@@ -40,6 +40,7 @@ from cognition.memory_retrieval import (
     explicit_recall_abstention_result,
     extract_explicit_recall_topic,
     is_exact_value_recall_query,
+    recent_dialogue_recall_source_result,
     filter_recall_query_records,
     filter_memories_by_modality,
     is_explicit_memory_recall_query,
@@ -68,6 +69,7 @@ from cognition.conversation_context import (
     recent_dialogue_anchor,
     recent_dialogue_messages,
 )
+from cognition.profile_flow import has_explicit_profile_learning_opt_out
 from cognition.stream_channels import ProgressiveOutputGate, strip_private_reasoning
 from core.turn_execution_context import (
     current_turn_id as _current_audit_turn_id,
@@ -178,10 +180,13 @@ def _semantic_turn_kind_for_route(
     explicit_memory_recall: bool,
     deterministic_affect_report: bool,
     closed_world_report: bool,
+    explicit_profile_learning_opt_out: bool = False,
 ) -> str:
     """Carry the already-resolved turn act into asynchronous semantic learning."""
     if explicit_memory_recall:
         return "retrieval"
+    if explicit_profile_learning_opt_out:
+        return "instruction"
     if deterministic_affect_report:
         return "social"
     if closed_world_report:
@@ -2813,6 +2818,7 @@ class PersonaBridge:
         _audit_turn_id = audit_turn_id
         _cognitive_scope = str(cognitive_scope_id or user_id)
         _explicit_memory_recall = is_explicit_memory_recall_query(effective_input)
+        _explicit_profile_opt_out = has_explicit_profile_learning_opt_out(effective_input)
         _api_route_query = False
         # This flag is consumed later inside the streaming worker below. It
         # must live in this method's scope; the prompt builder runs in a
@@ -3151,6 +3157,23 @@ class PersonaBridge:
             _memory_query,
             _memory_query_prior_count,
         )
+        if _explicit_memory_recall and not peer_name:
+            _recent_recall_result = recent_dialogue_recall_source_result(
+                effective_input, _history_for_anchor,
+            )
+            if _recent_recall_result is not None:
+                _memory_recall_result = _recent_recall_result
+                self._record_turn_stage(
+                    "immediate_dialogue_recall_source", "selected",
+                    "A unique exact-value source was selected from recent user-authored dialogue; assistant messages and durable-memory neighbors were not used as evidence.",
+                    output={
+                        "source_ref": _recent_recall_result.get("source_ref"),
+                        "source_type": _recent_recall_result.get("source_type"),
+                        "status": _recent_recall_result.get("status"),
+                    },
+                    consumes=("conversation_history", "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
         if not peer_name:
             if _architecture_query or _factual_plan_query:
                 # Closed-world self-reports must be grounded in the current
@@ -3576,10 +3599,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             else:
                 _deterministic_response = str(_memory_recall_result.get("answer") or "")
                 _detail = (
-                    "Historical recall response is source-backed, or abstains when no relevant "
+                    "Exact recall is supported by the selected recent user-authored dialogue source."
+                    if _memory_recall_result.get("source_type") == "recent_user_dialogue"
+                    else "Historical recall response is source-backed, or abstains when no relevant "
                     "user-authored source survived retrieval filtering."
                 )
-                _consumes = ("memory_retrieval", "turn_input")
+                _consumes = (
+                    ("immediate_dialogue_recall_source", "turn_input")
+                    if _memory_recall_result.get("source_type") == "recent_user_dialogue"
+                    else ("memory_retrieval", "turn_input")
+                )
             self._record_turn_stage(
                 "memory_recall_answer", str(_memory_recall_result.get("status") or "unverified"),
                 _detail,
@@ -4994,6 +5023,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         explicit_memory_recall=_explicit_memory_recall,
                         deterministic_affect_report=_deterministic_affect_report,
                         closed_world_report=_closed_world_cognitive_report_query,
+                        explicit_profile_learning_opt_out=_explicit_profile_opt_out,
                     ),
                     not bool(peer_name),
                 )
@@ -5003,27 +5033,36 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # Learn explicit profile statements after the visible response. This
         # is local and bounded, so it adds no latency or extra model call.
         if not peer_name:
-            try:
-                from managers.user_manager import user_manager
-                profile_future = loop.run_in_executor(
-                    None, lambda: user_manager.learn_from_message(
-                        user_id, effective_input, return_receipt=True,
-                        source_turn_id=_audit_turn_id,
-                    )
-                )
-                pending_profiles = getattr(self, "_pending_profile_learning", None)
-                if pending_profiles is None:
-                    pending_profiles = self._pending_profile_learning = {}
-                pending_profiles[str(user_id or "default")] = {
-                    "future": profile_future,
-                    "turn_id": _audit_turn_id,
-                }
-                post_tasks.append(("human_profile_learning", profile_future))
-            except Exception as _profile_error:
+            if _explicit_profile_opt_out:
                 self._record_turn_stage(
-                    "human_profile_learning", "failed", str(_profile_error),
+                    "human_profile_learning", "skipped_explicit_opt_out",
+                    "The user explicitly asked that this turn not be added to their profile.",
+                    output={"changed": False, "learning_scope": "none"},
+                    consumes=("turn_input",),
                     turn_id=_audit_turn_id,
                 )
+            else:
+                try:
+                    from managers.user_manager import user_manager
+                    profile_future = loop.run_in_executor(
+                        None, lambda: user_manager.learn_from_message(
+                            user_id, effective_input, return_receipt=True,
+                            source_turn_id=_audit_turn_id,
+                        )
+                    )
+                    pending_profiles = getattr(self, "_pending_profile_learning", None)
+                    if pending_profiles is None:
+                        pending_profiles = self._pending_profile_learning = {}
+                    pending_profiles[str(user_id or "default")] = {
+                        "future": profile_future,
+                        "turn_id": _audit_turn_id,
+                    }
+                    post_tasks.append(("human_profile_learning", profile_future))
+                except Exception as _profile_error:
+                    self._record_turn_stage(
+                        "human_profile_learning", "failed", str(_profile_error),
+                        turn_id=_audit_turn_id,
+                    )
         else:
             self._record_turn_stage(
                 "human_profile_learning", "skipped_by_scope",

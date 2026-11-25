@@ -3,7 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cognition.profile_flow import update_behavioral_user_profile
+from cognition.profile_flow import (
+    has_explicit_profile_learning_opt_out,
+    update_behavioral_user_profile,
+)
 from cognition.world_model import WorldModel
 
 
@@ -123,6 +126,38 @@ class WorldModelProfilePersistenceTests(unittest.TestCase):
         self.assertEqual(profile.expertise, {})
         self.assertEqual(profile.preferred_depth, "medium")
         self.assertGreater(profile.relational.avg_message_length, 0)
+
+    def test_explicit_profile_opt_out_skips_all_behavioral_profile_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "world.json"
+            model = WorldModel(None, path=str(path))
+            message = (
+                "For this temporary continuity test, remember code NIMBUS-472 "
+                "for my next question; don't add it to my profile."
+            )
+
+            self.assertTrue(has_explicit_profile_learning_opt_out(message))
+            receipt = update_behavioral_user_profile(
+                model,
+                user_id="fred",
+                user_text=message,
+                response="Understood.",
+                emotion="neutral",
+                human_interaction=True,
+            )
+
+            self.assertEqual(receipt["status"], "skipped_explicit_opt_out")
+            self.assertEqual(receipt["learning_scope"], "none")
+            self.assertFalse(receipt["changed"])
+            self.assertFalse(path.exists())
+
+    def test_french_profile_opt_out_is_recognized_without_rejecting_neutral_instruction(self):
+        self.assertTrue(has_explicit_profile_learning_opt_out(
+            "Ne l'ajoute pas à mon profil."
+        ))
+        self.assertFalse(has_explicit_profile_learning_opt_out(
+            "Retiens ce code pour ma prochaine question."
+        ))
 
     def test_legacy_mixed_topic_graph_is_preserved_but_rebuilt_from_user_windows(self):
         with tempfile.TemporaryDirectory() as directory:
