@@ -3448,6 +3448,9 @@ class InternalThoughtLoop:
                         "prediction_detector_status": str(
                             _cde_report.get("prediction_detector_status", "unreported")
                         ),
+                        "identity_action_detector_status": str(
+                            _cde_report.get("identity_action_detector_status", "unreported")
+                        ),
                         "event_store_status": str(
                             _cde_report.get("event_store_status", "unreported")
                         ),
