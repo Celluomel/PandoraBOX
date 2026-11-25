@@ -32,7 +32,45 @@ def _bridge_for_review(manager):
 
 
 class ConversationAuthorityPhase1Tests(unittest.TestCase):
-    def test_next_turn_waits_for_prior_profile_learning_before_prompt_assembly(self):
+    def test_background_learning_is_serialized_without_becoming_a_turn_barrier(self):
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        events = []
+
+        async def exercise():
+            loop = asyncio.get_running_loop()
+            release_previous = asyncio.Event()
+
+            async def previous_write():
+                events.append("previous_started")
+                await release_previous.wait()
+                events.append("previous_finished")
+                return {"status": "completed"}
+
+            previous = asyncio.create_task(previous_write())
+
+            def next_write():
+                events.append("next_started")
+                return {"status": "completed"}
+
+            next_learning = asyncio.create_task(
+                bridge._run_learning_after_predecessor(previous, loop, next_write)
+            )
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.assertFalse(next_learning.done())
+            self.assertNotIn("next_started", events)
+            # Other chat work remains schedulable while the background queue waits.
+            events.append("dialogue_progressed")
+            release_previous.set()
+            result = await next_learning
+            return result
+
+        result = asyncio.run(exercise())
+        self.assertEqual(result, {"status": "completed"})
+        self.assertLess(events.index("dialogue_progressed"), events.index("next_started"))
+        self.assertLess(events.index("previous_finished"), events.index("next_started"))
+
+    def test_next_turn_does_not_wait_for_prior_profile_or_memory_learning(self):
         bridge = PersonaBridge.__new__(PersonaBridge)
         bridge._response_turn_lock = asyncio.Lock()
         bridge._pending_profile_learning = {}
@@ -79,18 +117,18 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
                         "turn_input", "received", output="next turn",
                         turn_id=kwargs["turn_id"],
                     )
-                    barrier = kwargs["profile_learning_barrier"]
+                    barrier = kwargs["profile_learning_predecessor"]
                     bridge._record_turn_stage(
-                        "profile_learning_predecessor_barrier",
-                        "completed" if barrier["status"] == "predecessor_completed" else "failed",
-                        output={"type": "profile_learning_barrier_receipt", **barrier},
+                        "profile_learning_predecessor_status",
+                        barrier["status"],
+                        output={"type": "profile_learning_predecessor_receipt", **barrier},
                         turn_id=kwargs["turn_id"],
                     )
-                    memory_barrier = kwargs["memory_learning_barrier"]
+                    memory_barrier = kwargs["memory_learning_predecessor"]
                     bridge._record_turn_stage(
-                        "memory_learning_predecessor_barrier",
-                        "completed" if memory_barrier["status"] == "predecessor_completed" else "failed",
-                        output={"type": "memory_learning_barrier_receipt", **memory_barrier},
+                        "memory_learning_predecessor_status",
+                        memory_barrier["status"],
+                        output={"type": "memory_learning_predecessor_receipt", **memory_barrier},
                         turn_id=kwargs["turn_id"],
                     )
                     implementation_started.set()
@@ -112,39 +150,34 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
             response_task = asyncio.create_task(consume())
             await profile_write_started.wait()
             await memory_write_started.wait()
-            await asyncio.sleep(0)
-            self.assertFalse(implementation_started.is_set())
-            allow_profile_write.set()
-            await asyncio.sleep(0)
-            self.assertFalse(implementation_started.is_set())
-            allow_memory_write.set()
             response_chunks = await response_task
             self.assertTrue(implementation_started.is_set())
+            self.assertFalse(predecessor.done())
+            self.assertFalse(memory_predecessor.done())
+            allow_profile_write.set()
+            allow_memory_write.set()
+            await asyncio.gather(predecessor, memory_predecessor)
             return response_chunks
 
         response_chunks = asyncio.run(exercise())
         self.assertEqual(observed_barriers, [{
-            "status": "predecessor_completed",
-            "learning_status": "updated",
-            "persisted": True,
+            "status": "predecessor_pending",
             "predecessor_turn_id": "turn-profile-1",
         }, {
-            "status": "predecessor_completed",
-            "learning_status": "completed",
-            "persisted": True,
+            "status": "predecessor_pending",
             "predecessor_turn_id": "turn-profile-1",
         }])
         current_turn_id = response_chunks[-1]["turn_id"]
         stage = bridge.get_turn_trace(current_turn_id)["stages"][
-            "profile_learning_predecessor_barrier"
+            "profile_learning_predecessor_status"
         ]
-        self.assertEqual(stage["status"], "completed")
+        self.assertEqual(stage["status"], "predecessor_pending")
         self.assertEqual(stage["output_summary"]["predecessor_turn_id"], "turn-profile-1")
         self.assertNotIn("profile_text", stage["output_summary"])
         memory_stage = bridge.get_turn_trace(current_turn_id)["stages"][
-            "memory_learning_predecessor_barrier"
+            "memory_learning_predecessor_status"
         ]
-        self.assertEqual(memory_stage["status"], "completed")
+        self.assertEqual(memory_stage["status"], "predecessor_pending")
         self.assertEqual(memory_stage["output_summary"]["predecessor_turn_id"], "turn-profile-1")
 
     def test_chat_marker_covers_prompt_building_and_is_cleared_after_turn(self):

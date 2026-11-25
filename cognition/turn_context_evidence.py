@@ -370,13 +370,13 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         return receipt
 
     if value.get("type") in {
-        "profile_learning_barrier_receipt", "memory_learning_barrier_receipt",
+        "profile_learning_predecessor_receipt", "memory_learning_predecessor_receipt",
     }:
         receipt_type = str(value.get("type"))
         status = str(value.get("status") or "unverified")[:40]
         if status not in {
             "no_predecessor", "not_applicable_peer", "predecessor_completed",
-            "predecessor_unverified", "predecessor_failed",
+            "predecessor_pending", "predecessor_unverified", "predecessor_failed",
         }:
             status = "unverified"
         receipt = {
