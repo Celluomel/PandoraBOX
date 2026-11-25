@@ -271,6 +271,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertTrue(summary["changed"])
         self.assertTrue(summary["persisted"])
         self.assertEqual(summary["categories_updated"], ["preference"])
+        self.assertIsNone(summary["extracted_count"])
         self.assertEqual(summary["quality"], "present")
         self.assertEqual(summary["quarantined_count"], 2)
         self.assertNotIn("private_profile_value", str(summary))
@@ -283,6 +284,12 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(failed["quality"], "failed")
         self.assertFalse(failed["persisted"])
         self.assertEqual(failed["interaction_count"], 12)
+
+        unknown = audit_safe_turn_summary({
+            "status": "updated", "changed": True, "persisted": True,
+        })
+        self.assertIsNone(unknown["categories_updated"])
+        self.assertIsNone(unknown["extracted_count"])
 
     def test_turn_trace_exposes_routing_decisions_without_user_text(self):
         summary = audit_safe_turn_summary({

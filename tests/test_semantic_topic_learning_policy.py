@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from cognition.cognitive_organism import CognitiveOrganism
 from cognition.persona_bridge import (
@@ -93,15 +93,19 @@ def test_ordinary_topic_turn_still_queues_semantic_learning():
 def test_upstream_turn_kind_is_forwarded_without_disabling_topic_learning():
     organism = _organism_stub()
 
-    receipt = CognitiveOrganism._post_interaction(
-        organism,
-        user_input="How are you?",
-        response="I am doing well.",
-        cycle_data={"emo_values": {}},
-        decision=None,
-        turn_id="deterministic-social-turn",
-        semantic_turn_kind_hint="social",
-    )
+    with patch(
+        "cognition.profile_flow.update_behavioral_user_profile",
+        return_value={"status": "updated", "changed": True, "persisted": True},
+    ) as update_profile:
+        receipt = CognitiveOrganism._post_interaction(
+            organism,
+            user_input="How are you?",
+            response="I am doing well.",
+            cycle_data={"emo_values": {}},
+            decision=None,
+            turn_id="deterministic-social-turn",
+            semantic_turn_kind_hint="social",
+        )
 
     organism._semantic_extractor.extract_async.assert_called_once_with(
         user_input="How are you?",
@@ -113,6 +117,8 @@ def test_upstream_turn_kind_is_forwarded_without_disabling_topic_learning():
         turn_kind_hint="social",
     )
     assert receipt["semantic_topic_learning"]["status"] == "queued"
+    update_profile.assert_called_once()
+    assert update_profile.call_args.kwargs["learn_semantic_profile"] is False
 
 
 def test_closed_world_report_route_is_forwarded_as_non_topic_learning_act():

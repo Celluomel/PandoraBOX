@@ -77,6 +77,50 @@ class WorldModelProfilePersistenceTests(unittest.TestCase):
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["user_profiles"]["fred"]["interaction_count"], 1)
 
+    def test_profile_receipt_reports_actual_topic_and_interaction_updates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = WorldModel(None, path=str(Path(directory) / "world.json"))
+
+            receipt = update_behavioral_user_profile(
+                model,
+                user_id="fred",
+                user_text="Can you help with my robot?",
+                response="I can help.",
+                emotion="neutral",
+                human_interaction=True,
+            )
+
+        self.assertEqual(receipt["status"], "updated")
+        self.assertTrue(receipt["persisted"])
+        self.assertGreater(receipt["extracted_count"], 0)
+        self.assertIn("topic_profile", receipt["categories_updated"])
+        self.assertIn("interaction_dynamics", receipt["categories_updated"])
+        self.assertNotIn("robot", str(receipt))
+
+    def test_non_topic_turn_updates_interaction_dynamics_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = WorldModel(None, path=str(Path(directory) / "world.json"))
+
+            receipt = update_behavioral_user_profile(
+                model,
+                user_id="fred",
+                user_text="A long closed-world audit question about current plan telemetry.",
+                response="The current snapshot is 2/4 and does not verify goal attainment.",
+                emotion="neutral",
+                human_interaction=True,
+                learn_semantic_profile=False,
+            )
+            profile = model.user_profiles["fred"]
+
+        self.assertEqual(receipt["learning_scope"], "interaction_dynamics_only")
+        self.assertEqual(receipt["extracted_count"], 0)
+        self.assertEqual(receipt["categories_updated"], ["interaction_dynamics"])
+        self.assertEqual(profile.interaction_count, 1)
+        self.assertEqual(profile.topic_entries, {})
+        self.assertEqual(profile.expertise, {})
+        self.assertEqual(profile.preferred_depth, "medium")
+        self.assertGreater(profile.relational.avg_message_length, 0)
+
     def test_failed_profile_write_is_not_reported_as_updated(self):
         with tempfile.TemporaryDirectory() as directory:
             blocked_path = Path(directory) / "world.json"
@@ -96,6 +140,7 @@ class WorldModelProfilePersistenceTests(unittest.TestCase):
             self.assertEqual(receipt["status"], "persistence_failed")
             self.assertFalse(receipt["persisted"])
             self.assertTrue(receipt["changed"])
+            self.assertEqual(receipt["categories_updated"], [])
             self.assertFalse((Path(directory) / "world.json.tmp").exists())
 
 

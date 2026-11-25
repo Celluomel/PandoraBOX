@@ -342,16 +342,35 @@ class WorldModel:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def update_from_interaction(
-        self, user_id: str, user_text: str, response: str, emotion: str = "neutral"
+        self, user_id: str, user_text: str, response: str,
+        emotion: str = "neutral", *, learn_semantic_profile: bool = True,
     ) -> UserProfile:
+        profile, _receipt = self.update_from_interaction_with_receipt(
+            user_id, user_text, response, emotion,
+            learn_semantic_profile=learn_semantic_profile,
+        )
+        return profile
+
+    def update_from_interaction_with_receipt(
+        self, user_id: str, user_text: str, response: str,
+        emotion: str = "neutral", *, learn_semantic_profile: bool = True,
+    ) -> tuple[UserProfile | None, dict[str, Any]]:
+        """Update a profile and return a redacted, measurable change receipt."""
         now = time.time()
         with self._lock:
             profile = self.user_profiles.setdefault(user_id, UserProfile(user_id=user_id))
+            old_expertise = {
+                domain: (signal.score, signal.confirmations)
+                for domain, signal in profile.expertise.items()
+            }
+            old_style = (
+                profile.preferred_depth, profile.formality, profile.avg_message_words,
+            )
             profile.interaction_count += 1
             profile.last_seen          = now
 
-            user_topics = self._extract_topics(user_text)
-            resp_topics = self._extract_topics(response)
+            user_topics = self._extract_topics(user_text) if learn_semantic_profile else []
+            resp_topics = self._extract_topics(response) if learn_semantic_profile else []
             all_topics  = list(set(user_topics + resp_topics))
 
             # The per-user interaction model must be grounded in what the
@@ -368,8 +387,9 @@ class WorldModel:
             if profile.interaction_count % self.TFIDF_UPDATE_EVERY == 0:
                 self._recalculate_tfidf(profile)
 
-            self._update_expertise(profile, user_text)
-            self._update_style(profile, user_text)
+            if learn_semantic_profile:
+                self._update_expertise(profile, user_text)
+                self._update_style(profile, user_text)
 
             profile.temporal.record(now)
             profile.relational.record_interaction(user_text, len(response.split()))
@@ -393,9 +413,35 @@ class WorldModel:
                 for exp in profile.expertise.values():
                     exp.decay()
 
-            if not self._save():
-                return None
-            return profile
+            categories_updated = ["interaction_dynamics"]
+            if user_topics:
+                categories_updated.append("topic_profile")
+            if any(
+                (signal.score, signal.confirmations) != old_expertise.get(domain)
+                for domain, signal in profile.expertise.items()
+            ):
+                categories_updated.append("expertise")
+            if (
+                profile.preferred_depth != old_style[0]
+                or profile.formality != old_style[1]
+                or profile.avg_message_words != old_style[2]
+            ):
+                categories_updated.append("interaction_style")
+
+            persisted = self._save()
+            receipt = {
+                "status": "updated" if persisted else "persistence_failed",
+                "changed": True,
+                "persisted": bool(persisted),
+                "categories_updated": categories_updated if persisted else [],
+                "extracted_count": len(user_topics),
+                "learning_scope": (
+                    "content_and_interaction" if learn_semantic_profile
+                    else "interaction_dynamics_only"
+                ),
+                "interaction_count": profile.interaction_count,
+            }
+            return (profile if persisted else None), receipt
 
     def learn_vocab(
         self,

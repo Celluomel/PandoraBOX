@@ -756,14 +756,16 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         "quarantined_count" in value or "persisted" in value
         or str(value.get("status", "")) in profile_receipt_statuses
     ):
-        try:
-            quarantined_count = max(0, min(1000, int(value.get("quarantined_count", 0))))
-        except (TypeError, ValueError, OverflowError):
-            quarantined_count = 0
-        try:
-            extracted_count = max(0, min(1000, int(value.get("extracted_count", 0))))
-        except (TypeError, ValueError, OverflowError):
-            extracted_count = 0
+        def optional_count(field_name: str) -> int | None:
+            if field_name not in value or value.get(field_name) is None:
+                return None
+            try:
+                return max(0, min(1000, int(value[field_name])))
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+        quarantined_count = optional_count("quarantined_count")
+        extracted_count = optional_count("extracted_count")
         try:
             interaction_count = max(0, min(1_000_000, int(value.get("interaction_count", 0))))
         except (TypeError, ValueError, OverflowError):
@@ -781,18 +783,22 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             quality = "present"
         else:
             quality = "unverified"
-        categories = value.get("categories_updated", [])
-        if not isinstance(categories, (list, tuple)):
-            categories = []
+        categories = value.get("categories_updated")
+        if categories is not None and not isinstance(categories, (list, tuple)):
+            categories = None
         return {
             "type": "profile_learning_receipt",
             "status": status,
             "changed": bool(value.get("changed")),
             "persisted": persisted,
-            "categories_updated": [str(item)[:32] for item in categories[:8]],
+            "categories_updated": (
+                [str(item)[:32] for item in categories[:8]]
+                if isinstance(categories, (list, tuple)) else None
+            ),
             "extracted_count": extracted_count,
             "quarantined_count": quarantined_count,
             "interaction_count": interaction_count,
+            "learning_scope": str(value.get("learning_scope") or "")[:48] or None,
             "quality": quality,
         }
 

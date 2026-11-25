@@ -1696,6 +1696,10 @@ class CognitiveOrganism:
                 response=response,
                 emotion=self._read_emotion_state(),
                 human_interaction=human_interaction,
+                learn_semantic_profile=(
+                    str(semantic_turn_kind_hint or "").casefold()
+                    not in {"retrieval", "social", "instruction", "feedback", "other"}
+                ),
             )
         except Exception as exc:
             world_profile_update = {
