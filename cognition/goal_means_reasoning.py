@@ -3,9 +3,119 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import unicodedata
 from dataclasses import dataclass, field
 from typing import List
+
+
+# Semantic calibration examples, not trigger phrases. They are embedded by the
+# configured QUALITY model and compared as normalized concept centroids; no
+# token or phrase match decides whether this reasoning stage applies.
+_GOAL_MEANS_POSITIVE_EXAMPLES = (
+    "Aide-moi à choisir une action qui me permettra d’atteindre le résultat que je souhaite.",
+    "Je veux accomplir une tâche. Compare les moyens possibles et conseille-moi lequel permet réellement de la terminer.",
+    "Planifie les étapes concrètes nécessaires pour obtenir le résultat demandé.",
+    "When options differ, advise which action can actually achieve the person’s goal.",
+    "Help me decide what to do next so that the intended outcome is achieved.",
+    "I need a practical course of action. Compare the prerequisites and recommend a feasible option.",
+)
+_GOAL_MEANS_NEGATIVE_EXAMPLES = (
+    "Réponds à cette question de fait avec une information vérifiable, sans conseiller d’action.",
+    "Explique un concept ou un phénomène, sans recommander de conduite à tenir.",
+    "Traduis ou reformule le texte fourni sans ajouter de conseils.",
+    "Résume les informations déjà données dans la conversation.",
+    "What is a factual detail or measurement? Answer directly without suggesting an action.",
+    "Give a report about the system state using only recorded data.",
+    "Find recent research or current sources about a topic.",
+    "Respond to a greeting or a question about how someone feels.",
+)
+_GOAL_MEANS_ROUTER_CACHE: dict[str, tuple[object, object]] = {}
+_GOAL_MEANS_ROUTER_LOCK = threading.Lock()
+
+
+def classify_goal_means_intent(text: str, *, embedder=None) -> dict:
+    """Route concrete action/choice intent using calibrated semantic vectors.
+
+    The cosine margin is a routing score, not a probability. Borderline input
+    is sent to the existing structured LLM analyzer; clear factual, social,
+    translation, summary, and research requests do not incur that extra call.
+    """
+    value = " ".join(str(text or "").split()).strip()
+    if not value:
+        return {"status": "empty_input", "route": "skip", "reason_code": "empty_input"}
+    try:
+        if embedder is None:
+            from utils.shared_embedder import get_quality_embedder
+            embedder = get_quality_embedder()
+        encoder = getattr(embedder, "encode_interactive_with_metadata", None)
+        if not callable(encoder):
+            encoder = getattr(embedder, "encode_with_metadata", None)
+        if not callable(encoder):
+            raise RuntimeError("quality semantic embedder unavailable")
+
+        model_id = str(getattr(embedder, "embedding_space_id", "") or getattr(embedder, "model_name", ""))
+        with _GOAL_MEANS_ROUTER_LOCK:
+            cached = _GOAL_MEANS_ROUTER_CACHE.get(model_id) if model_id else None
+        if cached is None:
+            vectors, space_id = encoder(
+                [*_GOAL_MEANS_POSITIVE_EXAMPLES, *_GOAL_MEANS_NEGATIVE_EXAMPLES, value]
+            )
+            import numpy as np
+            matrix = np.asarray(vectors, dtype="float64")
+            if matrix.ndim != 2 or matrix.shape[0] != (
+                len(_GOAL_MEANS_POSITIVE_EXAMPLES) + len(_GOAL_MEANS_NEGATIVE_EXAMPLES) + 1
+            ) or not np.isfinite(matrix).all():
+                raise ValueError("semantic router received invalid embedding matrix")
+            normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
+            positive = normalized[:len(_GOAL_MEANS_POSITIVE_EXAMPLES)].mean(axis=0)
+            negative_start = len(_GOAL_MEANS_POSITIVE_EXAMPLES)
+            negative = normalized[negative_start:negative_start + len(_GOAL_MEANS_NEGATIVE_EXAMPLES)].mean(axis=0)
+            positive /= max(float(np.linalg.norm(positive)), 1e-12)
+            negative /= max(float(np.linalg.norm(negative)), 1e-12)
+            with _GOAL_MEANS_ROUTER_LOCK:
+                _GOAL_MEANS_ROUTER_CACHE[str(space_id)] = (positive, negative)
+            query = normalized[-1]
+            actual_space = str(space_id)
+        else:
+            positive, negative = cached
+            vectors, actual_space = encoder(value)
+            import numpy as np
+            query = np.asarray(vectors, dtype="float64").reshape(-1)
+            if query.size != positive.size or not np.isfinite(query).all():
+                raise ValueError("semantic router received incompatible query vector")
+            query /= max(float(np.linalg.norm(query)), 1e-12)
+
+        positive_score = float(query @ positive)
+        negative_score = float(query @ negative)
+        margin = positive_score - negative_score
+        # Thresholds were checked against held-out French/English social,
+        # factual, explanatory, research, memory, and action-choice probes.
+        if positive_score >= 0.65 and margin >= 0.012:
+            status, route = "semantic_action_candidate", "analyze"
+        elif positive_score >= 0.65 and margin >= -0.005:
+            status, route = "semantic_boundary_uncertain", "analyze"
+        else:
+            status, route = "semantic_non_action_or_low_evidence", "skip"
+        return {
+            "status": status,
+            "route": route,
+            "positive_similarity": round(positive_score, 4),
+            "negative_similarity": round(negative_score, 4),
+            "margin": round(margin, 4),
+            "score_semantics": "uncalibrated cosine routing score; not a probability",
+            "embedding_space": actual_space,
+            "reason_code": "semantic_centroid_margin",
+        }
+    except Exception as exc:
+        # The main response remains available, but uncertainty goes through
+        # the structured analyzer rather than silently disabling the guard.
+        return {
+            "status": "router_unavailable",
+            "route": "analyze",
+            "reason_code": type(exc).__name__,
+            "score_semantics": "unavailable; fail-safe analysis route",
+        }
 
 
 def goal_means_contract(text: str) -> str:
@@ -102,6 +212,12 @@ upon), required resources, and execution location. A patient/theme that is
 transformed, cleaned, repaired, delivered, transported, installed, used, or
 inspected is an indispensable participant.
 
+For each option, start from the participants' locations stated or implied by
+the user's scenario. If the user asks whether to take an object to a destination,
+that option comparison implies the object starts with the user; do not assume it
+is already at the destination. An option moves the object only when its described
+physical action transports it; the person's arrival alone does not move it.
+
 For EACH option, simulate separately where the agent and patient/theme end up.
 Describe the physical state transition caused by the option: what moves, what
 stays behind, and which indispensable participant reaches the execution
@@ -113,6 +229,10 @@ Also preserve temporal order: record where each participant is at the triggering
 event and whether that participant can physically reach the required later
 location in the available time. Never assume simultaneous incompatible locations,
 an unmentioned helper, or an unmentioned remote-release mechanism.
+Write option names as neutral action phrases from the user's perspective (for
+example, "drive the car to the wash"), never as Lumina's or the user's first-
+person speech ("my car" / "your car"). Keep reasons neutral and causal; do not
+address the user by name inside a reason.
 Set these Boolean fields independently before setting feasible:
 - patient_must_move_to_execution_location (once for the whole decision)
 - moves_patient_or_theme (once for each option; derive patient location from it)
@@ -364,19 +484,17 @@ def guarded_response(
     user_text: str,
     continuation: bool = False,
 ) -> tuple[str, bool]:
-    """Prevent the response model from reversing a validated unique choice.
+    """Render a uniquely feasible choice from its validated causal evidence.
 
-    The guard is intentionally narrow: it only acts when Boolean prerequisite
-    checks leave exactly one feasible option. Ambiguous decisions remain the
-    language model's responsibility.
+    A generated answer can name the right option while inventing a reason for
+    it. Therefore, when prerequisite checks leave exactly one feasible option,
+    the structured analysis owns both the recommendation and its explanation.
+    Ambiguous decisions remain the language model's responsibility.
     """
     selected = analysis.unique_feasible_option()
     if selected is None:
         return candidate, False
 
-    visible = str(candidate or "").strip()
-    lead = visible[:500]
-    normalized_lead = _normalized_words(lead)
     raw_agent_name = str(analysis.semantic_roles.get("agent", "") or "").strip()
     generic_agents = {
         "", "agent", "user", "the user", "utilisateur", "l utilisateur",
@@ -386,40 +504,6 @@ def guarded_response(
         raw_agent_name
         if _normalized_words(raw_agent_name) not in generic_agents else ""
     )
-    names_agent = not agent_name or _normalized_words(agent_name) in normalized_lead
-    recommendation_cue = re.search(
-        r"\b(recommand|conseill|devr(?:ais|iez)|choisi|recommend|should|choose|best option)",
-        normalized_lead,
-    )
-    recommended_is_present = _mentions_option(lead, selected.name)
-    recommends_infeasible = False
-    if recommendation_cue:
-        recommendation_window = normalized_lead[recommendation_cue.end():]
-        mentioned = [
-            (_option_position(recommendation_window, option.name), option)
-            for option in analysis.options
-        ]
-        mentioned = [(position, option) for position, option in mentioned if position >= 0]
-        if mentioned:
-            recommends_infeasible = not min(mentioned, key=lambda item: item[0])[1].feasible
-
-    mentions_infeasible = any(
-        _mentions_option(lead, option.name)
-        for option in analysis.options
-        if not option.feasible
-    )
-    reopens_settled_choice = "?" in visible or mentions_infeasible
-
-    if (
-        not continuation
-        and visible
-        and recommended_is_present
-        and not recommends_infeasible
-        and not reopens_settled_choice
-        and names_agent
-    ):
-        return candidate, False
-
     reason = selected.reason or analysis.decisive_reason
     french = bool(re.search(
         r"\b(je|tu|vous|nous|dois|devrais|est ce|quelle|comment|avec|chez)\b",
@@ -453,7 +537,8 @@ def guarded_response(
         answer = f"{address}I recommend **{selected.name}**."
         if reason:
             answer += f" {reason.rstrip('.')} ."
-    return answer.replace(" .", "."), True
+    rendered = answer.replace(" .", ".")
+    return rendered, rendered != str(candidate or "").strip()
 
 
 def is_analysis_followup(text: str, analysis: GoalMeansAnalysis) -> bool:

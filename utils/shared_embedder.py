@@ -233,6 +233,53 @@ class APIEmbedder:
             fast_name = getattr(fast, "model_name_or_path", DEFAULT_FAST_MODEL)
             return result, f"sentence-transformers:{fast_name}"
 
+    def encode_interactive_with_metadata(self, texts, *, lock_timeout: float = 0.75):
+        """Run an explicitly requested, bounded foreground QUALITY embedding.
+
+        Background callers yield while an interactive turn is active. A small
+        number of semantic routers may request this prioritized path; it still
+        shares the endpoint lock and fails quickly if another quality request
+        owns LM Studio. It never silently substitutes the FAST vector space.
+        """
+        import numpy as np
+
+        single = isinstance(texts, str)
+        values = [texts] if single else list(texts)
+        values = [str(value) for value in values]
+        with self._transport_backoff_lock:
+            if time.monotonic() < self._transport_backoff_until:
+                raise QualityEndpointBackoff("quality embedding endpoint transport backoff")
+        acquired = _quality_request_lock.acquire(timeout=max(0.0, float(lock_timeout)))
+        if not acquired:
+            raise RuntimeError("quality embedding endpoint busy during interactive turn")
+        try:
+            vectors = []
+            for offset in range(0, len(values), 32):
+                chunk = values[offset:offset + 32]
+                payload = self._post(chunk)
+                reported_model = payload.get("model")
+                if reported_model and reported_model != self.model_name:
+                    raise RuntimeError(
+                        "embedding endpoint returned a different model: "
+                        f"requested={self.model_name!r}, reported={reported_model!r}"
+                    )
+                rows = sorted(payload.get("data", []), key=lambda row: row.get("index", 0))
+                if len(rows) != len(chunk) or [row.get("index") for row in rows] != list(range(len(chunk))):
+                    raise ValueError("embedding endpoint returned missing or duplicate vector indices")
+                for row in rows:
+                    vector = np.asarray(row.get("embedding"), dtype="float32")
+                    if vector.ndim != 1 or not vector.size or not np.isfinite(vector).all():
+                        raise ValueError("embedding endpoint returned an invalid vector")
+                    vectors.append(vector)
+            matrix = np.asarray(vectors, dtype="float32")
+            if matrix.ndim != 2 or matrix.shape[0] != len(values):
+                raise ValueError("embedding endpoint returned an invalid matrix")
+            if single:
+                return matrix[0], self.embedding_space_id
+            return matrix, self.embedding_space_id
+        finally:
+            _quality_request_lock.release()
+
     def get_sentence_embedding_dimension(self):
         if _interactive_priority.is_set():
             raise RuntimeError("quality embedding dimension deferred during interactive turn")

@@ -39,6 +39,31 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertNotIn("private user text", repr(summary))
         self.assertNotIn("custom_status", summary["receipt_fields"])
 
+    def test_output_summary_exposes_redacted_goal_means_causality(self):
+        summary = summarize_output({
+            "primary_goal": "private goal text",
+            "option_count": 2,
+            "feasible_option_count": 1,
+            "patient_must_move_to_execution_location": True,
+            "unique_feasible_option": True,
+            "option_feasibility": [False, True],
+            "option_moves_patient": [False, True],
+            "option_patient_at_execution_location": [False, True],
+            "options": ["private option names"],
+        })
+
+        self.assertEqual(summary["receipt_fields"], {
+            "option_count": 2,
+            "feasible_option_count": 1,
+            "patient_must_move_to_execution_location": True,
+            "unique_feasible_option": True,
+            "option_feasibility": [False, True],
+            "option_moves_patient": [False, True],
+            "option_patient_at_execution_location": [False, True],
+        })
+        self.assertNotIn("private goal text", repr(summary))
+        self.assertNotIn("private option names", repr(summary))
+
     def test_output_summary_exposes_safe_goal_quality_aggregate_counts(self):
         summary = summarize_output({
             "scored": [{"id": "private-goal-1", "name": "private goal"}],

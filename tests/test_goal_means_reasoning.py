@@ -7,6 +7,8 @@ from types import ModuleType
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -16,12 +18,51 @@ sys.modules["cognition"] = package
 
 from cognition.goal_means_reasoning import (
     analysis_prompt, goal_means_contract, guarded_response, is_analysis_followup,
-    parse_analysis,
+    parse_analysis, classify_goal_means_intent, _GOAL_MEANS_ROUTER_CACHE,
+    _GOAL_MEANS_POSITIVE_EXAMPLES, _GOAL_MEANS_NEGATIVE_EXAMPLES,
 )
 from cognition.abstract_reasoning_engine import AbstractReasoningEngine, ReasoningResult
 
 
 class GoalMeansReasoningTests(unittest.TestCase):
+    def test_semantic_router_uses_vector_margin_and_routes_uncertainty_to_analysis(self):
+        class FakeEmbedder:
+            embedding_space_id = "test-semantic-space"
+
+            def encode_interactive_with_metadata(self, texts):
+                if isinstance(texts, str):
+                    texts = [texts]
+                    single = True
+                else:
+                    single = False
+                rows = []
+                for text in texts:
+                    if text in _GOAL_MEANS_POSITIVE_EXAMPLES:
+                        rows.append([1.0, 0.0])
+                    elif text in _GOAL_MEANS_NEGATIVE_EXAMPLES:
+                        rows.append([0.0, 1.0])
+                    elif text == "action-like":
+                        rows.append([0.8, 0.2])
+                    elif text == "boundary":
+                        rows.append([0.710, 0.704])
+                    else:
+                        rows.append([0.2, 0.98])
+                values = np.asarray(rows, dtype="float64")
+                return (values[0] if single else values), self.embedding_space_id
+
+        _GOAL_MEANS_ROUTER_CACHE.clear()
+        positive = classify_goal_means_intent("action-like", embedder=FakeEmbedder())
+        boundary = classify_goal_means_intent("boundary", embedder=FakeEmbedder())
+        factual = classify_goal_means_intent("factual", embedder=FakeEmbedder())
+
+        self.assertEqual(positive["status"], "semantic_action_candidate")
+        self.assertEqual(positive["route"], "analyze")
+        self.assertEqual(boundary["status"], "semantic_boundary_uncertain")
+        self.assertEqual(boundary["route"], "analyze")
+        self.assertEqual(factual["status"], "semantic_non_action_or_low_evidence")
+        self.assertEqual(factual["route"], "skip")
+        self.assertIn("not a probability", positive["score_semantics"])
+
     def test_semantic_protocol_is_injected_independent_of_wording(self):
         question = (
             "je dois aller laver ma voiture et le lavage auto se trouve a 150 "
@@ -69,6 +110,8 @@ class GoalMeansReasoningTests(unittest.TestCase):
         self.assertIn("Recommendation: carry it", fragment)
         self.assertIn("Decisive reason: the package reaches the destination", fragment)
         self.assertIn("logical AND of all four fields", analysis_prompt("Should I go?"))
+        self.assertIn("neutral action phrases from the user's perspective", analysis_prompt("Should I go?"))
+        self.assertIn('never as Lumina\'s or the user\'s first-', analysis_prompt("Should I go?"))
 
     def test_guard_replaces_a_recommendation_that_reverses_feasibility(self):
         raw = '''{
@@ -139,7 +182,7 @@ class GoalMeansReasoningTests(unittest.TestCase):
         self.assertTrue(analysis.options[1].feasible)
         self.assertEqual("transport the machine", analysis.recommended_option)
 
-    def test_guard_leaves_a_valid_recommendation_untouched(self):
+    def test_guard_replaces_even_a_valid_recommendation_with_unsupported_reason(self):
         raw = '''{
           "primary_goal": "deliver the parcel",
           "options": [
@@ -151,10 +194,31 @@ class GoalMeansReasoningTests(unittest.TestCase):
         analysis = parse_analysis(raw)
         candidate = "I recommend carry it because the parcel must arrive."
         response, replaced = guarded_response(candidate, analysis, "Should I leave it or carry it?")
-        self.assertFalse(replaced)
-        self.assertEqual(candidate, response)
+        self.assertTrue(replaced)
+        self.assertIn("I recommend **carry it**", response)
+        self.assertIn("parcel arrives", response)
+        self.assertNotIn("because the parcel must arrive", response)
 
-    def test_guard_allows_contrasting_an_infeasible_option_after_valid_choice(self):
+    def test_guard_replaces_correct_option_with_wrong_causal_explanation(self):
+        raw = '''{
+          "primary_goal": "laver la voiture au lavage",
+          "options": [
+            {"name": "à pied", "agent_at_execution_location": true, "patient_at_execution_location": false, "required_resources_available": true, "reason": "la voiture resterait à la maison"},
+            {"name": "en voiture", "agent_at_execution_location": true, "patient_at_execution_location": true, "required_resources_available": true, "reason": "la voiture doit être présente au lavage"}
+          ]
+        }'''
+        analysis = parse_analysis(raw)
+        response, replaced = guarded_response(
+            "Je recommande d'y aller en voiture car 150 mètres, c'est trop loin à pied.",
+            analysis,
+            "Je dois laver ma voiture à 150 mètres, dois-je prendre ma voiture ?",
+        )
+        self.assertTrue(replaced)
+        self.assertIn("en voiture", response)
+        self.assertIn("présente au lavage", response)
+        self.assertNotIn("150 mètres", response)
+
+    def test_guard_uses_structured_reason_when_model_adds_contrasting_reasoning(self):
         raw = '''{
           "primary_goal": "deliver the parcel",
           "options": [
@@ -165,8 +229,9 @@ class GoalMeansReasoningTests(unittest.TestCase):
         analysis = parse_analysis(raw)
         candidate = "I recommend carry it. Leaving it would be easier, but the parcel would stay behind."
         response, replaced = guarded_response(candidate, analysis, "Should I leave it or carry it?")
-        self.assertFalse(replaced)
-        self.assertEqual(candidate, response)
+        self.assertTrue(replaced)
+        self.assertIn("I recommend **carry it**", response)
+        self.assertIn("parcel arrives", response)
 
     def test_followup_recognizes_option_confirmation_and_causal_correction(self):
         raw = '''{
@@ -212,11 +277,22 @@ class GoalMeansReasoningTests(unittest.TestCase):
             (ROOT / "cognition/persona_bridge.py").read_text(encoding="utf-8"), method
         )
         self.assertIn("goal_means_contract(effective_input)", source)
+        self.assertIn("classify_goal_means_intent", source)
+        self.assertIn("goal_means_pre_response_analysis", source)
+        self.assertIn('getattr(_analysis_manager, "generate_bare_result", None)', source)
+        self.assertIn("_allow_interactive_turn=True", source)
+        self.assertIn('_audit_origin="cognition.goal_means_reasoning.pre_response"', source)
         self.assertNotIn("is_practical_decision", source)
         self.assertNotIn("Lead with the feasible recommendation", source)
         self.assertIn("guarded_response", source)
         self.assertIn("_validate_before_display", source)
         self.assertLess(source.index("goal_means_contract(effective_input)"), source.index("def _stream():"))
+        self.assertLess(source.index("classify_goal_means_intent"), source.index("def _stream():"))
+        self.assertLess(
+            source.index('_deterministic_response = ""'),
+            source.index("classify_goal_means_intent"),
+        )
+        self.assertIn("_goal_means_gate_response", source)
 
         bridge_source = (ROOT / "cognition/persona_bridge.py").read_text(encoding="utf-8")
         tree = ast.parse(bridge_source)

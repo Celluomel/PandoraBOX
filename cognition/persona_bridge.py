@@ -3178,6 +3178,155 @@ class PersonaBridge:
         # remains deferred while the interactive reservation is held.
         _goal_means_analysis = None
         _goal_means_followup = False
+        _goal_means_route: dict[str, Any] | None = None
+        _goal_means_analysis_status = "not_run"
+        _goal_means_gate_failed = False
+        _goal_means_gate_response = ""
+        # Initialize before routing: the eligibility check below must not read
+        # this local before its later deterministic-answer selection block.
+        _deterministic_response = ""
+        try:
+            # Nomic routes by semantic similarity, not a token/phrase list.
+            # Only likely or boundary action-choice turns pay for the existing
+            # structured analyzer; ordinary facts/social turns retain their
+            # existing provider path and cost.
+            if (
+                not peer_name
+                and not _closed_world_cognitive_report_query
+                and not _explicit_memory_recall
+                and not _explicit_named_profile_query
+                and not _prompt_source_provenance_query
+                and not _api_route_query
+                and not _internal_cognitive_query
+                and not _deterministic_response
+            ):
+                from cognition.goal_means_reasoning import (
+                    classify_goal_means_intent, analysis_prompt, parse_analysis,
+                )
+                _goal_means_route = await asyncio.to_thread(
+                    classify_goal_means_intent, effective_input,
+                )
+                self._record_turn_stage(
+                    "goal_means_semantic_route",
+                    str(_goal_means_route.get("status") or "unavailable"),
+                    output=_goal_means_route,
+                    consumes=("turn_input",), turn_id=_audit_turn_id,
+                )
+                if _goal_means_route.get("route") == "analyze":
+                    _analysis_manager = getattr(self._external_llm_fn, "__self__", None)
+                    _analysis_provider = getattr(_analysis_manager, "generate_bare_result", None)
+                    if not callable(_analysis_provider):
+                        _analysis_manager = getattr(self._llm_stream_fn, "__self__", None)
+                        _analysis_provider = getattr(_analysis_manager, "generate_bare_result", None)
+                    if not callable(_analysis_provider):
+                        _goal_means_analysis_status = "unavailable"
+                        _goal_means_gate_failed = True
+                    else:
+                        _goal_means_raw = await asyncio.to_thread(
+                            _analysis_provider,
+                            analysis_prompt(
+                                effective_input,
+                                agent_name=_interlocutor_display_name(user_id),
+                            ),
+                            system_prompt=(
+                                "You are the pre-response goal-means validator. Return only the requested JSON. "
+                                "Classify applicability from meaning, not words. For applicable choices, "
+                                "identify indispensable people/objects, simulate each option, and mark unknowns honestly."
+                            ),
+                            max_tokens=900,
+                            temperature=0.1,
+                            _allow_interactive_turn=True,
+                            _audit_origin="cognition.goal_means_reasoning.pre_response",
+                        )
+                        _provider_status = (
+                            str(_goal_means_raw.get("status") or "error")
+                            if isinstance(_goal_means_raw, dict) else "error"
+                        )
+                        _provider_reason = (
+                            str(_goal_means_raw.get("reason") or "")[:160]
+                            if isinstance(_goal_means_raw, dict) else "non_dict_provider_result"
+                        )
+                        _parsed_goal_means = (
+                            parse_analysis(str(_goal_means_raw.get("text") or ""))
+                            if _provider_status == "ok" else None
+                        )
+                        if _parsed_goal_means is None:
+                            _goal_means_analysis_status = (
+                                "invalid_output" if _provider_status == "ok" else "provider_failed"
+                            )
+                            _goal_means_gate_failed = True
+                        elif not _parsed_goal_means.applicable:
+                            _goal_means_analysis_status = "not_applicable_semantically"
+                        else:
+                            _goal_means_analysis = _parsed_goal_means
+                            _goal_means_analysis_status = "validated_before_response"
+                            with self._reflection_lock:
+                                self._recent_goal_means[str(_cognitive_scope)] = (
+                                    _parsed_goal_means, time.monotonic(), 3,
+                                )
+                    self._record_turn_stage(
+                        "goal_means_pre_response_analysis",
+                        _goal_means_analysis_status,
+                        output=(
+                            {
+                                "applicable": bool(_goal_means_analysis.applicable),
+                                "primary_goal": _goal_means_analysis.primary_goal,
+                                "option_count": len(_goal_means_analysis.options),
+                                "feasible_option_count": sum(
+                                    1 for option in _goal_means_analysis.options if option.feasible
+                                ),
+                                "patient_must_move_to_execution_location": (
+                                    _goal_means_analysis.patient_must_move_to_execution_location
+                                ),
+                                "option_feasibility": [
+                                    option.feasible for option in _goal_means_analysis.options
+                                ],
+                                "option_moves_patient": [
+                                    option.moves_patient_or_theme for option in _goal_means_analysis.options
+                                ],
+                                "option_patient_at_execution_location": [
+                                    option.patient_at_execution_location for option in _goal_means_analysis.options
+                                ],
+                                "option_agent_at_execution_location": [
+                                    option.agent_at_execution_location for option in _goal_means_analysis.options
+                                ],
+                                "option_resources_available": [
+                                    option.required_resources_available for option in _goal_means_analysis.options
+                                ],
+                                "unique_feasible_option": bool(
+                                    _goal_means_analysis.unique_feasible_option()
+                                ),
+                                "gate_failed": _goal_means_gate_failed,
+                            }
+                            if _goal_means_analysis is not None else
+                            {
+                                "status": _goal_means_analysis_status,
+                                "provider_status": _provider_status,
+                                "provider_reason": _provider_reason,
+                                "gate_failed": _goal_means_gate_failed,
+                            }
+                        ),
+                        consumes=("goal_means_semantic_route", "turn_input"),
+                        turn_id=_audit_turn_id,
+                    )
+                    if _goal_means_gate_failed:
+                        _goal_means_gate_response = (
+                            "Je n’ai pas pu valider les prérequis de cette décision; "
+                            "je ne vais donc pas présenter une option comme faisable sans preuve."
+                        )
+        except Exception as _goal_means_route_error:
+            _goal_means_analysis_status = "router_or_analysis_failed"
+            _goal_means_gate_failed = True
+            self._record_turn_stage(
+                "goal_means_pre_response_analysis", "failed",
+                error_type=type(_goal_means_route_error).__name__,
+                output={"status": _goal_means_analysis_status, "gate_failed": True},
+                consumes=("turn_input",), turn_id=_audit_turn_id,
+            )
+            _goal_means_gate_response = (
+                "Je n’ai pas pu valider les prérequis de cette décision; "
+                "je ne vais donc pas présenter une option comme faisable sans preuve."
+            )
         _temporal_analysis = None
         _temporal_frame = None
         _are_turn_status = "unavailable"
@@ -3194,6 +3343,14 @@ class PersonaBridge:
                     "abstract_reasoning", _are_turn_status,
                     output={"reason_code": "closed_world_report_uses_recorded_evidence"},
                     consumes=("turn_input",), turn_id=_audit_turn_id,
+                )
+            elif _goal_means_analysis is not None or _goal_means_gate_failed:
+                _are_turn_status = "skipped_goal_means_pre_response"
+                self._record_turn_stage(
+                    "abstract_reasoning", _are_turn_status,
+                    output={"reason_code": "goal_means_validator_owns_this_decision_turn"},
+                    consumes=("goal_means_pre_response_analysis",),
+                    turn_id=_audit_turn_id,
                 )
             elif _state_are.are:
                 _are_result = await asyncio.to_thread(
@@ -3273,7 +3430,7 @@ class PersonaBridge:
             from cognition.goal_means_reasoning import is_analysis_followup
             with self._reflection_lock:
                 _recent = self._recent_goal_means.get(_cognitive_scope)
-            if _recent:
+            if _recent and _goal_means_analysis is None:
                 _analysis, _created_at, _turns_left = _recent
                 if (
                     time.monotonic() - _created_at <= 300.0
@@ -3294,11 +3451,37 @@ class PersonaBridge:
                     with self._reflection_lock:
                         self._recent_goal_means.pop(_cognitive_scope, None)
             if _temporal_analysis is None and _quantitative_analysis is None:
-                logger.debug("[GoalMeans] structured analysis deferred until after response")
+                logger.debug("[GoalMeans] semantic route status=%s", _goal_means_analysis_status)
+            if _goal_means_analysis is not None:
+                _goal_means_stage_status = (
+                    "followup_analysis_loaded" if _goal_means_followup
+                    else "validated_before_response"
+                )
+            elif _goal_means_gate_failed:
+                _goal_means_stage_status = "failed_closed_before_response"
+            elif isinstance(_goal_means_route, dict) and _goal_means_route.get("route") == "skip":
+                _goal_means_stage_status = "not_applicable_semantic_route"
+            elif _goal_means_analysis_status == "not_applicable_semantically":
+                _goal_means_stage_status = "not_applicable_semantically"
+            else:
+                _goal_means_stage_status = "not_run"
             self._record_turn_stage(
-                "goal_means_reasoning",
-                "followup_analysis_loaded" if _goal_means_analysis is not None
-                else "semantic_selection_deferred",
+                "goal_means_reasoning", _goal_means_stage_status,
+                output={
+                    "route_status": (
+                        _goal_means_route.get("status")
+                        if isinstance(_goal_means_route, dict) else "not_routed"
+                    ),
+                    "analysis_status": _goal_means_analysis_status,
+                    "gate_failed": bool(_goal_means_gate_failed),
+                },
+                consumes=(
+                    ("goal_means_semantic_route", "goal_means_pre_response_analysis")
+                    if isinstance(_goal_means_route, dict) and _goal_means_route.get("route") == "analyze"
+                    else ("goal_means_semantic_route",)
+                    if isinstance(_goal_means_route, dict)
+                    else ("turn_input",)
+                ),
                 turn_id=_audit_turn_id,
             )
         except Exception as _gma_error:
@@ -4064,6 +4247,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 turn_id=_audit_turn_id,
             )
 
+        if _goal_means_gate_response:
+            _deterministic_response = _goal_means_gate_response
+            self._record_turn_stage(
+                "goal_means_gate_response", "selected_fail_closed",
+                "The semantic action route could not produce a validated structured analysis.",
+                output=_deterministic_response,
+                consumes=("goal_means_pre_response_analysis", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
         self._record_turn_stage(
             "deterministic_reasoning",
             "selected" if _deterministic_response else "not_selected",

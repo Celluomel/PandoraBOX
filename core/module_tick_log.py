@@ -58,6 +58,7 @@ def summarize_output(value: Any) -> dict[str, Any]:
             "contexts_after", "signals_before", "signals_after",
             "signals_pruned", "contexts_pruned",
             "belief_count", "response_characters", "event_handler_count",
+            "option_count", "feasible_option_count",
             "global_chapter_count", "tokenizable_word_count",
             "clustered_theme_count", "pivot_chapter_count", "arc_characters",
             # Active Cognitive Context reports bounded state deltas so a turn
@@ -78,6 +79,7 @@ def summarize_output(value: Any) -> dict[str, Any]:
         for key in (
             "aspiration_plan_exists", "arc_changed",
             "topic_decay_pass_ran", "prompt_fragment_invalidated",
+            "unique_feasible_option", "patient_must_move_to_execution_location",
         ):
             if isinstance(value.get(key), bool):
                 receipt_fields[key] = value[key]
@@ -86,6 +88,16 @@ def summarize_output(value: Any) -> dict[str, Any]:
         for key in ("detected", "event_emitted", "factual_plan_context_included"):
             if isinstance(value.get(key), bool):
                 receipt_fields[key] = value[key]
+        for key in (
+            "option_feasibility", "option_moves_patient",
+            "option_patient_at_execution_location",
+            "option_agent_at_execution_location", "option_resources_available",
+        ):
+            items = value.get(key)
+            if isinstance(items, (list, tuple)) and len(items) <= 8 and all(
+                item is None or isinstance(item, bool) for item in items
+            ):
+                receipt_fields[key] = list(items)
         if receipt_fields:
             result["receipt_fields"] = receipt_fields
         # Some cognitive modules return a compact `summary` mapping alongside

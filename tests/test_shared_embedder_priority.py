@@ -29,6 +29,24 @@ class InteractiveEmbeddingPriorityTests(unittest.TestCase):
                 APIEmbedder("nomic", "http://localhost:1234/v1").encode(["background work"])
         fast_fallback.assert_not_called()
 
+    def test_explicit_foreground_quality_embedding_can_run_during_interactive_turn(self):
+        api = APIEmbedder("nomic-model", "http://127.0.0.1:1234/v1")
+        payload = {
+            "model": "nomic-model",
+            "data": [
+                {"index": 0, "embedding": [1.0, 0.0]},
+                {"index": 1, "embedding": [0.0, 1.0]},
+            ],
+        }
+        with patch("utils.shared_embedder._interactive_priority.is_set", return_value=True), patch.object(
+            api, "_post", return_value=payload,
+        ), patch("utils.shared_embedder._get_fast_embedder") as fast_fallback:
+            vectors, space = api.encode_interactive_with_metadata(["intent", "query"])
+
+        self.assertEqual(vectors.shape, (2, 2))
+        self.assertEqual(space, api.embedding_space_id)
+        fast_fallback.assert_not_called()
+
     def test_quality_response_model_mismatch_uses_explicit_fast_space(self):
         class Fast:
             model_name_or_path = "all-MiniLM-L6-v2"
