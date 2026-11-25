@@ -791,6 +791,18 @@ class MemorySystemFallbackTests(unittest.TestCase):
         ))
         self.assertFalse(is_exact_value_recall_query("What is a test marker?"))
 
+    def test_archive_recall_does_not_cross_match_different_exact_value_types(self):
+        archive = (
+            'Retrieved user-authored source (verbatim): '
+            '"For this cognitive harness audit, remember this exact temporary marker '
+            'for my next question: cobalt fern 8421."'
+        )
+
+        self.assertIsNone(explicit_recall_archive_source_result(
+            "What exact checksum did I give you for the cognitive harness audit?",
+            archive,
+        ))
+
     def test_one_phrase_response_format_does_not_request_verbatim_recall(self):
         query = (
             "Quelle règle ai-je formulée pour les informations des capteurs ? "

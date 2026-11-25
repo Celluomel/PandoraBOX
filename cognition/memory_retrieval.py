@@ -756,6 +756,10 @@ _ARCHIVED_USER_SOURCE_RE = re.compile(
     r"[\u201c\u00ab\"](?P<excerpt>[^\u201d\u00bb\"\r\n]{1,800})[\u201d\u00bb\"]",
     re.IGNORECASE,
 )
+_EXACT_VALUE_TYPE_RE = re.compile(
+    r"\b(?:marker|code|identifier|token|value|number|checksum|hash|reference)\b",
+    re.IGNORECASE,
+)
 
 
 def explicit_recall_archive_source_result(
@@ -775,13 +779,19 @@ def explicit_recall_archive_source_result(
     focus = set(tokenize(_explicit_recall_focus(query_text)))
     if len(focus) < 2:
         return None
+    requested_types = set(tokenize(" ".join(_EXACT_VALUE_TYPE_RE.findall(query_text))))
+    if not requested_types:
+        return None
 
     candidates = []
     for match in _ARCHIVED_USER_SOURCE_RE.finditer(str(archived_context)):
         excerpt = re.sub(r"\s+", " ", match.group("excerpt")).strip()
         if not excerpt:
             continue
-        overlap = len(focus & set(tokenize(excerpt)))
+        excerpt_tokens = set(tokenize(excerpt))
+        if not (requested_types & excerpt_tokens):
+            continue
+        overlap = len(focus & excerpt_tokens)
         required_overlap = min(len(focus), max(2, math.ceil(len(focus) * 0.5)))
         if overlap < required_overlap:
             continue
