@@ -2820,6 +2820,7 @@ class PersonaBridge:
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
             _cognitive_audit_status_query = is_cognitive_audit_status_query(effective_input)
+            _architecture_context_query = is_architecture_query(effective_input)
             _api_route_query = (
                 is_runtime_api_route_question(effective_input)
                 and not _explicit_memory_recall
@@ -2831,7 +2832,15 @@ class PersonaBridge:
             # fact the user asked to retrieve.
             _factual_plan_query = (
                 not _explicit_memory_recall
-                and LongHorizonPlanner.is_goal_plan_query(effective_input)
+                and (
+                    LongHorizonPlanner.is_goal_plan_query(effective_input)
+                    or (
+                        _architecture_context_query
+                        and LongHorizonPlanner.is_plan_progress_interpretation_query(
+                            effective_input
+                        )
+                    )
+                )
             )
             _closed_world_cognitive_report_query = (
                 is_closed_world_cognitive_report_query(effective_input)
@@ -2840,7 +2849,7 @@ class PersonaBridge:
                 or _api_route_query
             )
             _architecture_query = (
-                (is_architecture_query(effective_input) or _cognitive_trace_query or _api_route_query)
+                (_architecture_context_query or _cognitive_trace_query or _api_route_query)
                 and not _explicit_memory_recall
             )
             _internal_cognitive_query = (
@@ -3720,6 +3729,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         effective_input,
                         getattr(_report_cfg, "RESPONSE_LANGUAGE", "auto"),
                         snapshot=_planner_snapshot,
+                        allow_architecture_progress_interpretation=_architecture_query,
                     )
                     if _goal_report:
                         _deterministic_response = _goal_report

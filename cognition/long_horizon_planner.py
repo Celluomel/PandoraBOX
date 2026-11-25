@@ -946,14 +946,15 @@ class LongHorizonPlanner:
         ))
         asks_for_inference = bool(re.search(
             r"\b(?:mean|imply|indicate|prove|show|signifie|signifient|"
-            r"veut dire|impliqu\w*|prouve|indique)\b", text,
+            r"veut dire|impliqu\w*|prouve|indique|necessarily|"
+            r"nécessairement|forcément|suffit(?:-il)?|suffisamment)\b", text,
         ))
         asks_about_attainment = bool(re.search(
-            r"\b(?:goal|objective|but|objectif)\w*\b.{0,64}"
+            r"\b(?:goal|objective|but|objectif)\w*\b.{0,128}"
             r"\b(?:achieved|reached|complete|completed|attained|"
             r"atteint\w*|réalisé\w*|accompli\w*)\b"
             r"|\b(?:achieved|reached|attained|atteint\w*|réalisé\w*|"
-            r"accompli\w*)\b.{0,64}\b(?:goal|objective|but|objectif)\w*\b",
+            r"accompli\w*)\b.{0,128}\b(?:goal|objective|but|objectif)\w*\b",
             text,
         ))
         return has_plan_progress and asks_for_inference and asks_about_attainment
@@ -1529,9 +1530,13 @@ class LongHorizonPlanner:
         language: str = "auto",
         *,
         snapshot: Optional[Dict[str, Any]] = None,
+        allow_architecture_progress_interpretation: bool = False,
     ) -> str:
         """Render goal/plan telemetry from recorded state without LLM paraphrase."""
-        if not self.is_goal_plan_query(user_input):
+        if not self.is_goal_plan_query(user_input) and not (
+            allow_architecture_progress_interpretation
+            and self.is_plan_progress_interpretation_query(user_input)
+        ):
             return ""
         if snapshot is None:
             snapshot = self.factual_self_report_snapshot()
@@ -1599,9 +1604,22 @@ class LongHorizonPlanner:
                 f"Recorded result: {str(outcome.get('result') or 'missing')[:200]}"
             )
         query = " ".join(str(user_input or "").casefold().split())
-        progress_claim = re.search(r"\b(\d+)\s*/\s*(\d+)\b", query)
+        progress_claim = re.search(
+            r"\b(\d+)\s*/\s*(\d+)\b"
+            r"|\b(\d+)\s+(?:steps?|étapes?)\s+(?:out\s+of|sur|de)\s+(\d+)\b"
+            r"|\b(\d+)\s+(?:out\s+of|of)\s+(\d+)\s+(?:steps?|étapes?)\b",
+            query,
+        )
         if self.is_plan_progress_interpretation_query(query) and progress_claim:
-            claimed_done, claimed_total = map(int, progress_claim.groups())
+            numbers = next(
+                (pair for pair in zip(progress_claim.groups()[::2], progress_claim.groups()[1::2])
+                 if pair[0] is not None and pair[1] is not None),
+                None,
+            )
+            if numbers is None:
+                progress_claim = None
+        if self.is_plan_progress_interpretation_query(query) and progress_claim:
+            claimed_done, claimed_total = map(int, numbers)
             current_progress = (
                 f"{plan.get('steps_completed', 0)}/{plan.get('steps_total', 0)}"
                 if isinstance(plan, dict) else None

@@ -1324,6 +1324,37 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
         self.assertTrue(LongHorizonPlanner.is_plan_progress_interpretation_query(question))
 
+    def test_architecture_audit_with_necessary_progress_inference_uses_plan_snapshot(self):
+        from cognition.self_description import is_architecture_query
+
+        question = (
+            "Pour l'audit du harnais : un objectif dont 3 étapes sur 4 sont "
+            "marquées terminées est-il nécessairement atteint ? Réponds en "
+            "distinguant le compteur du plan et la mesure de réussite."
+        )
+        self.assertTrue(is_architecture_query(question))
+        self.assertTrue(LongHorizonPlanner.is_plan_progress_interpretation_query(question))
+
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        answer = planner.factual_goal_plan_response(
+            question,
+            "fr",
+            snapshot={
+                "active_goals": [],
+                "active_goal_count": 0,
+                "dominant_plan": {
+                    "objective": "cognitive harness",
+                    "steps_completed": 3,
+                    "steps_total": 4,
+                    "success_criteria_status": "unverified",
+                },
+            },
+            allow_architecture_progress_interpretation=True,
+        )
+        self.assertIn("pas une mesure de l’atteinte", answer)
+        self.assertIn("critère de réussite enregistré est « unverified »", answer)
+        self.assertNotIn("provisoirement atteint", answer)
+
     def test_explicitly_user_owned_plan_does_not_route_to_lumina_self_report(self):
         question = (
             "Mon plan de projet a 3/4 étapes terminées sans mesure indépendante. "
