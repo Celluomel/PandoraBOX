@@ -382,6 +382,41 @@ def test_identity_action_detector_does_not_infer_expression_absence_from_unrelat
     assert engine._identity_action_detector_status == "insufficient_behavioral_observation"
 
 
+def test_legacy_unverified_absence_event_is_invalidated_and_preserved(tmp_path):
+    import json
+
+    event_path = tmp_path / "cde-events.json"
+    source_event = {
+        "id": "legacy-curiosity",
+        "type": "identity_vs_action",
+        "belief_ref": "I am curious",
+        "action_ref": "no exploration action taken",
+        "intensity": 0.45,
+        "resolved": False,
+        "resolution_status": "unverified_no_resolution_receipt",
+        "resolution_evidence_ref": "",
+    }
+    event_path.write_text(
+        json.dumps({"schema": "lumina_cde_events.v1", "events": [source_event]}),
+        encoding="utf-8",
+    )
+
+    engine = CognitiveDissonanceEngine(str(event_path))
+
+    assert engine.pending_count() == 0
+    assert len(engine._events) == 1
+    migrated = engine._events[0]
+    assert migrated.invalidated is True
+    assert migrated.resolved is False
+    assert migrated.resolution_status == "invalidated_insufficient_observation"
+    assert migrated.resolution_evidence_ref == ""
+    saved = json.loads(event_path.read_text(encoding="utf-8"))
+    assert len(saved["events"]) == 1
+    assert saved["events"][0]["id"] == "legacy-curiosity"
+    assert saved["events"][0]["belief_ref"] == "I am curious"
+    assert saved["events"][0]["invalidated"] is True
+
+
 def test_later_successful_exploration_receipt_closes_only_its_linked_incident(tmp_path):
     from cognition.thought_thread_engine import (
         ThoughtThread, ThoughtThreadEngine, ThoughtThreadStatus, TTEContext,

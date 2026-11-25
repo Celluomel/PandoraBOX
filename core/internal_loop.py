@@ -3451,6 +3451,12 @@ class InternalThoughtLoop:
                         "identity_action_detector_status": str(
                             _cde_report.get("identity_action_detector_status", "unreported")
                         ),
+                        "invalidated_event_history_count": int(
+                            _cde_report.get("invalidated_event_history_count", 0)
+                        ),
+                        "legacy_invalidated_event_count": int(
+                            _cde_report.get("legacy_invalidated_event_count", 0)
+                        ),
                         "event_store_status": str(
                             _cde_report.get("event_store_status", "unreported")
                         ),

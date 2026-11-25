@@ -54,6 +54,10 @@ _EXPLORATION_ACTIONS = {
     "bisociative_hypothesis", "explore", "research",
 }
 _EXPRESSION_ACTIONS = {"user_question", "express", "respond"}
+_LEGACY_ABSENCE_ACTION_REFS = {
+    "no exploration action taken",
+    "no expression action taken",
+}
 
 
 # ── Types ──────────────────────────────────────────────────────────────────────
@@ -78,6 +82,7 @@ class DissonanceEvent:
     actual:       Optional[Dict]  = None
     intensity:    float           = 0.5
     resolved:     bool            = False
+    invalidated:  bool            = False
     resolution_status: str        = "pending"
     resolution_evidence_ref: str  = ""
     observation_count: int         = 1
@@ -118,6 +123,7 @@ class CognitiveDissonanceEngine:
         self._path = Path(persistence_path) if persistence_path else None
         self._lock = threading.RLock()
         self._events: List[DissonanceEvent] = []
+        self._legacy_invalidated_event_count = 0
         self._last_persistence_status = "not_attempted"
         self._prediction_detector_status = "not_run"
         self._load_failed = False
@@ -140,6 +146,7 @@ class CognitiveDissonanceEngine:
             "event_store_event_count": len(self._events),
             "prediction_detector_status": self._prediction_detector_status,
             "identity_action_detector_status": "not_run",
+            "legacy_invalidated_event_count": 0,
         }
         logger.info(
             "[CDE] CognitiveDissonanceEngine initialised — event_store=%s events=%d",
@@ -158,6 +165,7 @@ class CognitiveDissonanceEngine:
             if not isinstance(rows, list):
                 raise ValueError("CDE event journal events must be a list")
             loaded = []
+            invalidated = 0
             for row in rows:
                 if not isinstance(row, dict):
                     continue
@@ -168,9 +176,32 @@ class CognitiveDissonanceEngine:
                 except (KeyError, TypeError, ValueError):
                     continue
                 if event.id:
+                    # Older CDE versions treated a missing action in a sparse
+                    # receipt list as a contradiction. Preserve the full
+                    # historical event, but remove an unverified open event
+                    # from the active set after fixing that causal bug.
+                    if (
+                        event.type == DissonanceEventType.IDENTITY_VS_ACTION
+                        and str(event.action_ref or "").strip().casefold()
+                        in _LEGACY_ABSENCE_ACTION_REFS
+                        and not event.resolved
+                        and not event.invalidated
+                        and event.resolution_status == "unverified_no_resolution_receipt"
+                        and not str(event.resolution_evidence_ref or "").strip()
+                    ):
+                        event.invalidated = True
+                        event.resolution_status = "invalidated_insufficient_observation"
+                        invalidated += 1
                     loaded.append(event)
             self._events = self._retain_events(loaded)
+            self._legacy_invalidated_event_count = invalidated
             self._last_persistence_status = "loaded" if loaded else "loaded_empty"
+            if invalidated:
+                if not self._save_events():
+                    self._last_persistence_status = (
+                        "migration_persistence_failed:"
+                        + self._last_persistence_status
+                    )
         except FileNotFoundError:
             self._last_persistence_status = "new_store"
         except Exception as exc:
@@ -217,8 +248,8 @@ class CognitiveDissonanceEngine:
     @staticmethod
     def _retain_events(events: List[DissonanceEvent]) -> List[DissonanceEvent]:
         """Keep every open event (TTE may reference it), plus recent resolved history."""
-        unresolved = [event for event in events if not event.resolved]
-        resolved = [event for event in events if event.resolved]
+        unresolved = [event for event in events if not event.resolved and not event.invalidated]
+        resolved = [event for event in events if event.resolved or event.invalidated]
         retained_ids = {event.id for event in unresolved}
         retained_ids.update(event.id for event in resolved[-MAX_DISSONANCE_EVENTS:])
         return sorted(
@@ -270,7 +301,8 @@ class CognitiveDissonanceEngine:
             )
 
         unresolved_by_signature = {
-            signature(event): event for event in self._events if not event.resolved
+            signature(event): event for event in self._events
+            if not event.resolved and not event.invalidated
         }
         new_events: List[DissonanceEvent] = []
         self._last_reobserved_count = 0
@@ -418,7 +450,7 @@ class CognitiveDissonanceEngine:
                     "thread": thread,
                 }
         for ev in events:
-            if ev.resolved:
+            if ev.resolved or ev.invalidated:
                 continue
 
             receipt = receipts.get(ev.id)
@@ -483,7 +515,10 @@ class CognitiveDissonanceEngine:
                 # A belief/evidence pair that resolves dissonance is not an
                 # intervention comparison and must not become a causal claim.
 
-        logger.debug(f"[CDE] Verified resolutions: {sum(1 for e in events if e.resolved)}")
+        logger.debug(
+            "[CDE] Verified resolutions: %d",
+            sum(1 for event in events if event.resolution_status == "verified_resolved"),
+        )
         # Persist both newly detected and resolved events. TTE stores the
         # event ID on its meta-thread; losing this journal on restart would
         # leave that durable thread detached from its source observation.
@@ -559,11 +594,16 @@ class CognitiveDissonanceEngine:
             # success look like a fresh cognitive effect on every later cycle.
             "verified_resolved_event_count": sum(
                 1 for event in self._events
-                if event.resolved and id(event) not in previously_resolved_event_objects
+                if event.resolution_status == "verified_resolved"
+                and id(event) not in previously_resolved_event_objects
             ),
             "resolved_event_history_count": sum(
                 1 for event in self._events if event.resolved
             ),
+            "invalidated_event_history_count": sum(
+                1 for event in self._events if event.invalidated
+            ),
+            "legacy_invalidated_event_count": int(self._legacy_invalidated_event_count),
             "verified_action_counterevidence_count": int(
                 getattr(self, "_last_counterevidence_count", 0)
             ),
@@ -574,6 +614,7 @@ class CognitiveDissonanceEngine:
                 {"id": str(event.id), "type": event.type.value,
                  "intensity": round(float(event.intensity), 3),
                  "resolved": bool(event.resolved),
+                 "invalidated": bool(event.invalidated),
                  "resolution_status": str(event.resolution_status),
                  "observation_count": int(event.observation_count),
                  "resolution_evidence_ref": str(event.resolution_evidence_ref or "")[:48]}
@@ -654,7 +695,8 @@ class CognitiveDissonanceEngine:
                 action_receipts.append((source, receipt))
 
         for event in events:
-            if event.resolved or event.type != DissonanceEventType.IDENTITY_VS_ACTION:
+            if (event.resolved or event.invalidated
+                    or event.type != DissonanceEventType.IDENTITY_VS_ACTION):
                 continue
             expected_actions = candidates.get(str(event.action_ref or "").strip().casefold())
             thread = by_event.get(str(event.id))
@@ -932,4 +974,4 @@ class CognitiveDissonanceEngine:
         event.hypotheses = hyps[:2]
 
     def pending_count(self) -> int:
-        return sum(1 for e in self._events if not e.resolved)
+        return sum(1 for event in self._events if not event.resolved and not event.invalidated)
