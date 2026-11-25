@@ -1875,9 +1875,9 @@ class GoalEngine:
             filtered_topics = list(topics)
 
             # ── 6. Generate and add goal candidates ───────────────────────────
-            # Governor gate: when pressure is high or mode is structured,
-            # block new autonomous goal generation. The governor is accessed
-            # through the ai_system reference if available.
+            # Governor safety gate: high pressure or a saturated live-goal
+            # pool blocks generation. Scheduler mode alone is not a veto.
+            # The governor is accessed through ai_system when available.
             _gov = None
             try:
                 _il = getattr(self.ai_system, '_internal_loop', None)
@@ -1911,7 +1911,7 @@ class GoalEngine:
                     )
             elif _generation_blocked:
                 logger.debug(
-                    "[GoalEngine] goal generation blocked by governor "
+                    "[GoalEngine] goal generation blocked by governor safety ceiling "
                     f"(mode={getattr(_gov, 'mode', 'unknown')}, "
                     f"pressure={getattr(_gov, '_pressure', 0):.2f})"
                 )

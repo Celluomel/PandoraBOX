@@ -16,9 +16,9 @@ What the Governor does
 ----------------------
 1. **Mode**: ``structured`` (safe, deterministic) or ``exploratory``
    (creative, emergent). Only one is active at a time.
-   Structured mode blocks new autonomous goal generation and limits which
-   subsystems may run. Exploratory mode permits emergence but with a cycle
-   budget cap to prevent runaway recursion.
+   Structured mode limits enrichment subsystems. Goal generation has separate
+   explicit safety guards (pressure and live-goal-pool ceilings), so mode
+   hysteresis cannot starve GoalEngine indefinitely.
 
 2. **Cycle budget**: at the start of each slow cycle a budget (max subsystems
    allowed to fire) is set based on current total pressure. High pressure →
@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 # CRITICAL  — always run, not budget-counted
 # CORE      — run unless budget exhausted; run in both modes
 # ENRICHMENT— only in exploratory mode, consumed from budget
-# GOAL_GEN  — blocked by pressure ceiling; exploratory mode only
+# GOAL_GEN  — blocked by pressure and live-goal-pool ceilings
 
 TIER_CRITICAL   = "critical"
 TIER_CORE       = "core"
@@ -279,7 +279,7 @@ class CognitiveGovernor:
         Decision tree
         -------------
         CRITICAL     → always True (not budget-counted)
-        GOAL_GEN     → True only if below pressure ceiling AND exploratory mode
+        GOAL_GEN     → True below pressure and live-goal-pool ceilings
         ENRICHMENT   → True only if exploratory mode AND budget > 0
         CORE         → True if budget > 0 AND not quorum-blocked
         """
@@ -290,14 +290,20 @@ class CognitiveGovernor:
             self._this_cycle_run.append(subsystem)
             return True
 
-        # ── Goal generation: pressure ceiling + mode gate ─────────────────────
+        # ── Goal generation: explicit safety ceilings, independent of mode ────
         if tier == TIER_GOAL_GEN:
-            if self.block_goal_generation():
-                self._this_cycle_blocked.append(f"{subsystem}(pressure_ceiling)")
+            if self._pressure >= self.GOAL_GEN_PRESSURE_CEILING:
+                reason = "pressure_ceiling"
+            elif self._goal_count >= self.HIGH_GOAL_COUNT:
+                reason = "goal_pool_ceiling"
+            else:
+                reason = ""
+            if reason:
+                self._this_cycle_blocked.append(f"{subsystem}({reason})")
                 logger.debug(
                     f"[Governor] BLOCKED {subsystem}: "
-                    f"pressure_ceiling={self._pressure:.2f}>={self.GOAL_GEN_PRESSURE_CEILING} "
-                    f"or mode={self.mode}"
+                    f"reason={reason} pressure={self._pressure:.2f} "
+                    f"goals={self._goal_count} mode={self.mode}"
                 )
                 return False
             # Still costs a budget slot
@@ -353,10 +359,13 @@ class CognitiveGovernor:
         """
         True when new autonomous goal generation must be suppressed.
         Called by GoalEngine.tick() as well as by may_run().
+
+        Scheduler mode gates enrichment work; it is not a goal-generation
+        safety condition. These explicit ceilings are shared by both paths.
         """
         return (
             self._pressure >= self.GOAL_GEN_PRESSURE_CEILING
-            or self.mode == self.MODE_STRUCTURED
+            or self._goal_count >= self.HIGH_GOAL_COUNT
         )
 
     def status(self) -> GovernorStatus:

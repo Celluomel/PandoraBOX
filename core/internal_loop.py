@@ -2809,7 +2809,10 @@ class InternalThoughtLoop:
                 )
                 logger.debug(f"[InternalLoop] Goal engine tick error: {_ge_e}")
         elif _ge is not None:
-            self._record_cycle_stage("goal_engine_tick", "skipped_governor")
+            self._record_cycle_stage(
+                "goal_engine_tick", "skipped_governor",
+                metrics=self._governor_skip_metrics("GoalEngine"),
+            )
         else:
             self._record_cycle_stage("goal_engine_tick", "unavailable")
 

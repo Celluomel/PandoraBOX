@@ -1043,6 +1043,31 @@ def test_governor_initializes_exploratory_mode_immediately_when_goal_pool_is_emp
     assert governor.may_run("GoalEngine") is True
 
 
+def test_structured_hysteresis_does_not_starve_goal_engine_below_safety_ceilings():
+    governor = CognitiveGovernor()
+
+    for cycle in range(1, 41):
+        governor.begin_cycle(total_pressure=0.4323, goal_count=6, cycle_number=cycle)
+        assert governor.mode == CognitiveGovernor.MODE_STRUCTURED
+        assert governor.block_goal_generation() is False
+        assert governor.may_run("GoalEngine") is True
+
+
+def test_goal_generation_has_explicit_pressure_and_goal_pool_guards():
+    governor = CognitiveGovernor()
+    governor.begin_cycle(total_pressure=0.60, goal_count=4, cycle_number=1)
+
+    assert governor.block_goal_generation() is True
+    assert governor.may_run("GoalEngine") is False
+    assert governor.status().blocked_systems == ["GoalEngine(pressure_ceiling)"]
+
+    governor.begin_cycle(total_pressure=0.40, goal_count=15, cycle_number=2)
+
+    assert governor.block_goal_generation() is True
+    assert governor.may_run("GoalEngine") is False
+    assert governor.status().blocked_systems == ["GoalEngine(goal_pool_ceiling)"]
+
+
 def test_governor_cycle_snapshot_is_auditable_without_prose_or_private_state():
     governor = CognitiveGovernor()
     snapshot = governor.begin_cycle(
