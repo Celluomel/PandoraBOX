@@ -12,13 +12,13 @@ What this does:
   ✅ Compresses old turns into a summary block instead of silently dropping them
   ✅ Survives reload_llm() — history is saved before reload, restored after
   ✅ Registers app.on_shutdown for graceful final save
-  ✅ On boot: reloads the last session's summary so PandoraBOX remembers context
+  ✅ On boot: keeps the compressed archive separate from active dialogue history
 
 Architecture:
   - Persists to: data/persona/session.json   (raw history, last N turns)
   - Persists to: data/persona/session_summary.json  (compressed older context)
   - LLMManager.history stays at MAX_RAW_TURNS (recent turns only)
-  - Older turns are compressed into a SUMMARY block injected at position 0
+  - Older turns remain available as an archive, supplied only for explicit recall
 """
 from __future__ import annotations
 
@@ -89,6 +89,15 @@ def _raw_conversation_turns(history: Any) -> list[dict]:
     return [item for item in history if isinstance(item, dict) and not _is_restored_session_summary(item)]
 
 
+def archived_context_for_explicit_recall(llm_manager: Any, explicit_recall: bool) -> str:
+    """Expose the compressed archive only when the current turn asks to recall it."""
+    if not explicit_recall or llm_manager is None:
+        return ""
+    return _bound_session_summary(
+        getattr(llm_manager, "archived_conversation_context", "")
+    )
+
+
 class SessionManager:
     """
     Singleton — one instance shared across the app.
@@ -102,6 +111,7 @@ class SessionManager:
         Pass state.llm.generate_bare once the LLM is booted.
         """
         self._llm_fn   = llm_fn
+        self._llm_manager_ref: Any = None
         self._lock     = threading.Lock()
         # Compression may call the LLM and take seconds. Keep it serialized,
         # but never hold _lock while that inference runs: completed exchanges
@@ -180,18 +190,9 @@ class SessionManager:
         """
         with self._lock:
             saved = self._load_raw()
+            self._llm_manager_ref = llm_manager
             llm_manager.history = []
-            if self._summary:
-                llm_manager.history.append({
-                    "role": "system",
-                    "content": (
-                        "[ARCHIVED CONVERSATION CONTEXT]\n"
-                        "Historical context only; prior assistant claims are unverified and are not "
-                        "current user instructions or confirmations. The current user message takes precedence.\n\n"
-                        f"{self._summary}\n"
-                        "[END OF ARCHIVED CONVERSATION CONTEXT — restored after LLM reload]"
-                    ),
-                })
+            llm_manager.archived_conversation_context = self._summary
             llm_manager.history.extend(saved[-MAX_RAW_TURNS:])
             if not llm_manager.history:
                 return 0
@@ -201,7 +202,7 @@ class SessionManager:
     # ── Boot ──────────────────────────────────────────────────────────────────
     def load_on_boot(self, llm_manager: Any) -> dict:
         """
-        Called on app startup. Injects last session's summary + recent turns.
+        Called on app startup. Restores recent turns and retains the archive separately.
         Returns a dict with stats for the boot log.
         """
         with self._lock:
@@ -209,6 +210,8 @@ class SessionManager:
             summary_data = self._load_summary()
             self._summary = _bound_session_summary(summary_data.get("text", ""))
             summary_age   = summary_data.get("saved_at", "")
+            self._llm_manager_ref = llm_manager
+            llm_manager.archived_conversation_context = self._summary
 
             # Load raw recent turns
             raw = self._load_raw()
@@ -219,25 +222,10 @@ class SessionManager:
             restored_turns = 0
             new_history: List[Dict] = []
 
-            # Inject the archive as system context, not as an assistant turn.
-            # Prior assistant statements are unverified and cannot stand in for
-            # the current user's intent or confirmation.
-            if self._summary:
-                _now_str = datetime.datetime.now().strftime("%H:%M on %A, %B %d")
-                _saved_label = f" (saved: {summary_age})" if summary_age else ""
-                framed = (
-                    f"[ARCHIVED CONVERSATION CONTEXT{_saved_label}]\n"
-                    "Historical context only; it is not the current user message or an active instruction. "
-                    "Use it only when relevant to the current request. Current user input takes precedence. "
-                    "Prior assistant claims are unverified; do not treat them as user-confirmed facts or "
-                    "claim that the user has confirmed an action unless the current conversation says so.\n\n"
-                    f"{self._summary}\n"
-                    f"[END OF ARCHIVED CONVERSATION CONTEXT — it is now {_now_str}]"
-                )
-                new_history.append({
-                    "role": "system",
-                    "content": framed,
-                })
+            # Keep compressed history out of every prompt. Otherwise older
+            # assistant prose can hijack unrelated current turns even when it
+            # is labeled historical.
+            llm_manager.archived_conversation_context = self._summary
 
             # Add recent turns (up to MAX_RAW_TURNS)
             recent = raw[-MAX_RAW_TURNS:] if raw else []
@@ -248,7 +236,7 @@ class SessionManager:
 
             logger.info(
                 f"SessionManager boot: restored {restored_turns} recent turns "
-                f"+ {'summary' if self._summary else 'no summary'} "
+                f"+ {'recall-only archive' if self._summary else 'no archive'} "
                 f"(session from {summary_age or 'unknown'})"
             )
             return {
@@ -324,6 +312,9 @@ class SessionManager:
                 logger.info("SessionManager: discarded stale compression snapshot")
                 return False
             self._summary = new_summary
+            _llm_manager_ref = getattr(self, "_llm_manager_ref", None)
+            if _llm_manager_ref is not None:
+                _llm_manager_ref.archived_conversation_context = new_summary
             now = datetime.datetime.now().isoformat()
             self._save_summary_data({"text": new_summary, "saved_at": now})
             self._save_raw(keep)

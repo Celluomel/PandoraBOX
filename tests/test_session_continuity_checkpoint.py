@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from managers.llm_manager import LLMManager
-from managers.session_manager import SessionManager
+from managers.session_manager import SessionManager, archived_context_for_explicit_recall
 from core.state import _create_llm_with_restored_session
 
 
@@ -207,7 +207,7 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
         self.assertEqual(saved, "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nUpdated bounded summary.")
         self.assertNotIn("[ADDITIONAL CONTEXT]", saved)
 
-    def test_legacy_oversized_summary_is_bounded_when_restored(self):
+    def test_legacy_oversized_summary_is_bounded_but_not_injected_into_history(self):
         with tempfile.TemporaryDirectory() as folder:
             raw_path = Path(folder) / "session.json"
             summary_path = Path(folder) / "summary.json"
@@ -224,17 +224,14 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
                 llm = SimpleNamespace(history=[])
                 receipt = session.load_on_boot(llm)
 
-        restored = llm.history[0]["content"]
         self.assertTrue(receipt["restored"])
-        self.assertEqual(llm.history[0]["role"], "system")
-        self.assertLessEqual(len(restored), 10_600)  # includes the system-context wrapper
-        self.assertIn("ACTIVE OBJECTIVE", restored)
-        self.assertIn("LATEST STATE", restored)
-        self.assertIn("Middle of older session summary omitted", restored)
-        self.assertIn("Historical context only", restored)
-        self.assertIn("Prior assistant claims are unverified", restored)
+        self.assertEqual(llm.history, [])
+        self.assertLessEqual(len(llm.archived_conversation_context), 10_000)
+        self.assertIn("ACTIVE OBJECTIVE", llm.archived_conversation_context)
+        self.assertIn("LATEST STATE", llm.archived_conversation_context)
+        self.assertIn("Middle of older session summary omitted", llm.archived_conversation_context)
 
-    def test_archived_claim_is_system_context_before_current_checking_turn(self):
+    def test_archived_claim_is_separate_from_current_checking_turn(self):
         with tempfile.TemporaryDirectory() as folder:
             raw_path = Path(folder) / "session.json"
             summary_path = Path(folder) / "summary.json"
@@ -256,10 +253,23 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
                 llm = SimpleNamespace(history=[])
                 session.load_on_boot(llm)
 
-        self.assertEqual(llm.history[0]["role"], "system")
-        self.assertEqual(llm.history[-1], {"role": "user", "content": "checking"})
-        self.assertIn("Prior assistant claims are unverified", llm.history[0]["content"])
-        self.assertIn("takes precedence", llm.history[0]["content"])
+        self.assertEqual(llm.history, [{"role": "user", "content": "checking"}])
+        self.assertIn("The user confirmed the next step", llm.archived_conversation_context)
+        self.assertEqual(archived_context_for_explicit_recall(llm, False), "")
+        self.assertIn(
+            "LUMINA-MEMORY-8B2R",
+            archived_context_for_explicit_recall(llm, True),
+        )
+
+    def test_explicit_recall_archive_requires_recall_intent(self):
+        llm = SimpleNamespace(
+            archived_conversation_context="Historical marker: LUMINA-MEMORY-8B2R",
+        )
+        self.assertEqual(archived_context_for_explicit_recall(llm, False), "")
+        self.assertEqual(
+            archived_context_for_explicit_recall(llm, True),
+            llm.archived_conversation_context,
+        )
 
     def test_fallback_summary_stays_bounded_across_compressions(self):
         session = SessionManager.__new__(SessionManager)
@@ -335,11 +345,9 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
                 reloaded = SimpleNamespace(history=[])
                 count = session.restore_after_reload(reloaded)
 
-        self.assertEqual(count, 3)
-        self.assertEqual(reloaded.history[0]["role"], "system")
-        self.assertIn("[ARCHIVED CONVERSATION CONTEXT", reloaded.history[0]["content"])
-        self.assertIn("current user message takes precedence", reloaded.history[0]["content"])
-        self.assertEqual(reloaded.history[-2:], [
+        self.assertEqual(count, 2)
+        self.assertEqual(reloaded.archived_conversation_context, "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nCanonical summary")
+        self.assertEqual(reloaded.history, [
             {"role": "user", "content": "recent question"},
             {"role": "assistant", "content": "recent answer"},
         ])
