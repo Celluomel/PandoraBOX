@@ -694,6 +694,7 @@ def explicit_recall_source_result(
 
     evidence = filter_recall_query_records(memories, query=value)
     focus = set(tokenize(_explicit_recall_focus(value)))
+    requested_value_types = set(tokenize(" ".join(_EXACT_VALUE_TYPE_RE.findall(value))))
     candidates = []
     for memory in evidence:
         kind = str(memory.get("memory_type", "")).casefold()
@@ -701,6 +702,8 @@ def explicit_recall_source_result(
             continue
         source_text = extract_user_authored_text(memory)
         source_terms = set(tokenize(source_text))
+        if asks_exact_text and requested_value_types and not (requested_value_types & source_terms):
+            continue
         overlap = len(focus & source_terms)
         if asks_prior_question:
             # When the request identifies a topic, require a lexical anchor;

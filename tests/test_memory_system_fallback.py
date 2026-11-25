@@ -803,6 +803,18 @@ class MemorySystemFallbackTests(unittest.TestCase):
             archive,
         ))
 
+    def test_indexed_recall_does_not_cross_match_exact_value_types(self):
+        source = {
+            "memory_type": "user_message",
+            "text": "User message: For this cognitive harness audit, remember this exact temporary marker: cobalt fern 8421.",
+            "relevance": 1.0,
+        }
+
+        self.assertIsNone(explicit_recall_source_result(
+            "What exact checksum did I give you for the cognitive harness audit?",
+            [source],
+        ))
+
     def test_one_phrase_response_format_does_not_request_verbatim_recall(self):
         query = (
             "Quelle règle ai-je formulée pour les informations des capteurs ? "
