@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 from managers.llm_manager import LLMManager
 from managers.session_manager import SessionManager, archived_context_for_explicit_recall
 from core.state import _create_llm_with_restored_session
+from cognition.memory_retrieval import explicit_recall_archive_source_result
 
 
 class _Provider:
@@ -236,6 +237,42 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
         self.assertIn("Recent task state only.", saved)
         self.assertIn("Retrieved user-authored source (verbatim):", saved)
         self.assertIn("cobalt fern 8421", saved)
+
+    def test_exact_archive_recall_survives_compress_save_and_cold_boot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "session.json"
+            summary_path = Path(folder) / "summary.json"
+
+            def summarize(_prompt, _system):
+                return "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nOnly the latest task remains."
+
+            with patch("managers.session_manager.SESSION_PATH", str(raw_path)), patch(
+                "managers.session_manager.SUMMARY_PATH", str(summary_path)
+            ):
+                writer = SessionManager(llm_fn=summarize)
+                prior_source = (
+                    'Retrieved user-authored source (verbatim): '
+                    '“For this audit, remember this exact marker for the next turn: cobalt fern 8421.”'
+                )
+                writer._summary = "Earlier summary that a lossy summarizer would drop.\n" + prior_source
+                writer._save_raw([
+                    {"role": "user", "content": f"recent turn {i}"}
+                    for i in range(10)
+                ])
+                self.assertTrue(writer._compress_unlocked())
+
+                reader = SessionManager()
+                llm = SimpleNamespace(history=[])
+                receipt = reader.load_on_boot(llm)
+                query = "What exact marker did I give you for the next turn in this audit?"
+                result = explicit_recall_archive_source_result(
+                    query, archived_context_for_explicit_recall(llm, True),
+                )
+
+        self.assertTrue(receipt["has_summary"])
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "supported_compressed_archive_source")
+        self.assertIn("cobalt fern 8421", result["answer"])
 
     def test_legacy_oversized_summary_is_bounded_but_not_injected_into_history(self):
         with tempfile.TemporaryDirectory() as folder:
