@@ -36,6 +36,7 @@ from cognition.body_runtime.robot_capabilities import robot_capability_report, r
 from cognition.memory_retrieval import (
     exact_filename_recall_result,
     explicit_recall_source_result,
+    explicit_recall_archive_source_result,
     explicit_recall_abstention_result,
     extract_explicit_recall_topic,
     filter_recall_query_records,
@@ -1347,7 +1348,9 @@ class PersonaBridge:
             summary["validation_method"] = "exact_source_text_match"
             if review.get("source_ref"):
                 summary["source_ref"] = str(review["source_ref"])[:40]
-            if review.get("source_status") in {"supported", "supported_verbatim_source"}:
+            if review.get("source_status") in {
+                "supported", "supported_verbatim_source", "supported_compressed_archive_source",
+            }:
                 summary["source_status"] = review["source_status"]
             summary["exact_source_match"] = status == "passed_source_grounded"
         elif status == "passed_source_abstention":
@@ -3496,21 +3499,34 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 _memory_recall_result, _archive_context,
             )
             if _archive_deferred:
-                _memory_recall_result = {
-                    "answer": "",
-                    "status": "delegated_to_session_archive",
-                    "source_ref": "compressed_session_archive",
-                    "source_type": "compressed_session_archive",
-                    "relevance": None,
-                }
-                _deterministic_response = ""
-                _detail = (
-                    "The vector/user-authored lanes had no eligible source. A compressed session archive "
-                    "is available in the assembled prompt, so generation interprets that historical summary "
-                    "instead of returning the empty-source abstention. The result must remain attributed and "
-                    "must not be represented as a verbatim transcript."
+                _archive_source_result = explicit_recall_archive_source_result(
+                    effective_input, _archive_context,
                 )
-                _consumes = ("memory_retrieval", "session_archive", "turn_input")
+                if _archive_source_result is not None:
+                    _memory_recall_result = _archive_source_result
+                    _deterministic_response = str(_archive_source_result.get("answer") or "")
+                    _detail = (
+                        "Exact recall was extracted from an explicitly provenance-labelled excerpt in the "
+                        "compressed session archive. The answer identifies the archive as its source; it does "
+                        "not claim independent verification against the raw transcript."
+                    )
+                    _consumes = ("memory_retrieval", "session_archive", "turn_input")
+                else:
+                    _memory_recall_result = {
+                        "answer": "",
+                        "status": "delegated_to_session_archive",
+                        "source_ref": "compressed_session_archive",
+                        "source_type": "compressed_session_archive",
+                        "relevance": None,
+                    }
+                    _deterministic_response = ""
+                    _detail = (
+                        "The vector/user-authored lanes had no eligible source. A compressed session archive "
+                        "is available in the assembled prompt, so generation interprets that historical summary "
+                        "instead of returning the empty-source abstention. The result must remain attributed and "
+                        "must not be represented as a verbatim transcript."
+                    )
+                    _consumes = ("memory_retrieval", "session_archive", "turn_input")
             else:
                 _deterministic_response = str(_memory_recall_result.get("answer") or "")
                 _detail = (
@@ -4532,7 +4548,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             and (
                 (
                     _memory_recall_result.get("status")
-                    in {"supported", "supported_verbatim_source"}
+                    in {"supported", "supported_verbatim_source", "supported_compressed_archive_source"}
                     and bool(_memory_recall_result.get("source_ref"))
                 )
                 or str(_memory_recall_result.get("status") or "").startswith("abstained_")
@@ -4606,7 +4622,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             expected_source_answer = str(_memory_recall_result.get("answer") or "").strip()
             exact_result_match = bool(expected_source_answer) and raw_response.strip() == expected_source_answer
             source_supported = _memory_recall_result.get("status") in {
-                "supported", "supported_verbatim_source",
+                "supported", "supported_verbatim_source", "supported_compressed_archive_source",
             }
             _semantic_status = (
                 ("passed_source_grounded" if exact_result_match else "abstained_source_mismatch")

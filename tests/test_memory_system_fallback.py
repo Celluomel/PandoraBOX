@@ -20,6 +20,7 @@ from cognition.ai_system import retrieve_memories_for_user
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
     explicit_recall_source_result,
+    explicit_recall_archive_source_result,
     explicit_recall_abstention_result,
     should_defer_explicit_recall_to_archive,
     filter_recall_query_records,
@@ -750,6 +751,38 @@ class MemorySystemFallbackTests(unittest.TestCase):
         result = explicit_recall_source_result(query, [assistant_only])
 
         self.assertIsNone(result)
+
+    def test_exact_recall_can_extract_provenance_labelled_archive_excerpt(self):
+        query = "What was the test marker I gave you for the next turn in the cognitive harness audit?"
+        archive = (
+            'Assistant replied/claimed: Retrieved user-authored source (verbatim): '
+            "\u201cFor this cognitive harness audit, remember this exact temporary marker "
+            "for my next question: cobalt fern 8421.\u201d"
+        )
+
+        result = explicit_recall_archive_source_result(query, archive)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "supported_compressed_archive_source")
+        self.assertIn("cobalt fern 8421", result["answer"])
+        self.assertIn("Compressed session archive", result["answer"])
+        self.assertEqual(result["source_type"], "compressed_session_archive_user_excerpt")
+
+    def test_archive_recall_ignores_unlabelled_assistant_claims(self):
+        query = "What exact test marker did I give you for the cognitive harness audit?"
+        archive = (
+            "Assistant replied/claimed: The marker was cobalt fern 8421.\n"
+            "User asked/stated: What exact test marker did I give you?"
+        )
+
+        self.assertIsNone(explicit_recall_archive_source_result(query, archive))
+
+    def test_archive_source_extraction_is_limited_to_explicit_recall(self):
+        archive = (
+            'Retrieved user-authored source (verbatim): "Remember cobalt fern 8421."'
+        )
+
+        self.assertIsNone(explicit_recall_archive_source_result("How are you?", archive))
 
     def test_one_phrase_response_format_does_not_request_verbatim_recall(self):
         query = (

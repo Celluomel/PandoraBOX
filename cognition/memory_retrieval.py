@@ -751,6 +751,57 @@ def explicit_recall_source_result(
     }
 
 
+_ARCHIVED_USER_SOURCE_RE = re.compile(
+    r"Retrieved user-authored source\s*\(verbatim\):\s*"
+    r"[\u201c\u00ab\"](?P<excerpt>[^\u201d\u00bb\"\r\n]{1,800})[\u201d\u00bb\"]",
+    re.IGNORECASE,
+)
+
+
+def explicit_recall_archive_source_result(
+    query: str, archived_context: str,
+) -> dict | None:
+    """Extract an exact-recall answer only from provenance-labelled archive excerpts.
+
+    The compressed summary is not a raw transcript. The returned wording keeps
+    that limitation explicit and attributes the excerpt to the archive's own
+    provenance label rather than claiming independent transcript verification.
+    """
+    if not is_explicit_memory_recall_query(query) or not str(archived_context or "").strip():
+        return None
+    query_text = str(query or "")
+    if not _EXACT_VALUE_RECALL_PATTERN.search(query_text):
+        return None
+    focus = set(tokenize(_explicit_recall_focus(query_text)))
+    if len(focus) < 2:
+        return None
+
+    candidates = []
+    for match in _ARCHIVED_USER_SOURCE_RE.finditer(str(archived_context)):
+        excerpt = re.sub(r"\s+", " ", match.group("excerpt")).strip()
+        if not excerpt:
+            continue
+        overlap = len(focus & set(tokenize(excerpt)))
+        required_overlap = min(len(focus), max(2, math.ceil(len(focus) * 0.5)))
+        if overlap < required_overlap:
+            continue
+        source_key = hashlib.sha256(excerpt.encode("utf-8", errors="replace")).hexdigest()
+        recalled = {
+            "answer": f'Compressed session archive records this excerpt as user-authored verbatim: “{excerpt}”',
+            "status": "supported_compressed_archive_source",
+            "source_ref": hashlib.sha256(
+                f"compressed-session-archive:{source_key}".encode("utf-8")
+            ).hexdigest()[:20],
+            "source_type": "compressed_session_archive_user_excerpt",
+            "relevance": round(overlap / max(1, len(focus)), 4),
+        }
+        candidates.append((overlap, recalled))
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
 def explicit_recall_abstention_result(
     query: str, memories: Sequence[dict],
 ) -> dict | None:
