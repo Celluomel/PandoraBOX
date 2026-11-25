@@ -940,6 +940,54 @@ class LongHorizonPlanner:
             return False
         if LongHorizonPlanner.is_goal_execution_report_query(text):
             return True
+        # A question can ask what recorded execution progress *means* without
+        # explicitly saying "your plan". Treat the relationship between a
+        # current plan, a progress measure, and an inference about goal success
+        # as a factual self-report. Do not route an explicitly user-owned plan
+        # through Lumina's private planner state.
+        user_owned_plan = re.search(
+            r"\b(?:my|our|mon|ma|mes|notre|nos)\b.{0,48}"
+            r"\b(?:plans?|goals?|objectives?|buts?|objectifs?)\b",
+            text,
+        )
+        current_plan_reference = re.search(
+            r"\b(?:active|current|recorded|displayed|visible|selected|"
+            r"actif|active|actuellement|enregistr\w*|affich\w*|visible|"
+            r"sélectionné|selectionne)\b.{0,36}"
+            r"\b(?:plans?|goals?|objectives?|buts?|objectifs?)\b"
+            r"|\b(?:plans?|goals?|objectives?|buts?|objectifs?)\b.{0,36}"
+            r"\b(?:active|current|recorded|displayed|visible|selected|"
+            r"actif|actuellement|enregistr\w*|affich\w*|sélectionné|selectionne)\b",
+            text,
+        )
+        progress_measure = re.search(
+            r"\b\d+\s*/\s*\d+\b"
+            r"|\b(?:steps?|étapes?)\b.{0,48}\b(?:complete|completed|done|"
+            r"finished|terminé\w*|achevé\w*)\b",
+            text,
+        )
+        success_inference = (
+            re.search(
+                r"\b(?:mean|imply|indicate|prove|show|signifie|signifient|"
+                r"veut dire|impliqu\w*|prouve|indique)\b",
+                text,
+            )
+            and re.search(
+                r"\b(?:goal|objective|but|objectif)\w*\b.{0,64}"
+                r"\b(?:achieved|reached|complete|completed|attained|"
+                r"atteint\w*|réalisé\w*|accompli\w*)\b"
+                r"|\b(?:achieved|reached|attained|atteint\w*|réalisé\w*|"
+                r"accompli\w*)\b.{0,64}\b(?:goal|objective|but|objectif)\w*\b",
+                text,
+            )
+        )
+        if (
+            not user_owned_plan
+            and current_plan_reference
+            and progress_measure
+            and success_inference
+        ):
+            return True
         ownership_patterns = (
             r"\byour\s+(?:(?:actual|current|real|main|own|active)\s+)?goals?\b",
             r"\byour\s+(?:(?:actual|current|real|main|own|active)\s+)?plans?\b",
@@ -1235,6 +1283,10 @@ class LongHorizonPlanner:
                 and bool(str(step.execution_id or "").strip())
                 and float(step.observed_at or 0.0) > 0.0
             ]
+            measured_effect_steps = [
+                step for step in plan.steps
+                if step.status == "completed" and bool(step.effect_measured)
+            ]
             next_step = self.current_step(plan.aspiration_domain)
             source_goal = None
             if plan.source == "goal":
@@ -1267,6 +1319,7 @@ class LongHorizonPlanner:
                 "steps_completed": plan.steps_completed,
                 "steps_total": len(plan.steps),
                 "steps_with_execution_evidence": len(evidenced_steps),
+                "steps_with_measured_effect": len(measured_effect_steps),
                 "completed_steps_without_execution_evidence": max(
                     0, len(completed) - len(evidenced_steps)
                 ),
@@ -1569,9 +1622,16 @@ class LongHorizonPlanner:
                     f"{plan['steps_completed']}/{plan['steps_total']} étapes terminées; "
                     f"{plan.get('steps_with_execution_evidence', 0)} avec preuve d’exécution, "
                     f"{plan.get('completed_steps_without_execution_evidence', 0)} sans preuve; "
+                    f"{plan.get('steps_with_measured_effect', 0)} avec effet de plan mesuré; "
                     f"critère de l’objectif : "
                     f"{plan.get('success_criteria_status', 'inconnu')}."
                 )
+                if plan.get("success_criteria_status") != "verified":
+                    lines.append(
+                        "Le compteur d’étapes terminées décrit l’état enregistré du plan. Seules les "
+                        "étapes avec preuve attestent une exécution; ce compteur ne prouve pas que "
+                        "l’objectif est atteint. Son critère de réussite n’est pas vérifié."
+                    )
                 if plan.get("next_operation"):
                     lines.append(
                         f"Prochaine étape enregistrée : {plan['next_operation']} "
@@ -1623,8 +1683,15 @@ class LongHorizonPlanner:
                     f"{plan['steps_completed']}/{plan['steps_total']} steps complete; "
                     f"{plan.get('steps_with_execution_evidence', 0)} with execution evidence, "
                     f"{plan.get('completed_steps_without_execution_evidence', 0)} without; "
+                    f"{plan.get('steps_with_measured_effect', 0)} with a measured plan effect; "
                     f"goal criterion: {plan.get('success_criteria_status', 'unknown')}."
                 )
+                if plan.get("success_criteria_status") != "verified":
+                    lines.append(
+                        "The completed-step count is the plan's recorded state. Only steps with "
+                        "execution evidence attest execution; this count does not prove goal attainment. "
+                        "The goal success criterion is not verified."
+                    )
                 if plan.get("next_operation"):
                     lines.append(
                         f"Recorded next step: {plan['next_operation']} "

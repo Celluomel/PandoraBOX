@@ -1314,6 +1314,23 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertTrue(LongHorizonPlanner.is_self_report_query(question))
         self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
 
+    def test_interpreting_active_plan_progress_routes_to_factual_snapshot(self):
+        question = (
+            "Le plan actif indique 3/4 étapes terminées et aucune mesure indépendante "
+            "de résultat. Cela signifie-t-il que l’objectif est atteint, ou seulement "
+            "que des opérations ont été exécutées ?"
+        )
+        self.assertTrue(LongHorizonPlanner.is_self_report_query(question))
+        self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
+
+    def test_explicitly_user_owned_plan_does_not_route_to_lumina_self_report(self):
+        question = (
+            "Mon plan de projet a 3/4 étapes terminées sans mesure indépendante. "
+            "Cela signifie-t-il que mon objectif est atteint ?"
+        )
+        self.assertFalse(LongHorizonPlanner.is_self_report_query(question))
+        self.assertFalse(LongHorizonPlanner.is_goal_plan_query(question))
+
     def test_count_question_about_owned_goals_routes_to_live_self_report(self):
         question = "For this audit, how many active goals do you currently have?"
         self.assertTrue(LongHorizonPlanner.is_self_report_query(question))
@@ -1511,6 +1528,9 @@ class IntentionPlanningTests(unittest.TestCase):
 
         self.assertIn("memory about knowledge", report)
         self.assertIn("1/4 étapes terminées", report)
+        self.assertIn("0 avec effet de plan mesuré", report)
+        self.assertIn("ce compteur ne prouve pas que l’objectif est atteint", report)
+        self.assertIn("critère de réussite n’est pas vérifié", report)
         self.assertIn("self_question (état : pending)", report)
 
     def test_user_practical_task_cannot_become_autonomous_goal(self):
