@@ -307,6 +307,30 @@ def is_cognitive_audit_status_query(user_input: str) -> bool:
     return refers_to_audit and refers_to_self and asks_for_recorded_state
 
 
+def is_prompt_source_provenance_query(user_input: str) -> bool:
+    """Recognize a request to report which evidence sources entered this turn."""
+    text = " ".join(str(user_input or "").casefold().split())
+    asks_which_source = bool(re.search(
+        r"\b(?:what|which|quelle?s?|quels?|disting(?:uish|ue)|"
+        r"tell\s+me|dis[- ]moi|as[- ]tu|did\s+you|do\s+you)\b"
+        r".{0,100}\b(?:source|sources|provenance|context|m[eé]moire|"
+        r"information|donn[eé]es?)\b|"
+        r"\b(?:source|sources|provenance)\b.{0,100}\b(?:as[- ]tu|did\s+you|"
+        r"used|consult[eé]e?s?|retriev[eé]e?s?|inject[eé]e?s?|"
+        r"included|supplied|utilis[eé]e?s?|r[eé]cup[eé]r[eé]e?s?|"
+        r"inclus(?:e|es)?|fourni(?:e|es)?|employ[eé]e?s?)\b",
+        text,
+    ))
+    asks_about_delivery = bool(re.search(
+        r"\b(?:used|consult[eé]e?s?|retriev[eé]e?s?|inject[eé]e?s?|"
+        r"included|supplied|utilis[eé]e?s?|r[eé]cup[eé]r[eé]e?s?|"
+        r"inclus(?:e|es)?|fourni(?:e|es)?|employ[eé]e?s?|"
+        r"prompt|context|available|entr[eé]e?s?)\b",
+        text,
+    ))
+    return asks_which_source and asks_about_delivery
+
+
 def is_closed_world_cognitive_report_query(user_input: str) -> bool:
     """Whether a turn asks for a report answerable only from local records."""
     text = " ".join(str(user_input or "").casefold().split())

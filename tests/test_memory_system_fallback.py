@@ -30,6 +30,7 @@ from cognition.memory_retrieval import (
     is_visual_memory_query,
     merge_user_authored_memories,
     recent_dialogue_recall_source_result,
+    recent_dialogue_message_source_result,
 )
 from cognition.turn_context_evidence import format_memory_for_prompt
 
@@ -1227,6 +1228,34 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual(result["source_type"], "recent_user_dialogue")
         self.assertIn("NIMBUS-472", result["answer"])
         self.assertIsNone(result["relevance"])
+
+    def test_immediate_previous_message_recall_uses_nearest_user_turn_verbatim(self):
+        query = (
+            "Pour l audit des sources, rappelle le sujet de mon message "
+            "immédiatement précédent."
+        )
+        history = [
+            {"role": "user", "content": "Ancienne demande sans rapport."},
+            {"role": "assistant", "content": "Ancienne réponse."},
+            {"role": "user", "content": "La cause était l’absence d’un reçu de provenance par tour."},
+            {"role": "assistant", "content": "Cette réponse inventée ne doit pas devenir la source."},
+        ]
+
+        result = recent_dialogue_message_source_result(query, history)
+
+        self.assertEqual(result["status"], "supported_recent_dialogue_source")
+        self.assertEqual(result["source_type"], "recent_user_dialogue")
+        self.assertIn("La cause était l’absence d’un reçu", result["answer"])
+        self.assertNotIn("Cette réponse inventée", result["answer"])
+
+    def test_immediate_previous_message_recall_accepts_just_before_formulation(self):
+        query = "Résume en une phrase ma demande juste avant ce message."
+        history = [{"role": "user", "content": "Vérifie la provenance des sources mémoire."}]
+
+        result = recent_dialogue_message_source_result(query, history)
+
+        self.assertEqual(result["status"], "supported_recent_dialogue_source")
+        self.assertIn("Vérifie la provenance des sources mémoire", result["answer"])
 
     def test_immediate_exact_value_recall_never_treats_assistant_claim_as_source(self):
         query = "Quel code témoin ai-je demandé de retenir pour cette question ?"

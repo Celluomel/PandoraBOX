@@ -41,6 +41,7 @@ from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
     is_exact_value_recall_query,
     recent_dialogue_recall_source_result,
+    recent_dialogue_message_source_result,
     filter_recall_query_records,
     filter_memories_by_modality,
     is_explicit_memory_recall_query,
@@ -189,12 +190,168 @@ def _prompt_assembly_dependencies(stages: dict[str, Any]) -> tuple[str, ...]:
         "memory_prompt_context", "user_profile_context",
         "cognitive_prompt_context", "dominant_thought_context",
         "conversation_continuity_context", "self_description_context",
-        "affect_advisory_context",
+        "affect_advisory_context", "session_archive_retrieval",
+        "turn_source_provenance_context",
     ):
         stage = stages.get(name)
-        if isinstance(stage, dict) and stage.get("output_fingerprint"):
+        if (
+            isinstance(stage, dict)
+            and stage.get("output_fingerprint")
+            and stage.get("output_quality") not in {"empty", "skipped", "unavailable", "failed"}
+        ):
             dependencies.append(name)
     return tuple(dependencies)
+
+
+def _prompt_source_provenance(stages: dict[str, Any]) -> dict[str, Any]:
+    """Describe which source contexts were actually included in this prompt."""
+    dependencies = set(_prompt_assembly_dependencies(stages))
+    source_stages = {
+        "recent_conversation": "conversation_continuity_context",
+        "retrieved_memory": "memory_prompt_context",
+        "compressed_session_archive": "session_archive_retrieval",
+        "named_user_profile": "user_profile_context",
+        "cognitive_workspace": "cognitive_prompt_context",
+        "self_description": "self_description_context",
+        "affect_state": "affect_advisory_context",
+    }
+    sources = {}
+    for label, stage_name in source_stages.items():
+        stage = stages.get(stage_name)
+        if stage_name in dependencies:
+            status = "included_in_prompt"
+        elif isinstance(stage, dict) and stage.get("status") in {
+            "empty", "skipped_by_scope", "skipped_unavailable", "not_selected",
+        }:
+            status = "not_included"
+        else:
+            status = "not_recorded_for_turn"
+        sources[label] = {
+            "status": status,
+            "stage": stage_name,
+            "output_quality": (
+                str(stage.get("output_quality") or "")
+                if isinstance(stage, dict) else ""
+            ),
+        }
+    return {
+        "type": "prompt_source_provenance",
+        "sources": sources,
+        "prompt_dependencies": sorted(dependencies),
+        "interpretation_limit": (
+            "Included means supplied to generation, not proof the model attended to or relied on it. "
+            "Never claim a source was retrieved or used unless this turn's evidence records it."
+        ),
+    }
+
+
+def _render_prompt_source_provenance(provenance: dict[str, Any]) -> str:
+    """Render the exact per-turn source ledger as a compact model instruction."""
+    sources = provenance.get("sources") if isinstance(provenance, dict) else None
+    if not isinstance(sources, dict):
+        return ""
+    labels = {
+        "recent_conversation": "recent conversation history",
+        "retrieved_memory": "retrieved long-term memory",
+        "compressed_session_archive": "compressed session archive",
+        "named_user_profile": "named user profile",
+        "cognitive_workspace": "cognitive workspace state",
+        "self_description": "self-description context",
+        "affect_state": "affect state context",
+    }
+    lines = ["━━ CURRENT TURN SOURCE PROVENANCE ━━"]
+    for key, label in labels.items():
+        entry = sources.get(key)
+        status = str(entry.get("status") or "not_recorded_for_turn") if isinstance(entry, dict) else "not_recorded_for_turn"
+        lines.append(f"- {label}: {status}")
+    lines.append(
+        "When asked what information sources were available, report this ledger accurately. "
+        "Included means supplied to the model, not proof of attention or reliance. "
+        "Never claim retrieval or use of a source marked not_included or not_recorded_for_turn; "
+        "if asked what actually determined an answer, distinguish prompt availability from unobservable internal reliance."
+    )
+    return "\n".join(lines)
+
+
+def _render_prompt_source_provenance_answer(
+    provenance: dict[str, Any], *, recalled_source: dict[str, Any] | None = None,
+    french: bool = True,
+) -> str:
+    """Answer source-use questions from receipts without asking the LLM to self-report."""
+    sources = provenance.get("sources") if isinstance(provenance, dict) else {}
+    sources = sources if isinstance(sources, dict) else {}
+    history_status = str((sources.get("recent_conversation") or {}).get("status") or "not_recorded_for_turn")
+    memory_status = str((sources.get("retrieved_memory") or {}).get("status") or "not_recorded_for_turn")
+    archive_status = str((sources.get("compressed_session_archive") or {}).get("status") or "not_recorded_for_turn")
+    profile_status = str((sources.get("named_user_profile") or {}).get("status") or "not_recorded_for_turn")
+    cognitive_status = str((sources.get("cognitive_workspace") or {}).get("status") or "not_recorded_for_turn")
+    if french:
+        included = [
+            label for label, status in (
+                ("l’historique de conversation", history_status),
+                ("le profil utilisateur nommé", profile_status),
+                ("le contexte cognitif du workspace", cognitive_status),
+            ) if status == "included_in_prompt"
+        ]
+        opening = (
+            "Les reçus de ce tour attestent que " + ", ".join(included) + " ont été inclus dans le prompt."
+            if included else
+            "Les reçus de ce tour n’attestent aucun de ces contextes dans le prompt."
+        )
+        if memory_status == "included_in_prompt":
+            memory = "Un contexte de mémoire récupérée est attesté comme inclus dans le prompt."
+        elif memory_status == "not_included":
+            memory = (
+                "Le reçu de mémoire indique qu’aucun extrait de mémoire durable indexée n’a été inclus."
+                if archive_status == "included_in_prompt" else
+                "Le reçu de mémoire indique qu’aucun contexte de mémoire durable n’a été inclus."
+            )
+        else:
+            memory = "Aucun reçu de ce tour n’atteste qu’une mémoire durable ait été récupérée ou injectée."
+        if archive_status == "included_in_prompt":
+            memory += " Un extrait d’archive de session est inclus séparément."
+        elif archive_status == "not_included":
+            memory += " Le reçu indique qu’aucun extrait d’archive de session compressée n’a été inclus."
+        else:
+            memory += " Aucun reçu ne permet de confirmer si une archive de session compressée a été incluse."
+        limit = (
+            "Ces reçus prouvent ce qui a été fourni au modèle, pas quelle information a déterminé son raisonnement interne."
+        )
+    else:
+        included = [
+            label for label, status in (
+                ("conversation history", history_status),
+                ("named user profile", profile_status),
+                ("cognitive workspace context", cognitive_status),
+            ) if status == "included_in_prompt"
+        ]
+        opening = (
+            "This turn's receipts show that " + ", ".join(included) + " were included in the prompt."
+            if included else
+            "This turn's receipts do not attest that any of those contexts entered the prompt."
+        )
+        if memory_status == "included_in_prompt":
+            memory = "Retrieved memory context is recorded as included in the prompt."
+        elif memory_status == "not_included":
+            memory = (
+                "The memory receipt says no indexed durable-memory excerpt was included."
+                if archive_status == "included_in_prompt" else
+                "The memory receipt says no durable-memory context was included."
+            )
+        else:
+            memory = "No receipt for this turn attests that durable memory was retrieved or injected."
+        if archive_status == "included_in_prompt":
+            memory += " A compressed session archive excerpt was included separately."
+        elif archive_status == "not_included":
+            memory += " The receipt says no compressed session archive excerpt was included."
+        else:
+            memory += " No receipt establishes whether a compressed session archive excerpt was included."
+        limit = "Receipts prove what was supplied to the model, not which information determined its internal reasoning."
+    lines = []
+    if isinstance(recalled_source, dict) and recalled_source.get("status") == "supported_recent_dialogue_source":
+        lines.append(str(recalled_source.get("answer") or "").strip())
+    lines.extend((opening, memory, limit))
+    return " ".join(line for line in lines if line)
 
 
 def _is_factual_self_report_turn(
@@ -2876,6 +3033,7 @@ class PersonaBridge:
         _explicit_named_profile_query = (
             is_explicit_named_profile_query(effective_input) and not bool(peer_name)
         )
+        _prompt_source_provenance_query = False
         _api_route_query = False
         # This flag is consumed later inside the streaming worker below. It
         # must live in this method's scope; the prompt builder runs in a
@@ -2886,6 +3044,7 @@ class PersonaBridge:
                 is_runtime_execution_evidence_query,
                 is_internal_cognitive_query, is_cognitive_audit_status_query,
                 is_closed_world_cognitive_report_query,
+                is_prompt_source_provenance_query,
                 is_runtime_api_route_question,
             )
             from cognition.long_horizon_planner import LongHorizonPlanner
@@ -2893,6 +3052,7 @@ class PersonaBridge:
             _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
             _cognitive_audit_status_query = is_cognitive_audit_status_query(effective_input)
             _architecture_context_query = is_architecture_query(effective_input)
+            _prompt_source_provenance_query = is_prompt_source_provenance_query(effective_input)
             _api_route_query = (
                 is_runtime_api_route_question(effective_input)
                 and not _explicit_memory_recall
@@ -2920,6 +3080,7 @@ class PersonaBridge:
                 or _factual_plan_query
                 or _explicit_memory_recall
                 or _explicit_named_profile_query
+                or _prompt_source_provenance_query
                 or _api_route_query
             )
             _architecture_query = (
@@ -2942,6 +3103,7 @@ class PersonaBridge:
                     "cognitive_trace_query": bool(_cognitive_trace_query),
                     "runtime_execution_query": bool(_runtime_execution_query),
                     "explicit_memory_recall": bool(_explicit_memory_recall),
+                    "prompt_source_provenance_query": bool(_prompt_source_provenance_query),
                     "api_route_query": bool(_api_route_query),
                     "explicit_named_profile_query": bool(_explicit_named_profile_query),
                 },
@@ -2958,6 +3120,7 @@ class PersonaBridge:
             _internal_cognitive_query = False
             _api_route_query = False
             _explicit_named_profile_query = False
+            _prompt_source_provenance_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
             self._record_turn_stage(
                 "turn_evidence_routing", "failed",
@@ -3224,11 +3387,19 @@ class PersonaBridge:
             _recent_recall_result = recent_dialogue_recall_source_result(
                 effective_input, _history_for_anchor,
             )
+            if _recent_recall_result is None:
+                _recent_recall_result = recent_dialogue_message_source_result(
+                    effective_input, _history_for_anchor,
+                )
             if _recent_recall_result is not None:
                 _memory_recall_result = _recent_recall_result
                 self._record_turn_stage(
                     "immediate_dialogue_recall_source", "selected",
-                    "A unique exact-value source was selected from recent user-authored dialogue; assistant messages and durable-memory neighbors were not used as evidence.",
+                    (
+                        "The explicitly referenced nearest prior user message was selected from role-tagged dialogue history and preserved verbatim."
+                        if _recent_recall_result.get("source_type") == "recent_user_dialogue"
+                        else "A unique exact-value source was selected from recent user-authored dialogue; assistant messages and durable-memory neighbors were not used as evidence."
+                    ),
                     output={
                         "source_ref": _recent_recall_result.get("source_ref"),
                         "source_type": _recent_recall_result.get("source_type"),
@@ -3236,6 +3407,13 @@ class PersonaBridge:
                     },
                     consumes=("conversation_history", "turn_input"),
                     turn_id=_audit_turn_id,
+                )
+            elif _memory_recall_result is None:
+                # An explicit recall with no resolvable source must not fall
+                # through to free generation, where the model could invent a
+                # plausible historical request or claim a memory lookup.
+                _memory_recall_result = explicit_recall_abstention_result(
+                    effective_input, [],
                 )
         if not peer_name:
             if _architecture_query or _factual_plan_query or _explicit_named_profile_query:
@@ -3846,6 +4024,46 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     consumes=("named_profile_facts_snapshot", "turn_input"),
                     turn_id=_audit_turn_id,
                 )
+        if _prompt_source_provenance_query:
+            _source_stages = self._last_turn_trace.get("stages", {})
+            _source_provenance_for_answer = _prompt_source_provenance(_source_stages)
+            _source_recalled_message = (
+                _memory_recall_result
+                if isinstance(_memory_recall_result, dict)
+                and _memory_recall_result.get("source_type") == "recent_user_dialogue"
+                else None
+            )
+            _source_answer_is_french = bool(re.search(
+                r"\b(?:quelle|quelles|source|re[cç]up[eé]r[eé]e?|"
+                r"utilis[eé]e?|inject[eé]e?|historique|prompt|m[eé]moire)\b",
+                effective_input, re.IGNORECASE,
+            ))
+            _deterministic_response = _render_prompt_source_provenance_answer(
+                _source_provenance_for_answer,
+                recalled_source=_source_recalled_message,
+                french=_source_answer_is_french,
+            )
+            _source_dependencies = tuple(
+                name for name in _source_provenance_for_answer.get("prompt_dependencies", [])
+                if name != "turn_input"
+            ) or ("turn_input",)
+            self._record_turn_stage(
+                "turn_source_provenance_answer", "rendered_deterministically",
+                "Rendered only from this turn's prompt dependency receipts; it does not infer model attention.",
+                output={
+                    "response_sha256": hashlib.sha256(
+                        _deterministic_response.encode("utf-8", errors="replace")
+                    ).hexdigest(),
+                    "prompt_dependencies": _source_provenance_for_answer.get("prompt_dependencies", []),
+                    "durable_memory_status": (
+                        _source_provenance_for_answer.get("sources", {})
+                        .get("retrieved_memory", {}).get("status", "not_recorded_for_turn")
+                    ),
+                },
+                consumes=(*_source_dependencies, "turn_input"),
+                turn_id=_audit_turn_id,
+            )
+
         self._record_turn_stage(
             "deterministic_reasoning",
             "selected" if _deterministic_response else "not_selected",
@@ -3858,6 +4076,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 api_route_answer=bool(_api_route_query and _deterministic_response),
                 named_profile_facts=bool(
                     _explicit_named_profile_query and _deterministic_response
+                ),
+                source_provenance_report=bool(
+                    _prompt_source_provenance_query and _deterministic_response
                 ),
             ),
             turn_id=_audit_turn_id,
@@ -3931,6 +4152,18 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # builder produced a partial fingerprint that omitted later additions
         # (epistemic, relational, temporal, location, and voice contracts).
         _recorded_stage_outputs = self._last_turn_trace.get("stages", {})
+        _source_provenance = _prompt_source_provenance(_recorded_stage_outputs)
+        _source_provenance_text = _render_prompt_source_provenance(_source_provenance)
+        if _source_provenance_text:
+            system_prompt += "\n\n" + _source_provenance_text
+            self._record_turn_stage(
+                "turn_source_provenance_context", "injected",
+                "Per-turn source availability is derived from prompt dependency receipts; it distinguishes inclusion from model reliance.",
+                output=_source_provenance,
+                consumes=tuple(_source_provenance.get("prompt_dependencies") or ("turn_input",)),
+                turn_id=_audit_turn_id,
+            )
+            _recorded_stage_outputs = self._last_turn_trace.get("stages", {})
         self._record_turn_stage(
             "prompt_assembly", "completed", f"{len(system_prompt)} chars",
             output=system_prompt,

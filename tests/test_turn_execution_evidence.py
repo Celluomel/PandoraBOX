@@ -16,6 +16,9 @@ from cognition.persona_bridge import (
     _prior_assistant_trace_evidence,
     _deterministic_projection_label,
     _prompt_assembly_dependencies,
+    _prompt_source_provenance,
+    _render_prompt_source_provenance,
+    _render_prompt_source_provenance_answer,
     _runtime_execution_evidence_snapshot,
     _turn_output_evidence,
     _workspace_focus_state_provenance,
@@ -430,7 +433,10 @@ def test_named_profile_projection_is_not_mislabeled_as_affect_projection():
 def test_prompt_assembly_declares_only_contexts_with_recorded_outputs():
     dependencies = _prompt_assembly_dependencies({
         "memory_prompt_context": {"status": "injected", "output_fingerprint": "a" * 64},
-        "dominant_thought_context": {"status": "empty"},
+        "dominant_thought_context": {
+            "status": "empty", "output_fingerprint": "c" * 64,
+            "output_quality": "empty",
+        },
         "self_description_context": {"status": "skipped_by_scope"},
         "affect_advisory_context": {"status": "injected", "output_fingerprint": "b" * 64},
     })
@@ -438,6 +444,62 @@ def test_prompt_assembly_declares_only_contexts_with_recorded_outputs():
     assert dependencies == (
         "turn_input", "memory_prompt_context", "affect_advisory_context",
     )
+
+
+def test_source_provenance_distinguishes_conversation_from_unrecorded_memory():
+    stages = {
+        "conversation_continuity_context": {
+            "status": "injected", "output_fingerprint": "a" * 64,
+            "output_quality": "present",
+        },
+        "memory_retrieval": {
+            "status": "completed", "output_fingerprint": "b" * 64,
+            "output_quality": "empty",
+        },
+        "memory_prompt_context": {
+            "status": "empty", "output_fingerprint": "c" * 64,
+            "output_quality": "empty",
+        },
+        "user_profile_context": {
+            "status": "injected", "output_fingerprint": "d" * 64,
+            "output_quality": "present",
+        },
+    }
+
+    provenance = _prompt_source_provenance(stages)
+    rendered = _render_prompt_source_provenance(provenance)
+
+    assert provenance["sources"]["recent_conversation"]["status"] == "included_in_prompt"
+    assert provenance["sources"]["retrieved_memory"]["status"] == "not_included"
+    assert provenance["sources"]["named_user_profile"]["status"] == "included_in_prompt"
+    assert "recent conversation history: included_in_prompt" in rendered
+    assert "retrieved long-term memory: not_included" in rendered
+    assert "not proof of attention or reliance" in rendered
+    answer = _render_prompt_source_provenance_answer(provenance)
+    assert "historique de conversation" in answer
+    assert "Le reçu de mémoire indique qu’aucun contexte de mémoire durable" in answer
+    assert "Aucun reçu ne permet de confirmer si une archive de session compressée" in answer
+    assert "pas quelle information a déterminé son raisonnement interne" in answer
+
+
+def test_source_provenance_separates_indexed_memory_from_session_archive():
+    provenance = _prompt_source_provenance({
+        "memory_prompt_context": {
+            "status": "empty", "output_fingerprint": "a" * 64,
+            "output_quality": "empty",
+        },
+        "session_archive_retrieval": {
+            "status": "injected", "output_fingerprint": "b" * 64,
+            "output_quality": "present",
+        },
+    })
+
+    answer = _render_prompt_source_provenance_answer(provenance)
+
+    assert provenance["sources"]["retrieved_memory"]["status"] == "not_included"
+    assert provenance["sources"]["compressed_session_archive"]["status"] == "included_in_prompt"
+    assert "aucun extrait de mémoire durable indexée" in answer
+    assert "extrait d’archive de session est inclus séparément" in answer
 
 
 def test_data_flow_integrity_ignores_contexts_not_consumed_by_prompt_assembly():
@@ -674,6 +736,9 @@ def test_deterministic_reasoning_receipt_links_memory_and_planner_inputs():
     assert deterministic_reasoning_dependencies(
         selected=True, named_profile_facts=True,
     ) == ("turn_input", "explicit_profile_facts_answer")
+    assert deterministic_reasoning_dependencies(
+        selected=True, source_provenance_report=True,
+    ) == ("turn_input", "turn_source_provenance_answer")
     assert deterministic_reasoning_dependencies(selected=False, memory_recall=True) == ()
 
 

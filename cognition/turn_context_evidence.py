@@ -57,6 +57,7 @@ def deterministic_reasoning_dependencies(
     planner_snapshot: bool = False,
     api_route_answer: bool = False,
     named_profile_facts: bool = False,
+    source_provenance_report: bool = False,
 ) -> tuple[str, ...]:
     """Return only the recorded inputs that actually support a direct answer."""
     if not selected:
@@ -74,6 +75,8 @@ def deterministic_reasoning_dependencies(
         sources.append("api_route_answer")
     if named_profile_facts:
         sources.append("explicit_profile_facts_answer")
+    if source_provenance_report:
+        sources.append("turn_source_provenance_answer")
     return tuple(sources)
 
 
@@ -508,6 +511,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     routing_fields = (
         "factual_plan_query", "closed_world_report", "architecture_query",
         "cognitive_trace_query", "runtime_execution_query", "explicit_memory_recall",
+        "prompt_source_provenance_query",
     )
     if all(isinstance(value.get(key), bool) for key in routing_fields):
         return {
@@ -517,6 +521,9 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "api_route_query": bool(value.get("api_route_query", False)),
             "explicit_named_profile_query": bool(
                 value.get("explicit_named_profile_query", False)
+            ),
+            "prompt_source_provenance_query": bool(
+                value.get("prompt_source_provenance_query", False)
             ),
         }
 

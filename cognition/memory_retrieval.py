@@ -481,10 +481,34 @@ def is_explicit_memory_recall_query(text: str) -> bool:
     # impossible to retrieve later.
     if any(pattern.search(value) for pattern in _MEMORY_STORE_INSTRUCTION_PATTERNS):
         return False
-    return any(term in value for term in (
+    return _is_immediate_dialogue_reference_query(value) or any(term in value for term in (
         "talked about", "on a parlé", "we discussed", "on a dit",
         "tu sais ce que", "t'en souviens",
     ))
+
+
+def _is_immediate_dialogue_reference_query(text: str) -> bool:
+    """Recognize a request to retrieve a specifically deictic prior user turn."""
+    value = " ".join(str(text or "").casefold().split())
+    asks_for_retrieval = bool(re.search(
+        r"\b(?:remind|repeat|recall|remember|summari[sz]e|what\s+(?:was|did\s+i)|"
+        r"rappelle(?:-moi)?|rappeler|r[eé]sume(?:-moi)?|redis|"
+        r"quelle(?:s)?\s+(?:[eé]tait|est)?|qu['’]est-ce\s+que\s+j['’]ai)\b",
+        value,
+    ))
+    refers_to_prior_turn = bool(re.search(
+        r"\b(?:previous|preceding|last|earlier|immediately\s+(?:previous|preceding|before)|"
+        r"just\s+before|pr[eé]c[eé]dent(?:e|s|es)?|dernier(?:e|s|es)?|"
+        r"imm[eé]diatement\s+avant|juste\s+avant)\b"
+        r".{0,80}\b(?:message|turn|request|question|utterance|demande|"
+        r"[eé]change|tour)\b|"
+        r"\b(?:message|turn|request|question|utterance|demande|[eé]change|tour)\b"
+        r".{0,80}\b(?:previous|preceding|last|earlier|immediately\s+(?:previous|preceding|before)|"
+        r"just\s+before|pr[eé]c[eé]dent(?:e|s|es)?|dernier(?:e|s|es)?|"
+        r"imm[eé]diatement\s+avant|juste\s+avant)\b",
+        value,
+    ))
+    return asks_for_retrieval and refers_to_prior_turn
 
 
 def filter_recall_query_records(
@@ -851,6 +875,60 @@ def recent_dialogue_recall_source_result(
         "source_type": "recent_user_dialogue",
         "relevance": None,
     }
+
+
+def recent_dialogue_message_source_result(
+    query: str, history: Sequence[dict], *, max_messages: int = 12,
+) -> dict | None:
+    """Return the nearest prior user message for an explicit deictic recall.
+
+    Unlike semantic memory search, this is resolved from conversation order and
+    speaker role. The message is quoted verbatim so no subject summary or
+    assistant-authored claim is presented as historical evidence.
+    """
+    if (
+        not _is_immediate_dialogue_reference_query(query)
+        or not isinstance(history, (list, tuple))
+    ):
+        return None
+    normalized_query = " ".join(str(query or "").casefold().split())
+    recent = list(history)[-max(0, int(max_messages)):]
+    if recent and isinstance(recent[-1], dict):
+        last = recent[-1]
+        if (
+            str(last.get("role") or "").casefold().strip() == "user"
+            and " ".join(str(last.get("content") or "").casefold().split()) == normalized_query
+        ):
+            recent.pop()
+    for recency, item in enumerate(reversed(recent)):
+        if not isinstance(item, dict) or str(item.get("role") or "").casefold().strip() != "user":
+            continue
+        source_text = " ".join(str(item.get("content") or "").split()).strip()
+        if not source_text:
+            continue
+        source_key = hashlib.sha256(
+            source_text.encode("utf-8", errors="replace")
+        ).hexdigest()
+        is_french = bool(re.search(
+            r"\b(?:rappelle|r[eé]sume|demande|[eé]change|pr[eé]c[eé]dent|"
+            r"derni[eè]re|quelle|quelles)\b",
+            str(query or ""), re.IGNORECASE,
+        ))
+        excerpt = source_text[:800]
+        return {
+            "answer": (
+                f'Source utilisateur du dialogue récent (extrait exact) : « {excerpt} »'
+                if is_french else
+                f'Recent user-authored dialogue source (verbatim): “{excerpt}”'
+            ),
+            "status": "supported_recent_dialogue_source",
+            "source_ref": hashlib.sha256(
+                f"recent-user-dialogue:{recency}:{source_key}".encode("utf-8")
+            ).hexdigest()[:20],
+            "source_type": "recent_user_dialogue",
+            "relevance": None,
+        }
+    return None
 
 
 def explicit_recall_archive_source_result(

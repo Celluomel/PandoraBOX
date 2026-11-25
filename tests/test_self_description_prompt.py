@@ -13,6 +13,7 @@ from cognition.self_description import (
     is_affect_change_analysis_query,
     is_cognitive_audit_status_query,
     is_closed_world_cognitive_report_query,
+    is_prompt_source_provenance_query,
     is_cognitive_trace_query,
     is_internal_cognitive_query,
     is_runtime_api_route_question,
@@ -189,6 +190,17 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertFalse(is_cognitive_audit_status_query("Explain what a cognitive audit is."))
         self.assertFalse(is_closed_world_cognitive_report_query(
             "Can you explore the idea of how memory shapes a person's identity?"
+        ))
+
+    def test_prompt_source_provenance_query_requires_source_delivery_intent(self):
+        self.assertTrue(is_prompt_source_provenance_query(
+            "Distingue les sources incluses dans le prompt de la mémoire durable injectée."
+        ))
+        self.assertTrue(is_prompt_source_provenance_query(
+            "Which sources did you use or retrieve for this answer?"
+        ))
+        self.assertFalse(is_prompt_source_provenance_query(
+            "What is the source code for the memory module?"
         ))
 
     def test_runtime_execution_evidence_query_is_closed_world(self):
