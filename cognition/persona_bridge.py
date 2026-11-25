@@ -173,6 +173,22 @@ def _is_factual_self_report_turn(
     )
 
 
+def _semantic_turn_kind_for_route(
+    *,
+    explicit_memory_recall: bool,
+    deterministic_affect_report: bool,
+    closed_world_report: bool,
+) -> str:
+    """Carry the already-resolved turn act into asynchronous semantic learning."""
+    if explicit_memory_recall:
+        return "retrieval"
+    if deterministic_affect_report:
+        return "social"
+    if closed_world_report:
+        return "other"
+    return ""
+
+
 def _should_schedule_semantic_review_post_response(
     *,
     response_present: bool,
@@ -4955,10 +4971,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     self._run_full_post_turn_lifecycle,
                     effective_input, user_id, raw_response,
                     emo_dict, cond_dict, _organism, not bool(peer_name), _audit_turn_id,
-                    (
-                        "retrieval" if _explicit_memory_recall
-                        else "social" if _deterministic_affect_report
-                        else ""
+                    _semantic_turn_kind_for_route(
+                        explicit_memory_recall=_explicit_memory_recall,
+                        deterministic_affect_report=_deterministic_affect_report,
+                        closed_world_report=_closed_world_cognitive_report_query,
                     ),
                     not bool(peer_name),
                 )

@@ -1322,6 +1322,7 @@ class IntentionPlanningTests(unittest.TestCase):
         )
         self.assertTrue(LongHorizonPlanner.is_self_report_query(question))
         self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
+        self.assertTrue(LongHorizonPlanner.is_plan_progress_interpretation_query(question))
 
     def test_explicitly_user_owned_plan_does_not_route_to_lumina_self_report(self):
         question = (
@@ -1330,6 +1331,51 @@ class IntentionPlanningTests(unittest.TestCase):
         )
         self.assertFalse(LongHorizonPlanner.is_self_report_query(question))
         self.assertFalse(LongHorizonPlanner.is_goal_plan_query(question))
+
+    def test_progress_interpretation_preserves_cited_ratio_when_live_snapshot_differs(self):
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        snapshot = {
+            "active_goals": [], "active_goal_count": 0,
+            "dominant_plan": {
+                "objective": "cognitive harness",
+                "steps_completed": 1, "steps_total": 4,
+                "steps_with_execution_evidence": 1,
+                "completed_steps_without_execution_evidence": 0,
+                "steps_with_measured_effect": 0,
+                "success_criteria_status": "unverified",
+            },
+        }
+        question = (
+            "Le plan actif indique 3/4 étapes terminées et aucune mesure indépendante. "
+            "Cela signifie-t-il que l’objectif est atteint ?"
+        )
+
+        answer = planner.factual_goal_plan_response(question, "fr", snapshot=snapshot)
+
+        self.assertIn("3/4 cité dans la question", answer)
+        self.assertIn("pas une mesure de l’atteinte de l’objectif", answer)
+        self.assertIn("Le snapshot actuel diffère", answer)
+        self.assertIn("plan enregistré est à 1/4", answer)
+        self.assertIn("sans la trace correspondante", answer)
+        self.assertNotIn("quasi", answer.casefold())
+
+    def test_progress_interpretation_matching_ratio_still_requires_effect_evidence(self):
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        snapshot = {
+            "active_goals": [], "active_goal_count": 0,
+            "dominant_plan": {
+                "objective": "cognitive harness",
+                "steps_completed": 3, "steps_total": 4,
+                "success_criteria_status": "unverified",
+            },
+        }
+        question = "Le plan actif indique 3/4 étapes terminées. Cela prouve-t-il que l’objectif est atteint ?"
+
+        answer = planner.factual_goal_plan_response(question, "fr", snapshot=snapshot)
+
+        self.assertIn("Le 3/4 cité", answer)
+        self.assertIn("critère de réussite enregistré est « unverified »", answer)
+        self.assertNotIn("objectif est atteint.", answer)
 
     def test_count_question_about_owned_goals_routes_to_live_self_report(self):
         question = "For this audit, how many active goals do you currently have?"

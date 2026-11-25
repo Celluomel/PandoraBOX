@@ -2,7 +2,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from cognition.cognitive_organism import CognitiveOrganism
-from cognition.persona_bridge import _resolve_semantic_extractor_llm_fn
+from cognition.persona_bridge import (
+    _resolve_semantic_extractor_llm_fn,
+    _semantic_turn_kind_for_route,
+)
 
 
 def _organism_stub():
@@ -110,3 +113,26 @@ def test_upstream_turn_kind_is_forwarded_without_disabling_topic_learning():
         turn_kind_hint="social",
     )
     assert receipt["semantic_topic_learning"]["status"] == "queued"
+
+
+def test_closed_world_report_route_is_forwarded_as_non_topic_learning_act():
+    assert _semantic_turn_kind_for_route(
+        explicit_memory_recall=False,
+        deterministic_affect_report=False,
+        closed_world_report=True,
+    ) == "other"
+    assert _semantic_turn_kind_for_route(
+        explicit_memory_recall=True,
+        deterministic_affect_report=False,
+        closed_world_report=True,
+    ) == "retrieval"
+    assert _semantic_turn_kind_for_route(
+        explicit_memory_recall=False,
+        deterministic_affect_report=True,
+        closed_world_report=True,
+    ) == "social"
+    assert _semantic_turn_kind_for_route(
+        explicit_memory_recall=False,
+        deterministic_affect_report=False,
+        closed_world_report=False,
+    ) == ""

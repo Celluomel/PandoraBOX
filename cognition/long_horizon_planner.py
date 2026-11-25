@@ -934,6 +934,31 @@ class LongHorizonPlanner:
         return self.prompt_fragment_for("")
 
     @staticmethod
+    def is_plan_progress_interpretation_query(user_input: str) -> bool:
+        """Recognize inference requests joining plan progress to goal attainment."""
+        text = " ".join(str(user_input or "").casefold().split())
+        has_plan_progress = bool(re.search(
+            r"\b(?:plan|plans|planning|objective|goal|but|objectif)\w*\b.{0,100}"
+            r"(?:\b\d+\s*/\s*\d+\b|\b(?:steps?|étapes?)\b)"
+            r"|(?:\b\d+\s*/\s*\d+\b|\b(?:steps?|étapes?)\b).{0,100}"
+            r"\b(?:plan|plans|planning|objective|goal|but|objectif)\w*\b",
+            text,
+        ))
+        asks_for_inference = bool(re.search(
+            r"\b(?:mean|imply|indicate|prove|show|signifie|signifient|"
+            r"veut dire|impliqu\w*|prouve|indique)\b", text,
+        ))
+        asks_about_attainment = bool(re.search(
+            r"\b(?:goal|objective|but|objectif)\w*\b.{0,64}"
+            r"\b(?:achieved|reached|complete|completed|attained|"
+            r"atteint\w*|réalisé\w*|accompli\w*)\b"
+            r"|\b(?:achieved|reached|attained|atteint\w*|réalisé\w*|"
+            r"accompli\w*)\b.{0,64}\b(?:goal|objective|but|objectif)\w*\b",
+            text,
+        ))
+        return has_plan_progress and asks_for_inference and asks_about_attainment
+
+    @staticmethod
     def is_self_report_query(user_input: str) -> bool:
         text = " ".join(str(user_input or "").lower().split())
         if not text:
@@ -966,21 +991,7 @@ class LongHorizonPlanner:
             r"finished|terminé\w*|achevé\w*)\b",
             text,
         )
-        success_inference = (
-            re.search(
-                r"\b(?:mean|imply|indicate|prove|show|signifie|signifient|"
-                r"veut dire|impliqu\w*|prouve|indique)\b",
-                text,
-            )
-            and re.search(
-                r"\b(?:goal|objective|but|objectif)\w*\b.{0,64}"
-                r"\b(?:achieved|reached|complete|completed|attained|"
-                r"atteint\w*|réalisé\w*|accompli\w*)\b"
-                r"|\b(?:achieved|reached|attained|atteint\w*|réalisé\w*|"
-                r"accompli\w*)\b.{0,64}\b(?:goal|objective|but|objectif)\w*\b",
-                text,
-            )
-        )
+        success_inference = LongHorizonPlanner.is_plan_progress_interpretation_query(text)
         if (
             not user_owned_plan
             and current_plan_reference
@@ -1588,6 +1599,43 @@ class LongHorizonPlanner:
                 f"Recorded result: {str(outcome.get('result') or 'missing')[:200]}"
             )
         query = " ".join(str(user_input or "").casefold().split())
+        progress_claim = re.search(r"\b(\d+)\s*/\s*(\d+)\b", query)
+        if self.is_plan_progress_interpretation_query(query) and progress_claim:
+            claimed_done, claimed_total = map(int, progress_claim.groups())
+            current_progress = (
+                f"{plan.get('steps_completed', 0)}/{plan.get('steps_total', 0)}"
+                if isinstance(plan, dict) else None
+            )
+            lang = str(language or "auto").casefold().replace("_", "-")
+            if lang.startswith("fr"):
+                lines = [
+                    f"Le {claimed_done}/{claimed_total} cité dans la question est un compteur d’étapes du plan, pas une mesure de l’atteinte de l’objectif. À lui seul, il décrit l’avancement enregistré; seuls les reçus attestent l’exécution des étapes, et l’effet sur l’objectif doit être mesuré séparément."
+                ]
+                if current_progress and current_progress != f"{claimed_done}/{claimed_total}":
+                    lines.append(
+                        f"Le snapshot actuel diffère : le plan enregistré est à {current_progress}. Je ne peux pas attribuer le {claimed_done}/{claimed_total} cité à cet état courant sans la trace correspondante."
+                    )
+                elif current_progress:
+                    lines.append(
+                        f"Le snapshot actuel confirme {current_progress}; le critère de réussite enregistré est « {plan.get('success_criteria_status', 'inconnu')} », ce qui ne constitue pas une preuve indépendante d’atteinte."
+                    )
+                else:
+                    lines.append("Aucun plan actif courant ne permet de vérifier ce ratio cité.")
+                return " ".join(lines)
+            lines = [
+                f"The {claimed_done}/{claimed_total} cited in the question is a plan-step counter, not a measure of goal attainment. By itself it describes recorded progress; only receipts attest step execution, and the effect on the goal must be measured separately."
+            ]
+            if current_progress and current_progress != f"{claimed_done}/{claimed_total}":
+                lines.append(
+                    f"The current snapshot differs: the recorded plan is at {current_progress}. I cannot attribute the cited {claimed_done}/{claimed_total} to this current state without the corresponding trace."
+                )
+            elif current_progress:
+                lines.append(
+                    f"The current snapshot confirms {current_progress}; its recorded success criterion is “{plan.get('success_criteria_status', 'unknown')}”, which is not independent evidence of attainment."
+                )
+            else:
+                lines.append("No current active plan is available to verify the cited ratio.")
+            return " ".join(lines)
         asks_for_plan = bool(re.search(
             r"\b(?:plan|plans|planning|planification|planifications)\b", query,
         ))

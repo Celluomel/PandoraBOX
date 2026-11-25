@@ -186,7 +186,7 @@ def test_retrieval_turn_does_not_persist_or_promote_concepts():
 
 
 def test_trusted_upstream_act_skips_redundant_semantic_llm_and_learning():
-    for turn_kind in ("retrieval", "social"):
+    for turn_kind in ("retrieval", "social", "other"):
         memory = Mock()
         curiosity = Mock()
         llm_fn = Mock(side_effect=AssertionError("unexpected semantic LLM call"))
