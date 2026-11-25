@@ -315,6 +315,21 @@ def test_semantic_extraction_summary_proves_decision_learning_without_text():
     assert "private action details" not in repr(summary)
 
 
+def test_semantic_extraction_summary_exposes_bounded_retry_exhaustion():
+    summary = audit_safe_turn_summary({
+        "type": "semantic_extraction_receipt",
+        "status": "failed",
+        "learning_status": "deferred_retry_exhausted",
+        "retry_exhausted": True,
+        "error_type": "_SemanticLearningDeferred",
+        "concepts": ["private user concept"],
+    })
+    assert summary["status"] == "failed"
+    assert summary["learning_status"] == "deferred_retry_exhausted"
+    assert summary["retry_exhausted"] is True
+    assert "private user concept" not in repr(summary)
+
+
 def test_app_state_resolves_relational_memory_from_its_actual_owner():
     relationship_store = object()
     persona = SimpleNamespace(relational_memory=relationship_store)

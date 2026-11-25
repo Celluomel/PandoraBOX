@@ -111,6 +111,8 @@ Rules:
 
 _RELATION_TYPES = {"leads_to", "related_to", "part_of", "causes", "contradicts", "enables"}
 _TURN_KINDS = {"topic", "retrieval", "social", "instruction", "feedback", "decision", "other"}
+_MAX_DEFERRED_RETRIES = 30
+_DEFERRED_RETRY_DELAY_SECONDS = 1.0
 
 
 class SemanticExtractor:
@@ -154,7 +156,7 @@ class SemanticExtractor:
         item = (
             user_input, response, None, workspace, role,
             str(turn_id or ""), completion_callback,
-            str(turn_kind_hint or "").strip().casefold(),
+            str(turn_kind_hint or "").strip().casefold(), 0,
         )
         with self._lock:
             self._queue.put_nowait(item)
@@ -178,7 +180,17 @@ class SemanticExtractor:
                         return
                 continue
             try:
-                receipt = self._extract(*item)
+                receipt = self._extract(*item[:8])
+                retry_count = int(item[8]) if len(item) > 8 else 0
+                if receipt.get("status") == "deferred":
+                    if retry_count < _MAX_DEFERRED_RETRIES:
+                        self._schedule_retry((*item[:8], retry_count + 1))
+                        continue
+                    receipt.update({
+                        "status": "failed",
+                        "learning_status": "deferred_retry_exhausted",
+                        "retry_exhausted": True,
+                    })
                 completion_callback = item[6] if len(item) > 6 else None
                 if callable(completion_callback):
                     try:
@@ -190,6 +202,26 @@ class SemanticExtractor:
                         )
             finally:
                 self._queue.task_done()
+
+    def _schedule_retry(self, item) -> None:
+        """Requeue a provider-deferred turn without occupying the sole worker."""
+        def _enqueue_retry():
+            should_start_worker = False
+            with self._lock:
+                self._queue.put_nowait(item)
+                if not self._worker_running:
+                    self._worker_running = True
+                    should_start_worker = True
+            if should_start_worker:
+                threading.Thread(
+                    target=self._drain_queue,
+                    daemon=True,
+                    name="SemanticExtractor",
+                ).start()
+
+        retry_timer = threading.Timer(_DEFERRED_RETRY_DELAY_SECONDS, _enqueue_retry)
+        retry_timer.daemon = True
+        retry_timer.start()
 
     def _extract(self, user_input, response, meta_scores, workspace,
                  observation_role="user_topic", turn_id="", completion_callback=None,
@@ -400,6 +432,11 @@ class SemanticExtractor:
             )
         except Exception as e:
             receipt["error_type"] = type(e).__name__
+            if getattr(e, "semantic_learning_deferred", False):
+                receipt.update({
+                    "status": "deferred",
+                    "learning_status": "deferred_provider_busy",
+                })
             logger.debug(f"[SemanticExtractor] Error: {e}")
         return receipt
 
@@ -457,6 +494,8 @@ class SemanticExtractor:
             return concepts, relations, topic, cog_load, turn_kind
 
         except Exception as e:
+            if getattr(e, "semantic_learning_deferred", False):
+                raise
             logger.debug(f"[SemanticExtractor] LLM parse failed ({e}), using keywords")
             return kw_concepts, kw_relations, "", 0.3, "unclassified"
 

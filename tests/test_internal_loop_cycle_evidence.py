@@ -130,6 +130,27 @@ def test_cycle_receipt_keeps_boolean_action_effect_evidence_without_user_text():
     assert "private recalled text" not in repr(summary)
 
 
+def test_goal_admission_receipt_preserves_rejection_counts_and_safe_reason_codes():
+    summary = InternalThoughtLoop._evidence_summary({
+        "accepted_count": 2,
+        "rejected_count": 3,
+        "rejection_reason_counts": {
+            "low_quality_topic": 2,
+            "quality_unavailable": 1,
+            "private free-form explanation": 99,
+        },
+        "rejections": [{"topic": "private topic text"}],
+    })
+
+    assert summary["numeric_metrics"] == {"accepted_count": 2, "rejected_count": 3}
+    assert summary["rejection_reason_counts"] == {
+        "low_quality_topic": 2,
+        "quality_unavailable": 1,
+    }
+    assert "private topic text" not in repr(summary)
+    assert "private free-form explanation" not in repr(summary)
+
+
 def test_cycle_receipt_distinguishes_in_memory_commit_from_persistence_checkpoint():
     summary = InternalThoughtLoop._evidence_summary({
         "outcome_status": "committed",

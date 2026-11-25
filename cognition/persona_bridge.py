@@ -87,6 +87,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+class _SemanticLearningDeferred(RuntimeError):
+    """Transient provider contention; the semantic queue should retry later."""
+
+    semantic_learning_deferred = True
+
+
 def _resolve_semantic_extractor_llm_fn(ai_system, external_llm_fn=None):
     """Choose the configured history-free LLM callable for semantic learning."""
     # PersonaBridge receives LLMManager.generate_bare, the same configured
@@ -106,28 +112,26 @@ def _resolve_semantic_extractor_llm_fn(ai_system, external_llm_fn=None):
     def _semantic_learning_call(prompt: str) -> str:
         # Semantic extraction is post-response learning, never part of the
         # interactive answer path. If the next chat turn takes the shared
-        # provider first, keep this worker queued until the manager admits a
-        # background call; do not turn ordinary chat contention into an empty
-        # parse and silently lose the learning update.
-        while True:
-            result = background_result(
-                str(prompt or ""), max_tokens=400, temperature=0.1,
-                _audit_origin="cognition.semantic_extractor._parse",
+        # provider first, yield this worker and let SemanticExtractor reschedule
+        # the item. Never sleep/retry in place: a busy provider must not block
+        # learning jobs for other turns or the interactive answer path.
+        result = background_result(
+            str(prompt or ""), max_tokens=400, temperature=0.1,
+            _audit_origin="cognition.semantic_extractor._parse",
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("semantic learning provider returned no result receipt")
+        if result.get("status") == "deferred":
+            raise _SemanticLearningDeferred("semantic learning provider is busy")
+        if result.get("status") != "ok":
+            raise RuntimeError(
+                "semantic learning provider failed: "
+                + str(result.get("reason") or result.get("status") or "unknown")[:96]
             )
-            if not isinstance(result, dict):
-                raise RuntimeError("semantic learning provider returned no result receipt")
-            if result.get("status") == "deferred":
-                time.sleep(0.1)
-                continue
-            if result.get("status") != "ok":
-                raise RuntimeError(
-                    "semantic learning provider failed: "
-                    + str(result.get("reason") or result.get("status") or "unknown")[:96]
-                )
-            text = str(result.get("text") or "").strip()
-            if not text:
-                raise RuntimeError("semantic learning provider returned empty content")
-            return text
+        text = str(result.get("text") or "").strip()
+        if not text:
+            raise RuntimeError("semantic learning provider returned empty content")
+        return text
 
     return _semantic_learning_call
 

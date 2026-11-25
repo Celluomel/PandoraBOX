@@ -851,6 +851,7 @@ class InternalThoughtLoop:
             safe_numeric_fields = {
                 "active_goal_count", "total_goal_count", "goal_thought_count",
                 "candidate_count", "accepted_candidate_count", "motivation_count",
+            "accepted_count", "rejected_count",
                 "user_topic_count", "filtered_topic_count", "active_thread_count",
                 "broadcast_count", "requested_count", "total_pressure",
                 "goal_count", "budget_total", "budget_remaining",
@@ -876,6 +877,18 @@ class InternalThoughtLoop:
             }
             if numeric_summary:
                 summary["numeric_metrics"] = numeric_summary
+            rejection_reason_counts = value.get("rejection_reason_counts")
+            if isinstance(rejection_reason_counts, dict):
+                safe_reason_counts = {
+                    reason: max(0, min(1000, int(count)))
+                    for reason, count in list(rejection_reason_counts.items())[:12]
+                    if isinstance(reason, str)
+                    and re.fullmatch(r"[a-zA-Z0-9_]{1,48}", reason)
+                    and isinstance(count, int)
+                    and not isinstance(count, bool)
+                }
+                if safe_reason_counts:
+                    summary["rejection_reason_counts"] = safe_reason_counts
             topic_quality = value.get("topic_quality")
             if isinstance(topic_quality, dict):
                 safe_topic_quality: dict[str, Any] = {}
@@ -2194,10 +2207,25 @@ class InternalThoughtLoop:
                 )
                 _proposal_admission = _cycle_result.get("rejected_goal_suggestions", [])
                 if _proposal_admission:
+                    _rejection_reason_counts: dict[str, int] = {}
+                    for _rejection in _proposal_admission:
+                        if not isinstance(_rejection, dict):
+                            continue
+                        _reason = str(_rejection.get("reason") or "unknown")[:48]
+                        if re.fullmatch(r"[a-zA-Z0-9_]{1,48}", _reason):
+                            _rejection_reason_counts[_reason] = (
+                                _rejection_reason_counts.get(_reason, 0) + 1
+                            )
+                    _accepted_proposal_count = len(
+                        _cycle_result.get("goal_suggestions", []) or []
+                    )
                     self._record_cycle_stage(
-                        "goal_proposal_admission", "partial", output={
+                        "goal_proposal_admission",
+                        "partial" if _accepted_proposal_count else "rejected",
+                        output={
+                            "accepted_count": _accepted_proposal_count,
                             "rejected_count": len(_proposal_admission),
-                            "rejections": _proposal_admission[:12],
+                            "rejection_reason_counts": _rejection_reason_counts,
                         },
                     )
                 _phase1_evidence_output = dict(_phase1_competition_output)

@@ -6,6 +6,7 @@ from cognition.persona_bridge import (
     _resolve_semantic_extractor_llm_fn,
     _semantic_turn_kind_for_route,
 )
+from cognition.semantic_extractor import SemanticExtractor
 
 
 def _organism_stub():
@@ -42,7 +43,7 @@ def test_semantic_extractor_prefers_external_history_free_llm():
     assert _resolve_semantic_extractor_llm_fn(SimpleNamespace(), None) is None
 
 
-def test_semantic_learning_waits_off_turn_when_shared_provider_is_busy():
+def test_semantic_learning_marks_provider_contention_for_queue_retry():
     class Manager:
         def __init__(self):
             self.calls = 0
@@ -66,12 +67,92 @@ def test_semantic_learning_waits_off_turn_when_shared_provider_is_busy():
         SimpleNamespace(), manager.generate_bare,
     )
 
-    with patch("cognition.persona_bridge.time.sleep") as pause:
-        result = learning_fn("extract from completed exchange")
+    try:
+        learning_fn("extract from completed exchange")
+    except RuntimeError as exc:
+        assert getattr(exc, "semantic_learning_deferred", False) is True
+    else:
+        raise AssertionError("provider contention was not returned to the semantic queue")
+    assert manager.calls == 1
+    manager.calls = 0
+    extractor = SemanticExtractor(semantic_memory=Mock(), llm_fn=learning_fn)
+    try:
+        extractor._parse("A durable concept from this message", "answer")
+    except RuntimeError as exc:
+        assert getattr(exc, "semantic_learning_deferred", False) is True
+    else:
+        raise AssertionError("provider deferral incorrectly fell back to lexical extraction")
+    manager.calls = 0
+    receipt = extractor._extract(
+        "A durable concept from this message", "answer", None, None,
+        "user_topic", "turn-deferred", None, "topic",
+    )
+    assert receipt["status"] == "deferred"
+    assert receipt["learning_status"] == "deferred_provider_busy"
 
-    assert result == '{"turn_kind":"topic"}'
-    assert manager.calls == 2
-    pause.assert_called_once_with(0.1)
+
+def test_deferred_semantic_turn_yields_worker_to_next_queued_turn():
+    class ImmediateTimer:
+        def __init__(self, _delay, callback):
+            self.callback = callback
+            self.daemon = False
+
+        def start(self):
+            self.callback()
+
+    extractor = SemanticExtractor(semantic_memory=Mock(), llm_fn=None)
+    finished = []
+
+    def callback_for(turn):
+        return lambda receipt: finished.append((turn, receipt["status"]))
+
+    extractor._extract = Mock(side_effect=[
+        {"status": "deferred", "learning_status": "deferred_provider_busy"},
+        {"status": "completed", "learning_status": "accepted_topic_turn"},
+        {"status": "completed", "learning_status": "accepted_decision_turn"},
+    ])
+    extractor._queue.put(("first", "answer", None, None, "user_topic", "turn-1", callback_for("turn-1"), "topic", 0))
+    extractor._queue.put(("second", "answer", None, None, "user_topic", "turn-2", callback_for("turn-2"), "decision", 0))
+    extractor._worker_running = True
+
+    with patch("cognition.semantic_extractor.threading.Timer", ImmediateTimer):
+        extractor._drain_queue()
+
+    assert extractor._extract.call_args_list[1].args[0] == "second"
+    assert extractor._extract.call_args_list[2].args[0] == "first"
+    assert finished == [("turn-2", "completed"), ("turn-1", "completed")]
+    assert extractor._queue.unfinished_tasks == 0
+
+
+def test_deferred_semantic_turn_exhaustion_is_reported_and_worker_continues():
+    class ImmediateTimer:
+        def __init__(self, _delay, callback):
+            self.callback = callback
+            self.daemon = False
+
+        def start(self):
+            self.callback()
+
+    extractor = SemanticExtractor(semantic_memory=Mock(), llm_fn=None)
+    finished = []
+    extractor._extract = Mock(return_value={
+        "status": "deferred", "learning_status": "deferred_provider_busy",
+    })
+    item = ("user", "answer", None, None, "user_topic", "turn-1", finished.append, "topic", 0)
+    extractor._queue.put(item)
+    extractor._worker_running = True
+
+    with patch("cognition.semantic_extractor._MAX_DEFERRED_RETRIES", 1), \
+         patch("cognition.semantic_extractor.threading.Timer", ImmediateTimer):
+        extractor._drain_queue()
+
+    assert extractor._extract.call_count == 2
+    assert finished == [{
+        "status": "failed",
+        "learning_status": "deferred_retry_exhausted",
+        "retry_exhausted": True,
+    }]
+    assert extractor._queue.unfinished_tasks == 0
 
 
 def test_source_recall_is_classified_by_semantic_extractor_not_a_lexical_gate():

@@ -598,8 +598,11 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         learning_status = str(value.get("learning_status") or "")[:32]
         if learning_status in {
             "accepted_topic_turn", "accepted_decision_turn", "skipped_non_topic_turn",
+            "deferred_provider_busy", "deferred_retry_exhausted",
         }:
             receipt["learning_status"] = learning_status
+        if isinstance(value.get("retry_exhausted"), bool):
+            receipt["retry_exhausted"] = value["retry_exhausted"]
         for key in (
             "concepts_parsed", "concept_upsert_calls_returned", "concepts_persisted",
             "observation_calls_returned", "observations_persisted",
