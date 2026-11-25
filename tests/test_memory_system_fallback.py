@@ -21,6 +21,7 @@ from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
     explicit_recall_source_result,
     explicit_recall_abstention_result,
+    should_defer_explicit_recall_to_archive,
     filter_recall_query_records,
     filter_memories_by_modality,
     is_explicit_memory_recall_query,
@@ -389,6 +390,20 @@ class MemorySystemFallbackTests(unittest.TestCase):
 
         self.assertEqual(filtered, [])
         self.assertEqual(result["status"], "abstained_no_source")
+
+    def test_explicit_recall_uses_available_archive_before_empty_source_abstention(self):
+        abstention = {"status": "abstained_no_source", "answer": "I couldn't retrieve it."}
+        supported = {"status": "supported_verbatim_source", "answer": "user source"}
+
+        self.assertTrue(should_defer_explicit_recall_to_archive(
+            abstention, "Compressed historical user statement"
+        ))
+        self.assertFalse(should_defer_explicit_recall_to_archive(
+            supported, "Compressed historical user statement"
+        ))
+        self.assertFalse(should_defer_explicit_recall_to_archive(
+            abstention, ""
+        ))
 
     def test_generic_history_recall_keeps_a_source_with_subject_coverage(self):
         query = "Rappelle-moi l’objectif principal de notre audit du harnais cognitif."

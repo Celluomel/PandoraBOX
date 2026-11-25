@@ -43,6 +43,7 @@ from cognition.memory_retrieval import (
     is_explicit_memory_recall_query,
     is_visual_memory_query,
     merge_user_authored_memories,
+    should_defer_explicit_recall_to_archive,
 )
 from managers.session_manager import archived_context_for_explicit_recall
 from cognition.turn_context_evidence import (
@@ -3488,11 +3489,38 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         if _deterministic_affect_report and _affect_direct_response:
             _deterministic_response = _affect_direct_response
         if _explicit_memory_recall and _memory_recall_result is not None:
-            _deterministic_response = str(_memory_recall_result.get("answer") or "")
+            _archive_context = archived_context_for_explicit_recall(
+                getattr(self._llm_stream_fn, "__self__", None), True,
+            )
+            _archive_deferred = should_defer_explicit_recall_to_archive(
+                _memory_recall_result, _archive_context,
+            )
+            if _archive_deferred:
+                _memory_recall_result = {
+                    "answer": "",
+                    "status": "delegated_to_session_archive",
+                    "source_ref": "compressed_session_archive",
+                    "source_type": "compressed_session_archive",
+                    "relevance": None,
+                }
+                _deterministic_response = ""
+                _detail = (
+                    "The vector/user-authored lanes had no eligible source. A compressed session archive "
+                    "is available in the assembled prompt, so generation interprets that historical summary "
+                    "instead of returning the empty-source abstention. The result must remain attributed and "
+                    "must not be represented as a verbatim transcript."
+                )
+                _consumes = ("memory_retrieval", "session_archive", "turn_input")
+            else:
+                _deterministic_response = str(_memory_recall_result.get("answer") or "")
+                _detail = (
+                    "Historical recall response is source-backed, or abstains when no relevant "
+                    "user-authored source survived retrieval filtering."
+                )
+                _consumes = ("memory_retrieval", "turn_input")
             self._record_turn_stage(
                 "memory_recall_answer", str(_memory_recall_result.get("status") or "unverified"),
-                "Historical recall response is source-backed, or abstains when no relevant "
-                "user-authored source survived retrieval filtering.",
+                _detail,
                 output={
                     "source_ref": _memory_recall_result.get("source_ref"),
                     "source_type": _memory_recall_result.get("source_type"),
@@ -3500,9 +3528,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "status": _memory_recall_result.get("status"),
                     "answer_sha256": hashlib.sha256(
                         _deterministic_response.encode("utf-8", errors="replace")
-                    ).hexdigest()[:20],
+                    ).hexdigest()[:20] if _deterministic_response else None,
                 },
-                consumes=("memory_retrieval", "turn_input"),
+                consumes=_consumes,
                 turn_id=_audit_turn_id,
             )
         if _api_route_query and not _deterministic_response:

@@ -811,6 +811,16 @@ def explicit_recall_abstention_result(
     }
 
 
+def should_defer_explicit_recall_to_archive(
+    recall_result: dict | None,
+    archived_context: str,
+) -> bool:
+    """Prefer an available compressed archive over a fail-closed empty-source answer."""
+    if not str(archived_context or "").strip() or not isinstance(recall_result, dict):
+        return False
+    return str(recall_result.get("status") or "").startswith("abstained_")
+
+
 def tokenize(text: str) -> List[str]:
     """Normalize accents and remove common English/French function words."""
     folded = unicodedata.normalize("NFKD", str(text or "").casefold())
