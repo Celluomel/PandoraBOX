@@ -295,6 +295,7 @@ class WorldModel:
     MAX_CAUSAL_BELIEFS = 200
     TOPIC_MAX_PER_USER = 80
     TFIDF_UPDATE_EVERY = 5
+    TOPIC_GRAPH_SCHEMA_VERSION = 2
 
     _DOMAIN_VOCAB: Dict[str, List[str]] = {
         "programming":    ["function","class","method","variable","loop","array","algorithm",
@@ -326,6 +327,7 @@ class WorldModel:
 
         self.user_profiles:  Dict[str, UserProfile] = {}
         self.topic_graph:    Dict[str, Counter]     = defaultdict(Counter)
+        self._legacy_topic_graph_unverified: Dict[str, Dict[str, int]] = {}
         self.causal_beliefs: List[CausalBelief]     = []
         self._global_topic_df: Counter              = Counter()
         self._total_docs: int                       = 0
@@ -370,8 +372,6 @@ class WorldModel:
             profile.last_seen          = now
 
             user_topics = self._extract_topics(user_text) if learn_semantic_profile else []
-            resp_topics = self._extract_topics(response) if learn_semantic_profile else []
-            all_topics  = list(set(user_topics + resp_topics))
 
             # The per-user interaction model must be grounded in what the
             # user actually wrote. Assistant-only topics can be verbose or
@@ -394,9 +394,12 @@ class WorldModel:
             profile.temporal.record(now)
             profile.relational.record_interaction(user_text, len(response.split()))
 
-            if len(all_topics) >= 2:
-                for i, t1 in enumerate(all_topics):
-                    for t2 in all_topics[i+1:]:
+            # This graph describes topics the user brought up together. The
+            # assistant response can introduce unsupported or merely
+            # illustrative subjects, so it must not create user-topic links.
+            if len(user_topics) >= 2:
+                for i, t1 in enumerate(user_topics):
+                    for t2 in user_topics[i+1:]:
                         self.topic_graph[t1][t2] += 1
                         self.topic_graph[t2][t1] += 1
 
@@ -818,6 +821,8 @@ class WorldModel:
                 "user_profiles": profiles_data,
                 "causal_beliefs": [asdict(b) for b in self.causal_beliefs[-100:]],
                 "topic_graph": {k: dict(v.most_common(20)) for k, v in list(self.topic_graph.items())[:100]},
+                "topic_graph_schema_version": self.TOPIC_GRAPH_SCHEMA_VERSION,
+                "legacy_topic_graph_unverified": self._legacy_topic_graph_unverified,
                 "global_topic_df": dict(self._global_topic_df.most_common(200)),
                 "total_docs": self._total_docs,
             }
@@ -904,9 +909,35 @@ class WorldModel:
                 # them for audit/inspection, but never treat them as verified.
                 bd.setdefault("evidence_status", "legacy_unverified")
                 self.causal_beliefs.append(CausalBelief(**bd))
-            for topic, links in data.get("topic_graph", {}).items():
-                self.topic_graph[topic] = Counter(links)
+            stored_graph = data.get("topic_graph", {})
+            graph_version = int(data.get("topic_graph_schema_version", 1) or 1)
+            self._legacy_topic_graph_unverified = data.get(
+                "legacy_topic_graph_unverified", {},
+            ) or {}
+            migrated_topic_graph = graph_version < self.TOPIC_GRAPH_SCHEMA_VERSION
+            if migrated_topic_graph:
+                # The previous graph mixed user topics with topics introduced
+                # by assistant replies. Preserve that data for audit/recovery,
+                # but rebuild the active graph from user-authored windows.
+                self._legacy_topic_graph_unverified = stored_graph or self._legacy_topic_graph_unverified
+                self.topic_graph = defaultdict(Counter)
+                for profile in self.user_profiles.values():
+                    for window in profile._recent_topic_windows[-10:]:
+                        if not isinstance(window, list):
+                            continue
+                        topics = list(dict.fromkeys(
+                            str(topic).strip() for topic in window if str(topic).strip()
+                        ))
+                        for index, topic in enumerate(topics):
+                            for related in topics[index + 1:]:
+                                self.topic_graph[topic][related] += 1
+                                self.topic_graph[related][topic] += 1
+            else:
+                for topic, links in stored_graph.items():
+                    self.topic_graph[topic] = Counter(links)
             self._global_topic_df = Counter(data.get("global_topic_df", {}))
             self._total_docs      = data.get("total_docs", 0)
+            if migrated_topic_graph and not self._save():
+                logger.warning("[WorldModel] topic graph provenance migration could not be persisted")
         except Exception as e:
             logger.warning(f"[WorldModel] load error: {e}")

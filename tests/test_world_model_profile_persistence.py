@@ -13,7 +13,7 @@ class WorldModelProfilePersistenceTests(unittest.TestCase):
             model = WorldModel(None, path=str(Path(directory) / "world.json"))
             profile = model.update_from_interaction(
                 user_id="fred",
-                user_text="Can you help with my robot?",
+                user_text="Can you help with my robot sensors?",
                 response="Quasars and nebulae are fascinating astronomy topics.",
                 emotion="neutral",
             )
@@ -23,6 +23,9 @@ class WorldModelProfilePersistenceTests(unittest.TestCase):
         self.assertNotIn("nebulae", profile.topic_entries)
         self.assertNotIn("quasars", model._global_topic_df)
         self.assertNotIn("nebulae", model._global_topic_df)
+        self.assertNotIn("quasars", model.topic_graph)
+        self.assertNotIn("nebulae", model.topic_graph)
+        self.assertIn("sensors", model.related_topics("robot"))
 
     def test_behavioral_topic_context_does_not_claim_user_preferences(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -120,6 +123,32 @@ class WorldModelProfilePersistenceTests(unittest.TestCase):
         self.assertEqual(profile.expertise, {})
         self.assertEqual(profile.preferred_depth, "medium")
         self.assertGreater(profile.relational.avg_message_length, 0)
+
+    def test_legacy_mixed_topic_graph_is_preserved_but_rebuilt_from_user_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "world.json"
+            path.write_text(json.dumps({
+                "user_profiles": {
+                    "fred": {
+                        "user_id": "fred",
+                        "interaction_count": 1,
+                        "_recent_topic_windows": [["robot", "sensors"]],
+                    },
+                },
+                "topic_graph": {
+                    "robot": {"sensors": 1, "quasars": 3},
+                    "sensors": {"robot": 1},
+                    "quasars": {"robot": 3},
+                },
+            }), encoding="utf-8")
+
+            model = WorldModel(None, path=str(path))
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertIn("sensors", model.related_topics("robot"))
+        self.assertNotIn("quasars", model.related_topics("robot"))
+        self.assertEqual(saved["topic_graph_schema_version"], WorldModel.TOPIC_GRAPH_SCHEMA_VERSION)
+        self.assertIn("quasars", saved["legacy_topic_graph_unverified"]["robot"])
 
     def test_failed_profile_write_is_not_reported_as_updated(self):
         with tempfile.TemporaryDirectory() as directory:
