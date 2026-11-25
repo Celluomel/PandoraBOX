@@ -1249,7 +1249,12 @@ class MemorySystemFallbackTests(unittest.TestCase):
             {"role": "user", "content": "Retiens le code témoin BETA-456 pour la question."},
             {"role": "assistant", "content": "Noté."},
         ]
-        self.assertIsNone(recent_dialogue_recall_source_result(query, ambiguous))
+        immediate = recent_dialogue_recall_source_result(query, ambiguous)
+        self.assertEqual(immediate["status"], "supported_recent_dialogue_source")
+        self.assertIn("BETA-456", immediate["answer"])
+        self.assertIsNone(recent_dialogue_recall_source_result(
+            "What witness code did I ask you to keep earlier?", ambiguous,
+        ))
 
     def test_text_recall_excludes_visual_results_from_mixed_retrieval_pool(self):
         records = [

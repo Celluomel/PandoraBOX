@@ -814,8 +814,21 @@ def recent_dialogue_recall_source_result(
         return None
     best_overlap = max(item[0] for item in candidates)
     best = [item for item in candidates if item[0] == best_overlap]
-    if len(best) != 1:
-        return None
+    if len(best) > 1:
+        # A deictic reference scopes the request to the nearby exchange, so
+        # the closest matching user utterance is the relevant source. Without
+        # that scope, equal historical candidates remain ambiguous.
+        immediate_scope = bool(re.search(
+            r"\b(?:this\s+(?:question|turn|message)|my\s+next\s+question|"
+            r"the\s+next\s+question|just\s+now|the\s+last\s+message|"
+            r"cette\s+(?:question|conversation|échange)|ce\s+tour|"
+            r"ma\s+prochaine\s+question|la\s+question\s+suivante|"
+            r"le\s+dernier\s+message|à\s+l['’]instant)\b",
+            query_text, re.IGNORECASE,
+        ))
+        if not immediate_scope:
+            return None
+        best = [min(best, key=lambda item: item[1])]
 
     _, recency, source_text = best[0]
     excerpt = source_text[:800]
