@@ -27,6 +27,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import threading
 from typing import List, Dict, Optional, Callable, Any
 
@@ -40,6 +41,11 @@ COMPRESS_TRIGGER = 16   # 80% of default _HISTORY_MAX=20
 COMPRESS_WINDOW  = 10   # number of oldest turns to compress into summary
 MAX_RAW_TURNS    = 20   # hard cap after compression
 MAX_SESSION_SUMMARY_CHARS = 10_000  # bounded restored context/prompt budget
+_ARCHIVED_USER_SOURCE_RE = re.compile(
+    r"Retrieved user-authored source\s*\(verbatim\):\s*"
+    r"[\u201c\u00ab\"](?P<excerpt>[^\u201d\u00bb\"\r\n]{1,800})[\u201d\u00bb\"]",
+    re.IGNORECASE,
+)
 
 _COMPRESS_SYSTEM = """You are a conversation summarizer for an AI assistant named PandoraBOX.
 Given a list of conversation turns, write a dense factual summary that preserves:
@@ -70,6 +76,39 @@ def _bound_session_summary(value: Any) -> str:
     head_chars = remaining // 3
     tail_chars = remaining - head_chars
     return text[:head_chars].rstrip() + marker + text[-tail_chars:].lstrip()
+
+
+def _preserve_archived_user_source_excerpts(
+    summary: str, *source_texts: str,
+) -> str:
+    """Keep provenance-labelled exact excerpts outside LLM summarization loss."""
+    excerpts = []
+    seen = set()
+    for source_text in source_texts:
+        for match in _ARCHIVED_USER_SOURCE_RE.finditer(str(source_text or "")):
+            excerpt = re.sub(r"\s+", " ", match.group("excerpt")).strip()
+            if excerpt and excerpt not in seen:
+                seen.add(excerpt)
+                excerpts.append(excerpt)
+
+    if not excerpts:
+        return _bound_session_summary(summary)
+
+    # Keep this small and deterministic; the general summary remains under the
+    # existing context budget, while these exact passages survive re-summarizing.
+    excerpt_lines = [
+        f'Retrieved user-authored source (verbatim): “{excerpt}”'
+        for excerpt in excerpts[:8]
+    ]
+    section = (
+        "[PRESERVED ARCHIVE SOURCE EXCERPTS — provenance labels inherited from the prior summary; "
+        "not independently checked against a raw transcript]\n"
+        + "\n".join(excerpt_lines)
+    )
+    separator = "\n\n"
+    summary_budget = max(0, MAX_SESSION_SUMMARY_CHARS - len(section) - len(separator))
+    bounded_summary = str(summary or "").strip()[:summary_budget].rstrip()
+    return _bound_session_summary(bounded_summary + separator + section)
 
 
 def _is_restored_session_summary(message: Any) -> bool:
@@ -303,7 +342,9 @@ class SessionManager:
             turns_text,
             previous_summary=_bound_session_summary(previous_summary),
         )
-        new_summary = _bound_session_summary(new_summary)
+        new_summary = _preserve_archived_user_source_excerpts(
+            new_summary, previous_summary, turns_text,
+        )
 
         # A newer exchange may have been checkpointed while the LLM summarized
         # this snapshot. Never replace it with the older `keep` tail.

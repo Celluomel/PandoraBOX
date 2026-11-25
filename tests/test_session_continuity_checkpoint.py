@@ -207,6 +207,36 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
         self.assertEqual(saved, "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nUpdated bounded summary.")
         self.assertNotIn("[ADDITIONAL CONTEXT]", saved)
 
+    def test_compression_preserves_provenance_labelled_exact_source_excerpt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "session.json"
+            summary_path = Path(folder) / "summary.json"
+
+            def summarize(_prompt, _system):
+                return "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nRecent task state only."
+
+            with patch("managers.session_manager.SESSION_PATH", str(raw_path)), patch(
+                "managers.session_manager.SUMMARY_PATH", str(summary_path)
+            ):
+                session = SessionManager(llm_fn=summarize)
+                source = (
+                    'Retrieved user-authored source (verbatim): '
+                    '"For this audit, remember the exact marker: cobalt fern 8421."'
+                )
+                session._summary = "Prior archive.\n" + source
+                history = [
+                    {"role": "user", "content": f"new archived user turn {i}"}
+                    for i in range(10)
+                ]
+                session._save_raw(history)
+
+                self.assertTrue(session._compress_unlocked())
+                saved = json.loads(summary_path.read_text(encoding="utf-8"))["text"]
+
+        self.assertIn("Recent task state only.", saved)
+        self.assertIn("Retrieved user-authored source (verbatim):", saved)
+        self.assertIn("cobalt fern 8421", saved)
+
     def test_legacy_oversized_summary_is_bounded_but_not_injected_into_history(self):
         with tempfile.TemporaryDirectory() as folder:
             raw_path = Path(folder) / "session.json"
