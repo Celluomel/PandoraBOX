@@ -356,7 +356,7 @@ def test_identity_action_detector_consumes_typed_action_receipts():
     assert engine._detect_identity_vs_action(context) == []
 
 
-def test_identity_action_detector_does_not_treat_failed_action_as_behavior():
+def test_identity_action_detector_does_not_infer_trait_contradiction_from_failed_action():
     engine = CognitiveDissonanceEngine()
     context = CDEContext(
         beliefs=["I am curious"],
@@ -365,11 +365,11 @@ def test_identity_action_detector_does_not_treat_failed_action_as_behavior():
 
     events = engine._detect_identity_vs_action(context)
 
-    assert len(events) == 1
-    assert events[0].action_ref == "no exploration action taken"
+    assert events == []
+    assert engine._identity_action_detector_status == "insufficient_behavioral_observation"
 
 
-def test_identity_action_detector_does_not_count_internal_question_as_expression():
+def test_identity_action_detector_does_not_infer_expression_absence_from_unrelated_receipt():
     engine = CognitiveDissonanceEngine()
     context = CDEContext(
         beliefs=["I am expressive"],
@@ -378,8 +378,8 @@ def test_identity_action_detector_does_not_count_internal_question_as_expression
 
     events = engine._detect_identity_vs_action(context)
 
-    assert len(events) == 1
-    assert events[0].action_ref == "no expression action taken"
+    assert events == []
+    assert engine._identity_action_detector_status == "insufficient_behavioral_observation"
 
 
 def test_later_successful_exploration_receipt_closes_only_its_linked_incident(tmp_path):

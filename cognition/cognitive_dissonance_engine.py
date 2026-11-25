@@ -139,6 +139,7 @@ class CognitiveDissonanceEngine:
             "event_store_status": self._last_persistence_status,
             "event_store_event_count": len(self._events),
             "prediction_detector_status": self._prediction_detector_status,
+            "identity_action_detector_status": "not_run",
         }
         logger.info(
             "[CDE] CognitiveDissonanceEngine initialised — event_store=%s events=%d",
@@ -581,6 +582,9 @@ class CognitiveDissonanceEngine:
             "event_store_status": self._last_persistence_status,
             "event_store_event_count": len(self._events),
             "prediction_detector_status": self._prediction_detector_status,
+            "identity_action_detector_status": str(
+                getattr(self, "_identity_action_detector_status", "unreported")
+            ),
         }
         return result
 
@@ -711,65 +715,36 @@ class CognitiveDissonanceEngine:
     # ── Private detection helpers ─────────────────────────────────────────────
 
     def _detect_identity_vs_action(self, ctx: CDEContext) -> List[DissonanceEvent]:
-        """Check if any belief in identity_state is contradicted by recent actions."""
-        events = []
+        """Detect only explicit identity/behavior contradictions.
+
+        Goal-action receipts are a sparse log of selected operations, not a
+        complete observation window of behavior. In particular, a failed
+        operation or the absence of a matching operation among the last five
+        receipts cannot establish that a trait was contradicted. Successful
+        receipts may still close an already-open, event-linked inquiry in
+        ``_record_action_counterevidence``; that is separate from detecting a
+        new contradiction.
+        """
         beliefs = ctx.beliefs or ctx.identity_state.get("beliefs", [])
         recent = ctx.action_receipts or ctx.recent_actions
-
-        def action_kind(item: Any) -> str:
-            if isinstance(item, dict):
-                return str(item.get("action") or item.get("action_type") or "").casefold()
-            return str(item).casefold()
-
-        def action_succeeded(item: Any) -> bool:
-            # Typed execution receipts distinguish dispatched/failed actions
-            # from completed behavior. Do not use an attempted operation as
-            # evidence that an identity claim was enacted.
-            return isinstance(item, dict) and item.get("success") is True
-
-        for belief in beliefs[:10]:
-            bl = belief.lower()
-
-            if "curious" in bl:
-                # Curiosity claim: check if exploration actions happened
-                explored = any(
-                    action_succeeded(action)
-                    and (
-                        action_kind(action) in _EXPLORATION_ACTIONS
-                        or "explore" in action_kind(action)
-                        or "research" in action_kind(action)
-                    )
-                    for action in recent[-5:]
-                )
-                if not explored and recent:
-                    events.append(DissonanceEvent(
-                        id          = uuid.uuid4().hex[:12],
-                        type        = DissonanceEventType.IDENTITY_VS_ACTION,
-                        belief_ref  = belief,
-                        action_ref  = "no exploration action taken",
-                        intensity   = 0.45,
-                    ))
-
-            elif "expressive" in bl or "expressive" in bl:
-                communicated = any(
-                    action_succeeded(action)
-                    and (
-                        action_kind(action) in _EXPRESSION_ACTIONS
-                        or "express" in action_kind(action)
-                        or "respond" in action_kind(action)
-                    )
-                    for action in recent[-5:]
-                )
-                if not communicated and recent:
-                    events.append(DissonanceEvent(
-                        id          = uuid.uuid4().hex[:12],
-                        type        = DissonanceEventType.IDENTITY_VS_ACTION,
-                        belief_ref  = belief,
-                        action_ref  = "no expression action taken",
-                        intensity   = 0.35,
-                    ))
-
-        return events
+        tracks_behavioral_trait = any(
+            isinstance(belief, str)
+            and any(trait in belief.casefold() for trait in ("curious", "expressive"))
+            for belief in beliefs[:10]
+        )
+        # No producer currently supplies a complete, independently observed
+        # behavioral window with an explicit contradiction. Keep the gap
+        # visible instead of manufacturing evidence from sparse action logs.
+        self._identity_action_detector_status = (
+            "insufficient_behavioral_observation" if tracks_behavioral_trait
+            else "not_applicable"
+        )
+        if recent and tracks_behavioral_trait:
+            logger.debug(
+                "[CDE] Identity/action contradiction not evaluated: sparse action receipts "
+                "do not establish behavioral absence"
+            )
+        return []
 
     def _detect_goal_vs_outcome(self, ctx: CDEContext) -> List[DissonanceEvent]:
         """Check if any thread's predicted outcome differs from current_state."""
