@@ -814,6 +814,11 @@ class InternalThoughtLoop:
     @staticmethod
     def _evidence_summary(value: Any) -> dict[str, Any]:
         """Return a deliberately small, non-text summary suitable for status APIs."""
+        if type(value).__name__ == "SelectionResult":
+            from core.module_tick_log import summarize_output
+            summary = summarize_output(value)
+            summary["kind"] = summary.pop("type", "SelectionResult")
+            return summary
         if isinstance(value, dict):
             summary: dict[str, Any] = {"kind": "mapping", "field_count": len(value)}
             for key in (

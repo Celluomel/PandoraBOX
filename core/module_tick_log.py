@@ -12,6 +12,52 @@ from typing import Any
 def summarize_output(value: Any) -> dict[str, Any]:
     """Describe result shape and numeric validity without retaining prose."""
     result: dict[str, Any] = {"type": type(value).__name__}
+    if type(value).__name__ == "SelectionResult":
+        dominant = getattr(value, "dominant", None)
+        secondary = getattr(value, "secondary", None)
+        scores = getattr(value, "scores", None)
+        scores = scores if isinstance(scores, dict) else {}
+        numeric_scores = [
+            float(score) for score in scores.values()
+            if isinstance(score, (int, float)) and not isinstance(score, bool)
+            and math.isfinite(float(score))
+        ]
+        rationale = str(getattr(value, "rationale", "") or "")
+        result.update({
+            "selection_outcome": (
+                "selected" if dominant is not None else
+                "below_threshold" if numeric_scores else "no_eligible_threads"
+            ),
+            "has_dominant": dominant is not None,
+            "secondary_count": len(secondary) if isinstance(secondary, (list, tuple)) else 0,
+            "scored_candidate_count": len(numeric_scores),
+            "rationale_present": bool(rationale),
+        })
+        if numeric_scores:
+            result["score_distribution"] = {
+                "count": len(numeric_scores),
+                "min": round(min(numeric_scores), 4),
+                "mean": round(sum(numeric_scores) / len(numeric_scores), 4),
+                "max": round(max(numeric_scores), 4),
+            }
+        if dominant is not None:
+            dominant_id = getattr(dominant, "id", None)
+            selected_score = scores.get(dominant_id) if dominant_id is not None else None
+            if (
+                isinstance(selected_score, (int, float))
+                and not isinstance(selected_score, bool)
+                and math.isfinite(float(selected_score))
+            ):
+                result["selected_score"] = round(float(selected_score), 4)
+            metrics = {}
+            for key in ("confidence", "uncertainty", "dissonance", "safety_risk", "curiosity"):
+                metric = getattr(dominant, key, None)
+                if isinstance(metric, (int, float)) and not isinstance(metric, bool) and math.isfinite(float(metric)):
+                    metrics[key] = round(float(metric), 4)
+            if metrics:
+                result["dominant_metrics"] = metrics
+        result["quality"] = "present"
+        return result
     if value is None or isinstance(value, (bool, int, float)):
         if isinstance(value, bool):
             result["value"] = value

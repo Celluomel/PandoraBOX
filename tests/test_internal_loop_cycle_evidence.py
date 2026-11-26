@@ -4,10 +4,11 @@ import json
 import threading
 from types import SimpleNamespace
 
-from core.module_tick_log import ModuleTickLog
+from core.module_tick_log import ModuleTickLog, summarize_output
 from core.cognitive_governor import CognitiveGovernor
 from core.internal_loop import InternalThoughtLoop, _executive_arbitration_skip_reason
 from cognition.global_workspace import GlobalWorkspace
+from cognition.dominant_thought_selector import SelectionResult
 from cognition.thought_thread_engine import ThoughtThread, ThoughtThreadStatus
 from cognition.cognitive_dissonance_engine import DissonanceEvent, DissonanceEventType
 
@@ -128,6 +129,67 @@ def test_cycle_receipt_keeps_boolean_action_effect_evidence_without_user_text():
     assert summary["workspace_broadcast"] is False
     assert summary["action"] == "memory_recall"
     assert "private recalled text" not in repr(summary)
+
+
+def test_selection_result_receipt_keeps_choice_metrics_without_topic_or_rationale_text():
+    dominant = SimpleNamespace(
+        id="thread-private-id", topic="private audit topic", confidence=0.7,
+        uncertainty=0.2, dissonance=0.1, safety_risk=0.0, curiosity=0.4,
+    )
+    result = SelectionResult(
+        dominant=dominant,
+        secondary=[SimpleNamespace(id="secondary")],
+        scores={"thread-private-id": 0.63, "other-private-id": 0.31},
+        rationale="Selected private audit topic for current pressure",
+    )
+
+    summary = InternalThoughtLoop._evidence_summary(result)
+
+    assert summary["selection_outcome"] == "selected"
+    assert summary["has_dominant"] is True
+    assert summary["secondary_count"] == 1
+    assert summary["scored_candidate_count"] == 2
+    assert summary["selected_score"] == 0.63
+    assert summary["score_distribution"] == {
+        "count": 2, "min": 0.31, "mean": 0.47, "max": 0.63,
+    }
+    assert "private audit topic" not in repr(summary)
+    assert "Selected private audit topic" not in repr(summary)
+
+
+def test_selection_result_receipt_distinguishes_no_eligible_threads_from_threshold_rejection():
+    no_candidates = InternalThoughtLoop._evidence_summary(
+        SelectionResult(dominant=None, scores={}, rationale="No eligible threads")
+    )
+    below_threshold = InternalThoughtLoop._evidence_summary(
+        SelectionResult(dominant=None, scores={"thread-id": 0.12}, rationale="Below threshold")
+    )
+
+    assert no_candidates["selection_outcome"] == "no_eligible_threads"
+    assert below_threshold["selection_outcome"] == "below_threshold"
+    assert below_threshold["scored_candidate_count"] == 1
+
+
+def test_module_tick_selection_result_keeps_choice_metrics_without_private_text():
+    result = SelectionResult(
+        dominant=SimpleNamespace(
+            id="private-id", topic="private topic", confidence=0.7,
+            uncertainty=0.2, dissonance=0.1, safety_risk=0.0, curiosity=0.4,
+        ),
+        secondary=[],
+        scores={"private-id": 0.63},
+        rationale="Private rationale text",
+    )
+
+    summary = summarize_output(result)
+
+    assert summary["type"] == "SelectionResult"
+    assert summary["selection_outcome"] == "selected"
+    assert summary["scored_candidate_count"] == 1
+    assert summary["selected_score"] == 0.63
+    assert summary["dominant_metrics"]["confidence"] == 0.7
+    assert "private topic" not in repr(summary)
+    assert "Private rationale text" not in repr(summary)
 
 
 def test_goal_admission_receipt_preserves_rejection_counts_and_safe_reason_codes():
