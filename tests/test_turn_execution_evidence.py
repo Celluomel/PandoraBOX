@@ -482,6 +482,59 @@ def test_source_provenance_distinguishes_conversation_from_unrecorded_memory():
     assert "pas quelle information a déterminé son raisonnement interne" in answer
 
 
+def test_source_provenance_carries_live_observation_absence_into_prompt():
+    stage = {
+        "status": "no_current_evidence",
+        "output_fingerprint": "f" * 64,
+        "output_quality": "present",
+        "output_summary": {
+            "type": "current_observation_availability_receipt",
+            "source": "body_runtime",
+            "availability": "no_current_evidence",
+            "context_included": False,
+            "observation_count": 0,
+            "fresh_count": 0,
+            "stale_count": 0,
+        },
+    }
+    provenance = _prompt_source_provenance({"body_observation_context": stage})
+    body_source = provenance["sources"]["live_body_observations"]
+    rendered = _render_prompt_source_provenance(provenance)
+
+    assert "body_observation_context" in provenance["prompt_dependencies"]
+    assert body_source["status"] == "no_current_evidence"
+    assert body_source["fresh_count"] == 0
+    assert "live Body observations: no_current_evidence (fresh_count=0, stale_count=0)" in rendered
+    assert "Configuration and remembered conversation do not establish current data flow" in rendered
+
+
+def test_current_observation_receipt_is_bounded_and_drops_private_fields():
+    from cognition.turn_context_evidence import audit_safe_turn_summary
+
+    summary = audit_safe_turn_summary({
+        "type": "current_observation_availability_receipt",
+        "source": "secret-source",
+        "availability": "no_current_evidence",
+        "context_included": False,
+        "observation_count": -4,
+        "fresh_count": 0,
+        "stale_count": 3,
+        "private_sensor_payload": "sensitive detail",
+    })
+
+    assert summary == {
+        "type": "current_observation_availability_receipt",
+        "quality": "present",
+        "source": "body_runtime",
+        "availability": "no_current_evidence",
+        "context_included": False,
+        "observation_count": 0,
+        "fresh_count": 0,
+        "stale_count": 3,
+    }
+    assert "sensitive detail" not in repr(summary)
+
+
 def test_source_provenance_separates_indexed_memory_from_session_archive():
     provenance = _prompt_source_provenance({
         "memory_prompt_context": {

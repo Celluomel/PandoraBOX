@@ -350,6 +350,26 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
 
+    if value.get("type") == "current_observation_availability_receipt":
+        availability = str(value.get("availability") or "unavailable")
+        if availability not in {
+            "fresh", "stale_only", "no_current_evidence", "unavailable",
+            "failed", "fresh_evidence_not_in_prompt",
+        }:
+            availability = "unavailable"
+        receipt: dict[str, Any] = {
+            "type": "current_observation_availability_receipt",
+            "quality": "present",
+            "source": "body_runtime",
+            "availability": availability,
+            "context_included": bool(value.get("context_included")),
+        }
+        for field_name in ("observation_count", "fresh_count", "stale_count"):
+            number = value.get(field_name)
+            if isinstance(number, int) and not isinstance(number, bool):
+                receipt[field_name] = max(0, min(100000, number))
+        return receipt
+
     if value.get("type") == "affect_advisory_context_receipt":
         receipt: dict[str, Any] = {
             "type": "affect_advisory_context_receipt",

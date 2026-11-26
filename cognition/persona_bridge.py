@@ -232,7 +232,7 @@ def _prompt_assembly_dependencies(stages: dict[str, Any]) -> tuple[str, ...]:
         "cognitive_prompt_context", "dominant_thought_context",
         "conversation_continuity_context", "self_description_context",
         "affect_advisory_context", "session_archive_retrieval",
-        "turn_source_provenance_context",
+        "turn_source_provenance_context", "body_observation_context",
     ):
         stage = stages.get(name)
         if (
@@ -255,11 +255,22 @@ def _prompt_source_provenance(stages: dict[str, Any]) -> dict[str, Any]:
         "cognitive_workspace": "cognitive_prompt_context",
         "self_description": "self_description_context",
         "affect_state": "affect_advisory_context",
+        "live_body_observations": "body_observation_context",
     }
     sources = {}
     for label, stage_name in source_stages.items():
         stage = stages.get(stage_name)
-        if stage_name in dependencies:
+        summary = stage.get("output_summary", {}) if isinstance(stage, dict) else {}
+        body_source = label == "live_body_observations"
+        if body_source and isinstance(summary, dict) and summary.get("type") == "current_observation_availability_receipt":
+            availability = str(summary.get("availability") or "unavailable")
+            if availability == "fresh" and summary.get("context_included") is True:
+                status = "included_in_prompt"
+            elif availability in {"no_current_evidence", "stale_only", "unavailable", "failed", "fresh_evidence_not_in_prompt"}:
+                status = availability
+            else:
+                status = "not_recorded_for_turn"
+        elif stage_name in dependencies:
             status = "included_in_prompt"
         elif isinstance(stage, dict) and stage.get("status") in {
             "empty", "skipped_by_scope", "skipped_unavailable", "not_selected",
@@ -275,6 +286,11 @@ def _prompt_source_provenance(stages: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(stage, dict) else ""
             ),
         }
+        if body_source and isinstance(summary, dict):
+            for field_name in ("observation_count", "fresh_count", "stale_count"):
+                value = summary.get(field_name)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    sources[label][field_name] = max(0, min(100000, value))
     return {
         "type": "prompt_source_provenance",
         "sources": sources,
@@ -299,17 +315,30 @@ def _render_prompt_source_provenance(provenance: dict[str, Any]) -> str:
         "cognitive_workspace": "cognitive workspace state",
         "self_description": "self-description context",
         "affect_state": "affect state context",
+        "live_body_observations": "live Body observations",
     }
     lines = ["━━ CURRENT TURN SOURCE PROVENANCE ━━"]
     for key, label in labels.items():
         entry = sources.get(key)
         status = str(entry.get("status") or "not_recorded_for_turn") if isinstance(entry, dict) else "not_recorded_for_turn"
-        lines.append(f"- {label}: {status}")
+        detail = ""
+        if key == "live_body_observations" and isinstance(entry, dict):
+            counts = [
+                f"{field}={entry[field]}"
+                for field in ("fresh_count", "stale_count")
+                if isinstance(entry.get(field), int)
+            ]
+            if counts:
+                detail = " (" + ", ".join(counts) + ")"
+        lines.append(f"- {label}: {status}{detail}")
     lines.append(
         "When asked what information sources were available, report this ledger accurately. "
         "Included means supplied to the model, not proof of attention or reliance. "
         "Never claim retrieval or use of a source marked not_included or not_recorded_for_turn; "
-        "if asked what actually determined an answer, distinguish prompt availability from unobservable internal reliance."
+        "if asked what actually determined an answer, distinguish prompt availability from unobservable internal reliance. "
+        "A current evidence source marked unavailable, stale_only, no_current_evidence, or fresh_evidence_not_in_prompt "
+        "cannot support a claim about the present state or a measured trajectory. Configuration and remembered conversation "
+        "do not establish current data flow. State that the needed evidence is unavailable when it is relevant to the question."
     )
     return "\n".join(lines)
 
@@ -8040,21 +8069,66 @@ Memory honesty — two distinct cases:
                     if age is None or age > stale_after:
                         stale_count += 1
                 if body_metadata_available:
+                    fresh_count = max(0, len(observations) - stale_count)
+                    availability = (
+                        "fresh" if fresh_count and body_context else
+                        "fresh_evidence_not_in_prompt" if fresh_count else
+                        "stale_only" if observations else "no_current_evidence"
+                    )
+                    stage_status = (
+                        "injected" if availability == "fresh" else availability
+                    )
+                    availability_receipt = {
+                        "type": "current_observation_availability_receipt",
+                        "source": "body_runtime",
+                        "availability": availability,
+                        "context_included": bool(body_context) and fresh_count > 0,
+                        "observation_count": len(observations),
+                        "fresh_count": fresh_count,
+                        "stale_count": stale_count,
+                    }
                     self._record_turn_stage(
                         "body_observation_context",
-                        "injected" if len(observations) > stale_count else "no_current_evidence",
+                        stage_status,
+                        output=availability_receipt,
+                        consumes=("turn_input",),
+                        turn_id=audit_turn_id,
                     )
                     self._record_turn_context_source(
-                        "body_runtime", "injected" if len(observations) > stale_count else "no_current_evidence",
+                        "body_runtime", availability,
                         turn_id=audit_turn_id,
                         observation_count=len(observations),
-                        fresh_count=max(0, len(observations) - stale_count),
+                        fresh_count=fresh_count,
                         stale_count=stale_count,
                         oldest_age_seconds=max(ages) if ages else None,
                         source_kinds=source_kinds,
                     )
+                    if availability in {"no_current_evidence", "stale_only", "fresh_evidence_not_in_prompt"}:
+                        system_prompt += (
+                            "\n\n━━ CURRENT BODY EVIDENCE AVAILABILITY ━━\n"
+                            f"This turn's Body evidence status is {availability}; "
+                            f"fresh observations={fresh_count}, stale observations={stale_count}. "
+                            "A configured Body adapter does not establish a running service or data flow. "
+                            "Do not claim a Body measurement, timestamped trajectory, or current physical state "
+                            "unless a corresponding timestamped record is actually included in the evidence above. "
+                            "Stale records may support only the historical interval they explicitly identify. "
+                            "If the requested fact has no supporting record, state that the Brain cannot confirm it from this turn's evidence."
+                        )
                 else:
-                    self._record_turn_stage("body_observation_context", "metadata_unavailable")
+                    self._record_turn_stage(
+                        "body_observation_context", "unavailable",
+                        output={
+                            "type": "current_observation_availability_receipt",
+                            "source": "body_runtime",
+                            "availability": "unavailable",
+                            "context_included": False,
+                            "observation_count": 0,
+                            "fresh_count": 0,
+                            "stale_count": 0,
+                        },
+                        consumes=("turn_input",),
+                        turn_id=audit_turn_id,
+                    )
                 workspace = getattr(self._organism, "workspace", None) if self._organism else None
                 workspace_context = (workspace.get_state().context or {}) if workspace is not None else {}
                 cache = workspace_context.get("latest_body_perceptions") if isinstance(workspace_context, dict) else None
@@ -8116,7 +8190,26 @@ Memory honesty — two distinct cases:
                     record_count=sum(isinstance(value, dict) for value in (local_camera, local_faces)),
                 )
             else:
-                self._record_turn_stage("body_observation_context", "unavailable")
+                system_prompt += (
+                    "\n\n━━ CURRENT BODY EVIDENCE AVAILABILITY ━━\n"
+                    "This turn has no Body runtime adapter or timestamped Body observations. "
+                    "A configured capability elsewhere does not establish current connectivity or data flow. "
+                    "Do not assert Body measurements, trajectory, or physical state without a corresponding record."
+                )
+                self._record_turn_stage(
+                    "body_observation_context", "unavailable",
+                    output={
+                        "type": "current_observation_availability_receipt",
+                        "source": "body_runtime",
+                        "availability": "unavailable",
+                        "context_included": False,
+                        "observation_count": 0,
+                        "fresh_count": 0,
+                        "stale_count": 0,
+                    },
+                    consumes=("turn_input",),
+                    turn_id=audit_turn_id,
+                )
                 self._record_turn_context_source(
                     "body_runtime", "unavailable", turn_id=audit_turn_id
                 )
@@ -8127,7 +8220,19 @@ Memory honesty — two distinct cases:
                 if isinstance(current_trace, dict) else {}
             )
             if current_stage.get("status") not in {"injected", "unavailable"}:
-                self._record_turn_stage("body_observation_context", "failed", str(exc))
+                self._record_turn_stage(
+                    "body_observation_context", "failed", str(exc),
+                    output={
+                        "type": "current_observation_availability_receipt",
+                        "source": "body_runtime",
+                        "availability": "failed",
+                        "context_included": False,
+                        "observation_count": 0,
+                        "fresh_count": 0,
+                        "stale_count": 0,
+                    },
+                    consumes=("turn_input",), turn_id=audit_turn_id,
+                )
             self._record_turn_context_source(
                 "body_runtime", "metadata_unavailable", turn_id=audit_turn_id
             )
