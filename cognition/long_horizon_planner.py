@@ -1048,6 +1048,7 @@ class LongHorizonPlanner:
         success: bool,
         result: str = "",
         *,
+        reason_code: str = "",
         aspiration_domain: Optional[str] = None,
         execution_id: str = "",
         cycle_id: Optional[int] = None,
@@ -1059,6 +1060,7 @@ class LongHorizonPlanner:
                 operation,
                 success,
                 result,
+                reason_code=reason_code,
                 aspiration_domain=aspiration_domain,
                 execution_id=execution_id,
                 cycle_id=cycle_id,
@@ -1071,6 +1073,7 @@ class LongHorizonPlanner:
         success: bool,
         result: str = "",
         *,
+        reason_code: str = "",
         aspiration_domain: Optional[str] = None,
         execution_id: str = "",
         cycle_id: Optional[int] = None,
@@ -1091,6 +1094,9 @@ class LongHorizonPlanner:
         step = self.current_step(aspiration_domain)
         if step is None or (step.operation != operation and step.action_type != operation):
             return
+        safe_reason_code = str(reason_code or "").strip().casefold()
+        if not re.fullmatch(r"[a-z0-9_]{1,64}", safe_reason_code):
+            safe_reason_code = "reason_unavailable" if not success else ""
         execution_ref = str(execution_id or "").strip()
         previous = plan.last_outcome if isinstance(plan.last_outcome, dict) else {}
         if execution_ref and previous.get("execution_id") == execution_ref:
@@ -1111,6 +1117,8 @@ class LongHorizonPlanner:
                 "missing_evidence": ["dispatched_step_index"],
                 "observed_at": time.time(),
             }
+            if safe_reason_code:
+                plan.last_outcome["reason_code"] = safe_reason_code
             plan.current_decision = (
                 f"{operation} was not advanced: no step index from dispatch was "
                 "provided, so the receipt cannot be bound to this plan step."
@@ -1156,6 +1164,7 @@ class LongHorizonPlanner:
                 "operation": operation,
                 "success": False,
                 "status": "failed",
+                "reason_code": safe_reason_code or "reason_unavailable",
                 "result": str(result)[:240],
                 "result_provided": bool(str(result or "").strip()),
                 "effect_measured": False,

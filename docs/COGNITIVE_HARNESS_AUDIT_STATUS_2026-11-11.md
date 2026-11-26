@@ -5890,3 +5890,13 @@ Ces scénarios démontrent que le même tour utilise un chemin mémoire récent,
 **Body :** activation configurée dans Brain, mais service Body arrêté; le reçu courant n’a donc aucune observation et aucun flux de télémétrie. C’est une source externe indisponible, pas un défaut du harnais cognitif ni une raison de quitter l’audit Brain.
 
 **Progression principale :** reste **3/10 pistes closes**. Ce correctif local ne clôt pas la piste sans tests exécutés et preuve d’une nouvelle exécution liée à un reçu après chargement. L’autre défaut constaté — une action échouée dont le reçu perd la cause — reste ouvert pour le prochain lot.
+
+### La cause d’échec d’une étape était perdue entre l’action et le plan — 26 novembre 2026
+
+**Cause racine :** `_action_self_question` fournit déjà `provider_completion_unverified` dans les preuves lorsqu’une réponse du fournisseur n’est pas certifiable. Mais la branche aspiration de `_finalize_async_action` ne transmettait au planificateur que le texte de résultat; `record_autonomous_action_outcome` stockait donc `success=false` sans `reason_code`. Le reçu de cycle de cette branche omettait lui aussi la cause. Le diagnostic visible « action failed » effaçait ainsi la distinction entre fournisseur incomplet, sortie inutilisable et autres échecs.
+
+**Correction locale :** `_finalize_async_action` valide et transmet le code de cause vers le plan, le reçu retourné et le tick d’origine. `LongHorizonPlanner` le conserve dans `last_outcome`; si une action échoue sans preuve de cause, il enregistre `reason_unavailable` plutôt que de fabriquer une explication. Les sorties réussies et l’avancement du plan ne changent pas.
+
+**Validation :** quatre tests ciblés passent avec Python 3.11 : reprise mémoire bornée, non-reprise d’une action mutatrice non vérifiée, transmission bout en bout de `provider_completion_unverified` et absence d’avancement après échec. `py_compile` passe. La suite plus large de 74 tests a donné 72 réussites et deux échecs de tests sémantiques dus à Nomic inaccessible; aucun des deux ne concerne cette transmission de cause. Lumina et LM Studio sont arrêtés/injoignables, donc cette correction n’a pas encore été observée dans un cycle live.
+
+**Progression principale :** toujours **3/10 pistes closes**. La provenance de la cause est corrigée et couverte localement; le jalon reste ouvert jusqu’à vérification après chargement et examen d’un reçu réel d’échec/réussite sans fausse progression.

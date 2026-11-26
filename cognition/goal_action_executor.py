@@ -2937,10 +2937,20 @@ class GoalActionExecutor:
             execution_id = autonomous_context["execution_id"]
             cycle_id = autonomous_context["cycle_id"]
             operation = autonomous_context["operation"]
+            reason_code = ""
+            if not success:
+                candidate = evidence.get("reason_code") if isinstance(evidence, dict) else None
+                reason_code = (
+                    candidate
+                    if isinstance(candidate, str)
+                    and re.fullmatch(r"[a-z0-9_]{1,64}", candidate)
+                    else "reason_unavailable"
+                )
             planner.record_autonomous_action_outcome(
                 operation,
                 bool(success),
                 str(result or "")[:200],
+                reason_code=reason_code,
                 aspiration_domain=aspiration_domain,
                 execution_id=execution_id,
                 cycle_id=cycle_id,
@@ -2960,6 +2970,8 @@ class GoalActionExecutor:
                 "cycle_id": cycle_id,
                 "effect_measured": False,
             }
+            if reason_code:
+                receipt["reason_code"] = reason_code
             self._record_async_cycle_evidence(
                 cycle_id,
                 "goal_action_executor.aspiration_step_outcome",
@@ -2970,6 +2982,7 @@ class GoalActionExecutor:
                     "success": bool(success),
                     "step_index": expected_step_index,
                     "effect_measured": False,
+                    "reason_code": reason_code,
                 },
             )
             return receipt

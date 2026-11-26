@@ -474,6 +474,55 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.last_outcome["success"], False)
             self.assertIn("progress was not advanced", plan.current_decision)
 
+    def test_async_failure_reason_reaches_aspiration_plan_and_cycle_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[PlanStep(
+                    sequence=0, action_type="philosophical",
+                    operation="self_question", expected_cost=0.05,
+                    expected_gain=0.05,
+                )],
+                resource_reserve=0.2, revision_trigger=0.25, horizon=1,
+                source="aspiration", status="active",
+            )
+            planner._plans["epistemic"] = plan
+            _reserve_aspiration_step(
+                planner, "epistemic", "self_question", "exec-provider-failure",
+                cycle_id=61,
+            )
+            executor = GoalActionExecutor(planner._organism)
+            executor._record_async_cycle_evidence = Mock()
+            executor._autonomous_plan_contexts["exec-provider-failure"] = {
+                "planner": planner,
+                "aspiration_domain": "epistemic",
+                "expected_step_index": 0,
+                "operation": "self_question",
+                "execution_id": "exec-provider-failure",
+                "cycle_id": 61,
+            }
+
+            receipt = executor._finalize_async_action(
+                NS(id="aspiration:epistemic", topic="cognitive audit"),
+                "self_question", False,
+                "provider completion could not be verified",
+                evidence={"reason_code": "provider_completion_unverified"},
+                execution_id="exec-provider-failure", cycle_id=61,
+            )
+
+            self.assertEqual(receipt["reason_code"], "provider_completion_unverified")
+            self.assertEqual(
+                plan.last_outcome["reason_code"], "provider_completion_unverified"
+            )
+            self.assertEqual(plan.last_outcome["execution_id"], "exec-provider-failure")
+            self.assertEqual(plan.steps_completed, 0)
+            cycle_receipt = executor._record_async_cycle_evidence.call_args
+            self.assertEqual(
+                cycle_receipt.kwargs["metrics"]["reason_code"],
+                "provider_completion_unverified",
+            )
+
     def test_autonomous_action_without_plan_provenance_cannot_advance_aspiration(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, _, _ = self._planner(folder)
