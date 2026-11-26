@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS concept_observations (
     confidence REAL DEFAULT 0.5,
     observed_at REAL NOT NULL,
     turn_id TEXT NOT NULL DEFAULT '',
-    goal_signal TEXT NOT NULL DEFAULT 'topic_only'
+    goal_signal TEXT NOT NULL DEFAULT 'topic_only',
+    goal_signal_evidence TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_observation_role ON concept_observations(role, observed_at);
 """
@@ -161,6 +162,11 @@ class SemanticMemory:
                     "ALTER TABLE concept_observations "
                     "ADD COLUMN goal_signal TEXT NOT NULL DEFAULT 'topic_only'"
                 )
+            if "goal_signal_evidence" not in observation_columns:
+                conn.execute(
+                    "ALTER TABLE concept_observations "
+                    "ADD COLUMN goal_signal_evidence TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_observation_turn_concept "
                 "ON concept_observations(concept_id, role, turn_id) WHERE turn_id <> ''"
@@ -195,7 +201,8 @@ class SemanticMemory:
 
     def record_observation(self, name: str, source: str = "unknown",
                            role: str = "context", confidence: float = 0.5,
-                           turn_id: str = "", goal_signal: str = "topic_only") -> bool:
+                           turn_id: str = "", goal_signal: str = "topic_only",
+                           goal_signal_evidence: str = "") -> bool:
         """Persist provenance separately from the shared concept graph.
 
         True is returned only after the observation transaction commits.
@@ -210,20 +217,32 @@ class SemanticMemory:
         goal_signal = str(goal_signal or "topic_only").strip().casefold()
         if goal_signal not in {"continuing_commitment", "topic_only", "none"}:
             goal_signal = "none"
+        goal_signal_evidence = " ".join(
+            str(goal_signal_evidence or "").split()
+        )[:500]
+        if goal_signal == "continuing_commitment" and not goal_signal_evidence:
+            goal_signal = "topic_only"
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO concept_observations
-                   (concept_id, source, role, confidence, observed_at, turn_id, goal_signal)
-                   VALUES (?,?,?,?,?,?,?)
+                   (concept_id, source, role, confidence, observed_at, turn_id,
+                    goal_signal, goal_signal_evidence)
+                   VALUES (?,?,?,?,?,?,?,?)
                    ON CONFLICT(concept_id, role, turn_id) WHERE turn_id <> ''
                    DO UPDATE SET confidence=MAX(confidence, excluded.confidence),
                                  observed_at=MAX(observed_at, excluded.observed_at),
                                  source=excluded.source,
                                  goal_signal=CASE
-                                   WHEN goal_signal='continuing_commitment' THEN goal_signal
-                                   ELSE excluded.goal_signal END""",
+                                   WHEN goal_signal='continuing_commitment'
+                                     AND goal_signal_evidence<>'' THEN goal_signal
+                                   ELSE excluded.goal_signal END,
+                                 goal_signal_evidence=CASE
+                                   WHEN goal_signal='continuing_commitment'
+                                     AND goal_signal_evidence<>'' THEN goal_signal_evidence
+                                   ELSE excluded.goal_signal_evidence END""",
                 (concept_id, str(source)[:80], str(role)[:40], confidence,
-                 time.time(), str(turn_id or "").strip()[:160], goal_signal),
+                 time.time(), str(turn_id or "").strip()[:160], goal_signal,
+                 goal_signal_evidence if goal_signal == "continuing_commitment" else ""),
             )
         return True
 
@@ -242,6 +261,7 @@ class SemanticMemory:
                    FROM concept_observations o JOIN concepts c ON c.id = o.concept_id
                    WHERE o.role = 'user_topic' AND c.strength >= ? AND o.turn_id <> ''
                      AND o.goal_signal='continuing_commitment'
+                     AND o.goal_signal_evidence <> ''
                    GROUP BY c.id
                    HAVING COUNT(DISTINCT o.turn_id) >= ?
                    ORDER BY MAX(o.confidence) DESC, MAX(o.observed_at) DESC, c.strength DESC
@@ -254,6 +274,7 @@ class SemanticMemory:
                     """SELECT turn_id FROM concept_observations
                        WHERE concept_id=? AND role='user_topic' AND turn_id <> ''
                          AND goal_signal='continuing_commitment'
+                         AND goal_signal_evidence <> ''
                        GROUP BY turn_id ORDER BY MAX(observed_at), MIN(id)""",
                     (row["concept_id"],),
                 ).fetchall()

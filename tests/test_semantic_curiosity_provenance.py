@@ -113,7 +113,7 @@ def test_single_grounded_concept_resolves_missing_or_mismatched_dominant_topic()
             "cognitive_load": 0.2,
         }),
     )
-    concepts, _, topic, _, kind, _goal_signal = one_concept._parse(
+    concepts, _, topic, _, kind, _goal_signal, _goal_evidence = one_concept._parse(
         "Explain Nomic embeddings.", "",
     )
     assert concepts == ["nomic embeddings"]
@@ -133,7 +133,7 @@ def test_single_grounded_concept_resolves_missing_or_mismatched_dominant_topic()
             "cognitive_load": 0.2,
         }),
     )
-    concepts, _, topic, _, kind, _goal_signal = ambiguous._parse(
+    concepts, _, topic, _, kind, _goal_signal, _goal_evidence = ambiguous._parse(
         "Explain Nomic embeddings and goal scoring.", "",
     )
     assert len(concepts) == 2

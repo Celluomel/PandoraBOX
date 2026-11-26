@@ -5947,6 +5947,16 @@ Ces scénarios démontrent que le même tour utilise un chemin mémoire récent,
 
 **Progression principale :** toujours **3/10 pistes closes**. Les défauts de provenance, d’intention persistante et de bypass Curiosity sont corrigés localement; la précision sémantique réelle et les effets GoalEngine attendent un processus chargé et des scénarios live.
 
+### Preuve textuelle du signal d’engagement durable — 26 novembre 2026
+
+**Défaut causal suivant :** le label `continuing_commitment` était accompagné d’un `turn_id`, mais pas de la phrase du tour qui justifiait l’interprétation. Le GoalEngine pouvait donc attribuer une intention à un tour sans pouvoir contrôler ni auditer ce que l’extracteur avait effectivement compris.
+
+**Correction locale :** le contrat sémantique demande désormais une citation contiguë exacte du message utilisateur pour tout `continuing_commitment`. L’extracteur vérifie cette citation contre le texte source normalisé; une citation manquante ou paraphrasée ramène le signal à `topic_only`. La citation est conservée avec l’observation SQLite et le couple signal/validité apparaît dans le reçu de trace sans exposer de texte privé. Le schéma migre les bases existantes de façon additive; leurs anciens labels sans preuve restent inéligibles. Aucun appel LLM ni filtre lexical dépendant de la langue n’a été ajouté.
+
+**Validation locale :** `test_cognitive_log_regressions.py` passe **62/62**, dont migration d’un schéma ancien, suppression d’un signal non cité, rejet d’une paraphrase, acceptation d’une citation française exacte, persistance de la source et refus de compter deux extractions du même tour. `test_memory_reliability.py` passe **26/26**; les **7 scénarios** de `test_semantic_curiosity_provenance.py` et les **4 résumés** de reçu sémantique passent par invocation directe. `py_compile` et `git diff --check` passent. L’embedding Nomic de qualité a expiré dans un test; le test a conservé le report et n’a pas pris de repli lexical.
+
+**Limites :** la validation locale prouve le contrat, la citation littérale, la migration et le chemin mémoire→GoalEngine, pas la précision du jugement d’engagement de Gemma dans de vraies formulations. Le reçu live doit confirmer le même `turn_id`, `goal_signal`, `goal_signal_evidence_valid`, l’observation SQLite puis l’effet GoalEngine. Le Brain reste arrêté; pas de prétention de validation live. Progression globale inchangée : **3/10**.
+
 ### Chaîne profil utilisateur — vérification de l’écriture et de la lecture — 26 novembre 2026
 
 **Chemin confirmé dans le code :** les questions de rappel historique, de lecture du profil et les questions générales passent par un routeur Nomic sémantique avant assemblage du prompt. Seuls les faits explicitement enregistrés avec provenance `source_turn_id` sont rendus comme profil; les valeurs héritées sans source sont exclues. Après le tour visible, les faits utilisateur sont appris dans une tâche locale en arrière-plan, sans modifier la réponse déjà livrée. Les questions de lecture de profil et les tours FLUX/peer sont explicitement exclus de l’écriture.

@@ -735,6 +735,9 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         turn_kind = str(value.get("turn_kind") or "")[:24]
         if turn_kind in {"topic", "retrieval", "social", "instruction", "feedback", "decision", "other", "unclassified"}:
             receipt["turn_kind"] = turn_kind
+        goal_signal = str(value.get("goal_signal") or "")[:32]
+        if goal_signal in {"continuing_commitment", "topic_only", "none"}:
+            receipt["goal_signal"] = goal_signal
         learning_status = str(value.get("learning_status") or "")[:32]
         if learning_status in {
             "accepted_topic_turn", "accepted_decision_turn", "skipped_non_topic_turn",
@@ -753,6 +756,8 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 receipt[key] = max(0, min(1000, number))
         if isinstance(value.get("dominant_topic_selected"), bool):
             receipt["dominant_topic_selected"] = value["dominant_topic_selected"]
+        if isinstance(value.get("goal_signal_evidence_valid"), bool):
+            receipt["goal_signal_evidence_valid"] = value["goal_signal_evidence_valid"]
         curiosity_status = str(value.get("curiosity_status") or "")[:32]
         if curiosity_status in {
             "stimulated", "unavailable", "failed", "skipped_peer_source",

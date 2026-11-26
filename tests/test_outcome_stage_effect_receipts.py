@@ -237,6 +237,8 @@ def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
     summary = audit_safe_turn_summary({
         "type": "semantic_extraction_receipt",
         "turn_kind": "topic",
+        "goal_signal": "continuing_commitment",
+        "goal_signal_evidence_valid": True,
         "learning_status": "accepted_topic_turn",
         "status": "completed",
         "persistence_status": "confirmed",
@@ -259,6 +261,8 @@ def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
     })
     assert summary["type"] == "semantic_extraction_receipt"
     assert summary["turn_kind"] == "topic"
+    assert summary["goal_signal"] == "continuing_commitment"
+    assert summary["goal_signal_evidence_valid"] is True
     assert summary["learning_status"] == "accepted_topic_turn"
     assert summary["persistence_status"] == "confirmed"
     assert summary["concepts_persisted"] == 2

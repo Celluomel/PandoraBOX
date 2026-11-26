@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import sys
 import threading
 import tempfile
@@ -451,11 +452,13 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             memory.record_observation(
                 "visual odometry", "conversation", "user_topic", 0.8,
                 turn_id="odometry-turn-1", goal_signal="continuing_commitment",
+                goal_signal_evidence="I am continuing work on visual odometry",
             )
             self.assertNotIn("visual odometry", memory.recent_user_topics())
             memory.record_observation(
                 "visual odometry", "conversation", "user_topic", 0.8,
                 turn_id="odometry-turn-2", goal_signal="continuing_commitment",
+                goal_signal_evidence="I am continuing work on visual odometry",
             )
             self.assertIn("visual odometry", memory.recent_user_topics())
 
@@ -466,12 +469,14 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                 memory.record_observation(
                     "camera calibration", "conversation", "user_topic", 0.8,
                     turn_id="same-turn", goal_signal="continuing_commitment",
+                    goal_signal_evidence="I will keep working on camera calibration",
                 )
             self.assertNotIn("camera calibration", memory.recent_user_topics())
 
             memory.record_observation(
                 "camera calibration", "conversation", "user_topic", 0.8,
                 turn_id="second-turn", goal_signal="continuing_commitment",
+                goal_signal_evidence="I will keep working on camera calibration",
             )
             evidence = memory.recent_user_topic_evidence()
             self.assertEqual(len(evidence), 1)
@@ -491,6 +496,61 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             )
             self.assertNotIn("camera calibration", memory.recent_user_topics())
 
+    def test_continuing_commitment_without_quote_is_not_goal_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
+            memory.record_observation(
+                "camera calibration", "conversation", "user_topic", 0.8,
+                turn_id="unquoted-commitment", goal_signal="continuing_commitment",
+            )
+            self.assertNotIn("camera calibration", memory.recent_user_topics(min_observations=1))
+            with memory._conn() as conn:
+                row = conn.execute(
+                    "SELECT goal_signal, goal_signal_evidence FROM concept_observations"
+                ).fetchone()
+            self.assertEqual(row["goal_signal"], "topic_only")
+            self.assertEqual(row["goal_signal_evidence"], "")
+
+    def test_legacy_commitment_rows_migrate_without_becoming_qualified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "semantic.sqlite")
+            conn = sqlite3.connect(path)
+            try:
+                conn.executescript("""
+                    CREATE TABLE concepts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL,
+                        strength REAL DEFAULT 0.5,
+                        last_used REAL DEFAULT 0,
+                        use_count INTEGER DEFAULT 1,
+                        created_at REAL DEFAULT 0
+                    );
+                    CREATE TABLE concept_observations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        concept_id INTEGER NOT NULL REFERENCES concepts(id),
+                        source TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        confidence REAL DEFAULT 0.5,
+                        observed_at REAL NOT NULL,
+                        turn_id TEXT NOT NULL DEFAULT '',
+                        goal_signal TEXT NOT NULL DEFAULT 'topic_only'
+                    );
+                    INSERT INTO concepts(name, strength) VALUES ('camera calibration', 0.9);
+                    INSERT INTO concept_observations
+                        (concept_id, source, role, confidence, observed_at, turn_id, goal_signal)
+                    VALUES (1, 'conversation', 'user_topic', 0.8, 1, 'legacy-a', 'continuing_commitment'),
+                           (1, 'conversation', 'user_topic', 0.8, 2, 'legacy-b', 'continuing_commitment');
+                """)
+            finally:
+                conn.close()
+            memory = SemanticMemory(path)
+            self.assertNotIn("camera calibration", memory.recent_user_topics(min_observations=2))
+            with memory._conn() as conn:
+                rows = conn.execute(
+                    "SELECT goal_signal_evidence FROM concept_observations ORDER BY id"
+                ).fetchall()
+            self.assertEqual([row["goal_signal_evidence"] for row in rows], ["", ""])
+
     def test_legacy_observations_without_turn_ids_do_not_count_as_repeated_user_intent(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
@@ -504,18 +564,25 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             extractor = SemanticExtractor(memory)
             extractor._parse = lambda *_args: (
                 ["camera calibration"], [], "camera calibration", 0.2, "topic",
-                "continuing_commitment",
+                "continuing_commitment", "Camera calibration is the current topic",
             )
             receipt = extractor._extract(
-                "camera calibration is the current topic", "bounded answer",
+                "Camera calibration is the current topic", "bounded answer",
                 None, None, turn_id="camera-turn-42",
             )
             self.assertEqual(receipt["status"], "completed")
+            self.assertTrue(receipt["goal_signal_evidence_valid"])
             with memory._conn() as conn:
                 rows = conn.execute(
-                    "SELECT turn_id FROM concept_observations WHERE role='user_topic'"
+                    "SELECT turn_id, goal_signal, goal_signal_evidence "
+                    "FROM concept_observations WHERE role='user_topic'"
                 ).fetchall()
             self.assertEqual([row["turn_id"] for row in rows], ["camera-turn-42"])
+            self.assertEqual(rows[0]["goal_signal"], "continuing_commitment")
+            self.assertEqual(
+                rows[0]["goal_signal_evidence"],
+                "Camera calibration is the current topic",
+            )
             self.assertIn("camera calibration", memory.recent_user_topics(min_observations=1))
 
     def test_semantic_extractor_classifies_continuing_intent_in_its_existing_llm_call(self):
@@ -525,6 +592,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             llm_fn=lambda prompt: calls.append(prompt) or json.dumps({
                 "turn_kind": "topic",
                 "goal_signal": "continuing_commitment",
+                "goal_signal_evidence": "I want us to keep improving the cognitive harness",
                 "concepts": [{
                     "name": "cognitive harness",
                     "evidence": "cognitive harness",
@@ -539,8 +607,51 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         )
         self.assertEqual(parsed[4], "topic")
         self.assertEqual(parsed[5], "continuing_commitment")
+        self.assertEqual(parsed[6], "I want us to keep improving the cognitive harness")
         self.assertEqual(len(calls), 1)
         self.assertIn("goal_signal", calls[0])
+
+    def test_continuing_goal_signal_requires_exact_user_evidence(self):
+        for evidence in ("", "I want to explore another topic"):
+            extractor = SemanticExtractor(
+                SimpleNamespace(),
+                llm_fn=lambda _prompt, evidence=evidence: json.dumps({
+                    "turn_kind": "topic",
+                    "goal_signal": "continuing_commitment",
+                    "goal_signal_evidence": evidence,
+                    "concepts": [{
+                        "name": "cognitive harness",
+                        "evidence": "cognitive harness",
+                    }],
+                    "relations": [],
+                    "dominant_topic": "cognitive harness",
+                    "cognitive_load": 0.3,
+                }),
+            )
+            parsed = extractor._parse("Explain the cognitive harness", "acknowledged")
+            self.assertEqual(parsed[5], "topic_only")
+            self.assertEqual(parsed[6], "")
+
+    def test_exact_goal_evidence_is_accepted_in_french(self):
+        message = "Je veux continuer ce projet de mémoire avec toi."
+        extractor = SemanticExtractor(
+            SimpleNamespace(),
+            llm_fn=lambda _prompt: json.dumps({
+                "turn_kind": "topic",
+                "goal_signal": "continuing_commitment",
+                "goal_signal_evidence": "continuer ce projet de mémoire",
+                "concepts": [{
+                    "name": "projet mémoire",
+                    "evidence": "projet de mémoire",
+                }],
+                "relations": [],
+                "dominant_topic": "projet mémoire",
+                "cognitive_load": 0.3,
+            }),
+        )
+        parsed = extractor._parse(message, "acknowledged")
+        self.assertEqual(parsed[5], "continuing_commitment")
+        self.assertEqual(parsed[6], "continuer ce projet de mémoire")
 
     def test_goal_created_from_user_topic_keeps_all_evidence_turn_ids(self):
         engine = GoalEngine.__new__(GoalEngine)
