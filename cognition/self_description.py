@@ -726,6 +726,19 @@ def is_self_affect_query(user_input: str) -> bool:
     return mentions_affect and refers_to_self
 
 
+def affect_report_mode(
+    user_input: str, *, debug_introspection: bool = False, peer_dialogue: bool = False,
+) -> str:
+    """Choose the affect evidence projection for this conversational turn."""
+    if peer_dialogue:
+        return "none"
+    if debug_introspection or is_structured_affect_status_query(user_input):
+        return "detailed"
+    if is_self_affect_query(user_input):
+        return "brief"
+    return "none"
+
+
 def render_affect_self_report(evidence: str, *, language: str = "en") -> str:
     """Render a short social status answer from the injected live affect block.
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 
 from cognition.self_description import (
+    affect_report_mode,
     ComponentDesc,
     SelfDescription,
     affect_self_report_context,
@@ -475,6 +476,18 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertFalse(is_social_status_greeting("How are you using the camera API?"))
         self.assertFalse(is_social_status_greeting("How is the audit going?"))
         self.assertFalse(is_self_affect_query("What emotions are common in humans?"))
+
+    def test_affect_report_mode_wires_social_and_structured_turns_without_peer_leakage(self):
+        self.assertEqual(affect_report_mode("How are you doing, Lumina?"), "brief")
+        self.assertEqual(affect_report_mode("Comment ça va ?"), "brief")
+        self.assertEqual(affect_report_mode(
+            "What emotions are active in you now?"
+        ), "detailed")
+        self.assertEqual(affect_report_mode("Good morning", debug_introspection=True), "detailed")
+        self.assertEqual(affect_report_mode(
+            "How are you doing?", peer_dialogue=True,
+        ), "none")
+        self.assertEqual(affect_report_mode("How is the audit going?"), "none")
 
     def test_social_status_answer_is_a_deterministic_projection_of_modeled_channels(self):
         evidence = (

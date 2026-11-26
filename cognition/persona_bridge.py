@@ -3695,8 +3695,14 @@ class PersonaBridge:
 
         # ── Phase A: build prompt + cache real emotion/cond dicts ────
         self._chat_stage = 'building cognitive prompt'
-        _structured_affect_status = bool(debug_introspection and not peer_name)
-        _affect_self_report_query = _structured_affect_status
+        from cognition.self_description import affect_report_mode
+        _affect_report_mode = affect_report_mode(
+            effective_input,
+            debug_introspection=debug_introspection,
+            peer_dialogue=bool(peer_name),
+        )
+        _structured_affect_status = _affect_report_mode == "detailed"
+        _affect_self_report_query = _affect_report_mode != "none"
         _suppress_external_search = bool(
             voice_mode
             or bool(peer_name)
@@ -3767,7 +3773,7 @@ class PersonaBridge:
             peer_name,
             _audit_turn_id,
             _are_turn_status == "completed",
-            _structured_affect_status,
+            _affect_self_report_query,
             _memory_query,
             _memory_query_prior_count,
             explicit_named_profile_query=_explicit_named_profile_query,
@@ -3870,9 +3876,10 @@ class PersonaBridge:
             )
         _deterministic_affect_report = False
         _affect_direct_response = ""
-        if _structured_affect_status:
+        if _affect_self_report_query:
             try:
                 from cognition.self_description import (
+                    render_affect_self_report,
                     render_detailed_affect_status,
                 )
                 from managers.settings_manager import config as _affect_cfg
@@ -3888,15 +3895,21 @@ class PersonaBridge:
                         or effective_input.casefold().startswith(("comment", "ça ", "tu ", "vous "))
                         else "en"
                     )
-                _affect_direct_response = render_detailed_affect_status(
-                    _affect_evidence, language=_affect_language,
-                )
+                if _structured_affect_status:
+                    _affect_direct_response = render_detailed_affect_status(
+                        _affect_evidence, language=_affect_language,
+                    )
+                else:
+                    _affect_direct_response = render_affect_self_report(
+                        _affect_evidence, language=_affect_language,
+                    )
                 _deterministic_affect_report = True
                 self._record_turn_stage(
                     "affect_status_report", "completed",
                     "Deterministic affect projection rendered from the live structured affect record; no LLM inference or web search required.",
                     output={
                         "source": "AFFECT SELF-REPORT EVIDENCE in assembled prompt",
+                        "projection": _affect_report_mode,
                         "response": _affect_direct_response,
                     },
                     consumes=("affective_state", "turn_input"),
