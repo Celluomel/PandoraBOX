@@ -42,6 +42,7 @@ from cognition.memory_retrieval import (
     is_exact_value_recall_query,
     recent_dialogue_recall_source_result,
     recent_dialogue_message_source_result,
+    semantic_user_recall_candidates,
     filter_recall_query_records,
     filter_memories_by_modality,
     is_explicit_memory_recall_query,
@@ -4209,6 +4210,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "free generation is not allowed to guess the value."
                     )
                     _consumes = ("memory_retrieval", "session_archive_retrieval", "turn_input")
+                elif _memory_profile_intent.get("intent") == "history_recall":
+                    # A semantic historical request must not fall back to free
+                    # generation when neither ranked user memory nor a
+                    # provenance-labelled archive excerpt can support it.
+                    _deterministic_response = str(_memory_recall_result.get("answer") or "")
+                    _detail = (
+                        "No user-authored source met the semantic-recall relevance/margin contract; "
+                        "the source-based abstention is preserved instead of generating a plausible memory."
+                    )
+                    _consumes = ("memory_retrieval", "session_archive_retrieval", "turn_input")
                 else:
                     _memory_recall_result = {
                         "answer": "",
@@ -6796,7 +6807,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # before any memory is serialized into the prompt.
             _recall_candidate_count_before_filter = len(memories)
             if not peer_name and not _explicit_named_profile_query and _is_recall_request:
-                memories = filter_recall_query_records(memories, query=user_input)
+                memories = (
+                    semantic_user_recall_candidates(memories, user_input)
+                    if _semantic_explicit_memory_recall else
+                    filter_recall_query_records(memories, query=user_input)
+                )
                 _memory_recall_result = exact_filename_recall_result(user_input, memories)
                 if _memory_recall_result is None:
                     _memory_recall_result = explicit_recall_source_result(

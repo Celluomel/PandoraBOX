@@ -611,6 +611,36 @@ def filter_recall_query_records(
     return filtered
 
 
+def semantic_user_recall_candidates(
+    memories: Sequence[dict], query: str,
+) -> List[dict]:
+    """Preserve ranked user-authored sources after semantic recall routing.
+
+    The semantic router already established historical intent. Do not repeat
+    that decision with token overlap here; the source adjudicator applies a
+    relevance floor and runner-up margin to these FAISS-ranked candidates.
+    """
+    normalized_query = " ".join(str(query or "").casefold().split())
+    candidates = []
+    seen = set()
+    for memory in memories:
+        if not isinstance(memory, dict):
+            continue
+        kind = str(memory.get("memory_type", "")).casefold()
+        if kind not in {"user_message", "episodic"}:
+            continue
+        source_text = " ".join(extract_user_authored_text(memory).split()).strip()
+        normalized_source = " ".join(source_text.casefold().split())
+        if not source_text or normalized_source == normalized_query or normalized_source in seen:
+            continue
+        seen.add(normalized_source)
+        candidates.append(memory)
+    candidates.sort(
+        key=lambda item: float(item.get("relevance", 0.0) or 0.0), reverse=True,
+    )
+    return candidates
+
+
 def exact_filename_recall_result(
     query: str, memories: Sequence[dict],
 ) -> dict | None:

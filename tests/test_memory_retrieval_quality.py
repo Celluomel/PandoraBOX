@@ -16,6 +16,7 @@ from cognition.memory_retrieval import (
     faiss_l2_relevance,
     is_explicit_memory_recall_query,
     rank_documents,
+    semantic_user_recall_candidates,
     tokenize,
 )
 
@@ -96,6 +97,19 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(result["status"], "supported_verbatim_source")
         self.assertEqual(result["relevance"], 0.91)
         self.assertIn("I have a concern about memory recall", result["answer"])
+
+    def test_semantic_recall_candidates_preserve_faiss_rank_and_user_provenance(self):
+        query = "From earlier conversations, what concern did I raise about memory recall and my profile?"
+        candidates = semantic_user_recall_candidates([
+            {"id": "assistant", "memory_type": "assistant_message", "relevance": 0.99,
+             "text": "An assistant answer about memory."},
+            {"id": "source", "memory_type": "user_message", "relevance": 0.91,
+             "text": "User message: I worry about whether memory recall works and how my profile learns from exchanges."},
+            {"id": "current", "memory_type": "user_message", "relevance": 1.0,
+             "text": f"User message: {query}"},
+        ], query)
+
+        self.assertEqual([item["id"] for item in candidates], ["source"])
 
     def test_semantic_historical_intent_abstains_without_a_clear_retrieved_source(self):
         query = "From earlier conversations, what concern did I raise about memory recall?"
