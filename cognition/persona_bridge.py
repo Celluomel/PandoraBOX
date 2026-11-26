@@ -3107,6 +3107,7 @@ class PersonaBridge:
         )
         _prompt_source_provenance_query = False
         _api_route_query = False
+        _architecture_context_query = False
         _api_route_intent: dict[str, Any] = {"status": "not_checked", "route": False}
         # This flag is consumed later inside the streaming worker below. It
         # must live in this method's scope; the prompt builder runs in a
@@ -3656,6 +3657,10 @@ class PersonaBridge:
             _structured_affect_status,
             _memory_query,
             _memory_query_prior_count,
+            explicit_named_profile_query=_explicit_named_profile_query,
+            api_route_intent=_api_route_intent,
+            api_route_query=_api_route_query,
+            architecture_context_query=_architecture_context_query,
         )
         if _explicit_memory_recall and not peer_name:
             _recent_recall_result = recent_dialogue_recall_source_result(
@@ -5971,6 +5976,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         debug_introspection: bool = False,
         memory_query: str = "",
         memory_query_prior_count: int = 0,
+        explicit_named_profile_query: bool = False,
+        api_route_intent: dict[str, Any] | None = None,
+        api_route_query: bool = False,
+        architecture_context_query: bool = False,
     ) -> tuple[str, dict, dict, float | None, dict | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -5983,6 +5992,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         text to the streaming worker.
         """
         s = self._system
+        _explicit_named_profile_query = bool(explicit_named_profile_query)
+        _api_route_intent = api_route_intent or {"status": "router_unavailable", "route": False}
+        _api_route_query = bool(api_route_query)
+        _architecture_context_query = bool(architecture_context_query)
         self._last_web_sources = []
         self._last_research_trace = {}
         with self._research_receipt_lock:

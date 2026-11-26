@@ -1616,6 +1616,51 @@ def test_deferred_profile_and_post_turn_stages_keep_originating_turn_id():
     )
 
 
+def test_turn_classification_snapshot_crosses_prompt_worker_boundary():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    stream = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_stream_with_full_lifecycle"
+    )
+    prompt_builder = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_build_prompt_and_cache"
+    )
+    worker_call = next(
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "to_thread"
+        and any(
+            isinstance(argument, ast.Attribute)
+            and argument.attr == "_build_prompt_and_cache"
+            for argument in node.args
+        )
+    )
+    passed = {keyword.arg: keyword.value for keyword in worker_call.keywords}
+    expected = {
+        "explicit_named_profile_query": "_explicit_named_profile_query",
+        "api_route_intent": "_api_route_intent",
+        "api_route_query": "_api_route_query",
+        "architecture_context_query": "_architecture_context_query",
+    }
+    for parameter, variable in expected.items():
+        assert isinstance(passed.get(parameter), ast.Name)
+        assert passed[parameter].id == variable
+
+    builder_parameters = {
+        argument.arg for argument in prompt_builder.args.args
+    }
+    assert set(expected).issubset(builder_parameters)
+
+
 def test_architecture_claim_check_is_reported_as_scoped_not_general_validation():
     bridge = _bridge()
     bridge._last_turn_trace["stages"].update({
