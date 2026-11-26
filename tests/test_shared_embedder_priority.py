@@ -8,6 +8,8 @@ from managers.llm_manager import LMStudioProvider
 from utils.shared_embedder import (
     APIEmbedder,
     DEFAULT_BASE_URL,
+    QUALITY_INTERACTIVE_REQUEST_TIMEOUT,
+    QualityEndpointBackoff,
     interactive_priority_active,
     set_interactive_priority,
 )
@@ -45,7 +47,30 @@ class InteractiveEmbeddingPriorityTests(unittest.TestCase):
 
         self.assertEqual(vectors.shape, (2, 2))
         self.assertEqual(space, api.embedding_space_id)
+        self.assertEqual(api._transport_backoff_until, 0.0)
         fast_fallback.assert_not_called()
+
+    def test_interactive_transport_timeout_is_bounded_and_backed_off(self):
+        api = APIEmbedder("nomic-model", "http://127.0.0.1:1234/v1", timeout=8)
+        with patch.object(
+            api, "_post", side_effect=urllib.error.URLError(TimeoutError("timed out")),
+        ) as post:
+            with self.assertRaises(urllib.error.URLError):
+                api.encode_interactive_with_metadata(["semantic route"])
+            with self.assertRaises(QualityEndpointBackoff):
+                api.encode_interactive_with_metadata(["next turn"])
+
+        post.assert_called_once()
+        self.assertEqual(post.call_args.kwargs["timeout"], QUALITY_INTERACTIVE_REQUEST_TIMEOUT)
+        self.assertGreater(api._transport_backoff_until, 0.0)
+
+    def test_interactive_nontransport_error_does_not_enter_backoff(self):
+        api = APIEmbedder("nomic-model", "http://127.0.0.1:1234/v1")
+        with patch.object(api, "_post", side_effect=ValueError("malformed payload")):
+            with self.assertRaisesRegex(ValueError, "malformed payload"):
+                api.encode_interactive_with_metadata(["semantic route"])
+
+        self.assertEqual(api._transport_backoff_until, 0.0)
 
     def test_quality_response_model_mismatch_uses_explicit_fast_space(self):
         class Fast:

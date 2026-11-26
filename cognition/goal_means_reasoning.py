@@ -30,7 +30,23 @@ _GOAL_MEANS_NEGATIVE_EXAMPLES = (
     "Find recent research or current sources about a topic.",
     "Respond to a greeting or a question about how someone feels.",
 )
-_GOAL_MEANS_ROUTER_CACHE: dict[str, tuple[object, object]] = {}
+_ABSTRACT_REASONING_POSITIVE_EXAMPLES = (
+    "Explore the meaning and structure of identity as it changes over time.",
+    "Analyze how a general principle connects causes, consequences, and an underlying system.",
+    "Compare the structure of two different ideas and derive a new insight from their relationship.",
+    "Examine a philosophical question about consciousness, knowledge, or reality.",
+    "Explore le sens et la structure d'une idée générale à travers plusieurs domaines.",
+    "Analyser comment une relation de cause à effet révèle un principe ou un mécanisme abstrait.",
+)
+_ABSTRACT_REASONING_NEGATIVE_EXAMPLES = (
+    "What is the current battery level? Report the measured value.",
+    "Translate this sentence and preserve its meaning.",
+    "Summarize the supplied conversation without adding an interpretation.",
+    "Hello, how are you doing today?",
+    "Quelle est la tension mesurée par le capteur ? Donne la valeur actuelle.",
+    "Traduis cette phrase sans l'expliquer.",
+)
+_GOAL_MEANS_ROUTER_CACHE: dict[str, tuple[object, object, object, object]] = {}
 _GOAL_MEANS_ROUTER_LOCK = threading.Lock()
 
 
@@ -58,37 +74,58 @@ def classify_goal_means_intent(text: str, *, embedder=None) -> dict:
         with _GOAL_MEANS_ROUTER_LOCK:
             cached = _GOAL_MEANS_ROUTER_CACHE.get(model_id) if model_id else None
         if cached is None:
-            vectors, space_id = encoder(
-                [*_GOAL_MEANS_POSITIVE_EXAMPLES, *_GOAL_MEANS_NEGATIVE_EXAMPLES, value]
-            )
+            vectors, space_id = encoder([
+                *_GOAL_MEANS_POSITIVE_EXAMPLES,
+                *_GOAL_MEANS_NEGATIVE_EXAMPLES,
+                *_ABSTRACT_REASONING_POSITIVE_EXAMPLES,
+                *_ABSTRACT_REASONING_NEGATIVE_EXAMPLES,
+                value,
+            ])
             import numpy as np
             matrix = np.asarray(vectors, dtype="float64")
-            if matrix.ndim != 2 or matrix.shape[0] != (
-                len(_GOAL_MEANS_POSITIVE_EXAMPLES) + len(_GOAL_MEANS_NEGATIVE_EXAMPLES) + 1
-            ) or not np.isfinite(matrix).all():
+            expected_rows = (
+                len(_GOAL_MEANS_POSITIVE_EXAMPLES)
+                + len(_GOAL_MEANS_NEGATIVE_EXAMPLES)
+                + len(_ABSTRACT_REASONING_POSITIVE_EXAMPLES)
+                + len(_ABSTRACT_REASONING_NEGATIVE_EXAMPLES)
+                + 1
+            )
+            if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("semantic router received invalid embedding matrix")
             normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
-            positive = normalized[:len(_GOAL_MEANS_POSITIVE_EXAMPLES)].mean(axis=0)
-            negative_start = len(_GOAL_MEANS_POSITIVE_EXAMPLES)
-            negative = normalized[negative_start:negative_start + len(_GOAL_MEANS_NEGATIVE_EXAMPLES)].mean(axis=0)
-            positive /= max(float(np.linalg.norm(positive)), 1e-12)
-            negative /= max(float(np.linalg.norm(negative)), 1e-12)
+            goal_positive_end = len(_GOAL_MEANS_POSITIVE_EXAMPLES)
+            goal_negative_end = goal_positive_end + len(_GOAL_MEANS_NEGATIVE_EXAMPLES)
+            abstract_positive_end = goal_negative_end + len(_ABSTRACT_REASONING_POSITIVE_EXAMPLES)
+            goal_positive = normalized[:goal_positive_end].mean(axis=0)
+            goal_negative = normalized[goal_positive_end:goal_negative_end].mean(axis=0)
+            abstract_positive = normalized[goal_negative_end:abstract_positive_end].mean(axis=0)
+            abstract_negative = normalized[abstract_positive_end:-1].mean(axis=0)
+            centroids = (goal_positive, goal_negative, abstract_positive, abstract_negative)
+            centroids = tuple(
+                centroid / max(float(np.linalg.norm(centroid)), 1e-12)
+                for centroid in centroids
+            )
             with _GOAL_MEANS_ROUTER_LOCK:
-                _GOAL_MEANS_ROUTER_CACHE[str(space_id)] = (positive, negative)
+                _GOAL_MEANS_ROUTER_CACHE[str(space_id)] = centroids
             query = normalized[-1]
             actual_space = str(space_id)
         else:
-            positive, negative = cached
+            goal_positive, goal_negative, abstract_positive, abstract_negative = cached
             vectors, actual_space = encoder(value)
             import numpy as np
             query = np.asarray(vectors, dtype="float64").reshape(-1)
-            if query.size != positive.size or not np.isfinite(query).all():
+            if query.size != goal_positive.size or not np.isfinite(query).all():
                 raise ValueError("semantic router received incompatible query vector")
             query /= max(float(np.linalg.norm(query)), 1e-12)
 
-        positive_score = float(query @ positive)
-        negative_score = float(query @ negative)
+        if cached is None:
+            goal_positive, goal_negative, abstract_positive, abstract_negative = centroids
+        positive_score = float(query @ goal_positive)
+        negative_score = float(query @ goal_negative)
         margin = positive_score - negative_score
+        abstract_positive_score = float(query @ abstract_positive)
+        abstract_negative_score = float(query @ abstract_negative)
+        abstract_margin = abstract_positive_score - abstract_negative_score
         # Thresholds were checked against held-out French/English social,
         # factual, explanatory, research, memory, and action-choice probes.
         if positive_score >= 0.65 and margin >= 0.012:
@@ -97,6 +134,17 @@ def classify_goal_means_intent(text: str, *, embedder=None) -> dict:
             status, route = "semantic_boundary_uncertain", "analyze"
         else:
             status, route = "semantic_non_action_or_low_evidence", "skip"
+        # Abstract reasoning is an optional enrichment stage, so ambiguous or
+        # unavailable semantic evidence must not trigger another LLM call.
+        abstract_route = (
+            "analyze"
+            if abstract_positive_score >= 0.65 and abstract_margin >= 0.012
+            else "skip"
+        )
+        abstract_status = (
+            "semantic_abstract_candidate"
+            if abstract_route == "analyze" else "semantic_non_abstract_or_uncertain"
+        )
         return {
             "status": status,
             "route": route,
@@ -106,15 +154,32 @@ def classify_goal_means_intent(text: str, *, embedder=None) -> dict:
             "score_semantics": "uncalibrated cosine routing score; not a probability",
             "embedding_space": actual_space,
             "reason_code": "semantic_centroid_margin",
+            "abstract_reasoning": {
+                "status": abstract_status,
+                "route": abstract_route,
+                "positive_similarity": round(abstract_positive_score, 4),
+                "negative_similarity": round(abstract_negative_score, 4),
+                "margin": round(abstract_margin, 4),
+                "score_semantics": "uncalibrated cosine routing score; not a probability",
+                "embedding_space": actual_space,
+            },
         }
     except Exception as exc:
-        # The main response remains available, but uncertainty goes through
-        # the structured analyzer rather than silently disabling the guard.
+        # This analyzer is optional guidance, not an action-safety boundary.
+        # When semantic routing is unavailable, let the primary model apply
+        # the always-injected conditional Goal-Means contract in its one
+        # response. Do not spend a separate LLM call classifying every turn.
         return {
             "status": "router_unavailable",
-            "route": "analyze",
+            "route": "skip",
             "reason_code": type(exc).__name__,
-            "score_semantics": "unavailable; fail-safe analysis route",
+            "score_semantics": "unavailable; primary response uses in-band Goal-Means contract",
+            "abstract_reasoning": {
+                "status": "semantic_router_unavailable",
+                "route": "skip",
+                "reason_code": type(exc).__name__,
+                "score_semantics": "unavailable; optional reasoning stage skipped",
+            },
         }
 
 

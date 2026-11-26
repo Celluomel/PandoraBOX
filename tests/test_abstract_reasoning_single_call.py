@@ -150,6 +150,7 @@ def test_busy_provider_defers_without_inventing_analogy_or_side_effects():
     engine._cache["user-1"] = previous
 
     with patch("core.llm_scheduler.llm_scheduler.is_busy", return_value=True), \
+         patch.object(engine, "_score_abstractness", return_value=0.8), \
          patch.object(engine, "_apply_side_effects") as apply_effects:
         result = engine.reason("user-1", "How does identity remain stable while beliefs change?")
 

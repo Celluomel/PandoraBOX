@@ -20,6 +20,7 @@ from cognition.goal_means_reasoning import (
     analysis_prompt, goal_means_contract, guarded_response, is_analysis_followup,
     parse_analysis, classify_goal_means_intent, _GOAL_MEANS_ROUTER_CACHE,
     _GOAL_MEANS_POSITIVE_EXAMPLES, _GOAL_MEANS_NEGATIVE_EXAMPLES,
+    _ABSTRACT_REASONING_POSITIVE_EXAMPLES, _ABSTRACT_REASONING_NEGATIVE_EXAMPLES,
 )
 from cognition.abstract_reasoning_engine import AbstractReasoningEngine, ReasoningResult
 
@@ -29,24 +30,34 @@ class GoalMeansReasoningTests(unittest.TestCase):
         class FakeEmbedder:
             embedding_space_id = "test-semantic-space"
 
+            def __init__(self):
+                self.encoded_batches = []
+
             def encode_interactive_with_metadata(self, texts):
                 if isinstance(texts, str):
                     texts = [texts]
                     single = True
                 else:
                     single = False
+                self.encoded_batches.append(list(texts))
                 rows = []
                 for text in texts:
                     if text in _GOAL_MEANS_POSITIVE_EXAMPLES:
-                        rows.append([1.0, 0.0])
+                        rows.append([1.0, 0.0, 0.0, 0.0])
                     elif text in _GOAL_MEANS_NEGATIVE_EXAMPLES:
-                        rows.append([0.0, 1.0])
+                        rows.append([0.0, 1.0, 0.0, 0.0])
+                    elif text in _ABSTRACT_REASONING_POSITIVE_EXAMPLES:
+                        rows.append([0.0, 0.0, 1.0, 0.0])
+                    elif text in _ABSTRACT_REASONING_NEGATIVE_EXAMPLES:
+                        rows.append([0.0, 0.0, 0.0, 1.0])
                     elif text == "action-like":
-                        rows.append([0.8, 0.2])
+                        rows.append([0.8, 0.2, 0.0, 0.0])
                     elif text == "boundary":
-                        rows.append([0.710, 0.704])
+                        rows.append([0.710, 0.704, 0.0, 0.0])
+                    elif text == "abstract-like":
+                        rows.append([0.0, 0.0, 0.8, 0.2])
                     else:
-                        rows.append([0.2, 0.98])
+                        rows.append([0.2, 0.98, 0.0, 0.0])
                 values = np.asarray(rows, dtype="float64")
                 return (values[0] if single else values), self.embedding_space_id
 
@@ -62,6 +73,81 @@ class GoalMeansReasoningTests(unittest.TestCase):
         self.assertEqual(factual["status"], "semantic_non_action_or_low_evidence")
         self.assertEqual(factual["route"], "skip")
         self.assertIn("not a probability", positive["score_semantics"])
+
+    def test_goal_and_abstract_routes_share_one_semantic_query_embedding(self):
+        class FakeEmbedder:
+            embedding_space_id = "test-shared-semantic-space"
+
+            def __init__(self):
+                self.calls = []
+
+            def encode_interactive_with_metadata(self, texts):
+                self.calls.append(list(texts) if not isinstance(texts, str) else [texts])
+                if isinstance(texts, str):
+                    texts = [texts]
+                    single = True
+                else:
+                    single = False
+                rows = []
+                for text in texts:
+                    if text in _GOAL_MEANS_POSITIVE_EXAMPLES:
+                        rows.append([1, 0, 0, 0])
+                    elif text in _GOAL_MEANS_NEGATIVE_EXAMPLES:
+                        rows.append([0, 1, 0, 0])
+                    elif text in _ABSTRACT_REASONING_POSITIVE_EXAMPLES:
+                        rows.append([0, 0, 1, 0])
+                    elif text in _ABSTRACT_REASONING_NEGATIVE_EXAMPLES:
+                        rows.append([0, 0, 0, 1])
+                    elif text == "factual":
+                        rows.append([0, 1, 0, 0])
+                    else:
+                        rows.append([0, 0, 0.8, 0.2])
+                vectors = np.asarray(rows, dtype="float64")
+                return (vectors[0] if single else vectors), self.embedding_space_id
+
+        _GOAL_MEANS_ROUTER_CACHE.clear()
+        embedder = FakeEmbedder()
+        result = classify_goal_means_intent("abstract-like", embedder=embedder)
+
+        assert len(embedder.calls) == 1
+        assert "abstract-like" in embedder.calls[0]
+        assert result["abstract_reasoning"]["route"] == "analyze"
+        assert result["abstract_reasoning"]["status"] == "semantic_abstract_candidate"
+        assert "not a probability" in result["abstract_reasoning"]["score_semantics"]
+
+        non_abstract = classify_goal_means_intent("factual", embedder=embedder)
+        assert non_abstract["abstract_reasoning"]["route"] == "skip"
+        assert len(embedder.calls) == 2
+        assert embedder.calls[1] == ["factual"]
+
+    def test_unavailable_semantic_router_does_not_force_auxiliary_analysis(self):
+        class UnavailableEmbedder:
+            embedding_space_id = "unavailable-space"
+
+            def encode_interactive_with_metadata(self, _texts):
+                raise TimeoutError("embedding service unavailable")
+
+        _GOAL_MEANS_ROUTER_CACHE.clear()
+        result = classify_goal_means_intent(
+            "Should I go by car or on foot?", embedder=UnavailableEmbedder(),
+        )
+
+        assert result["status"] == "router_unavailable"
+        assert result["route"] == "skip"
+        assert result["reason_code"] == "TimeoutError"
+        assert "in-band Goal-Means contract" in result["score_semantics"]
+        assert result["abstract_reasoning"]["route"] == "skip"
+
+    def test_abstract_reasoning_semantic_gate_skips_non_abstract_and_unavailable(self):
+        engine = AbstractReasoningEngine(None, None)
+        assert engine._score_abstractness(
+            "Quelle est la mesure ?",
+            semantic_gate={"route": "skip", "positive_similarity": 0.95},
+        ) == 0.0
+        assert engine._score_abstractness(
+            "A conceptual question",
+            semantic_gate={"route": "skip", "reason_code": "QualityEndpointBackoff"},
+        ) == 0.0
 
     def test_semantic_protocol_is_injected_independent_of_wording(self):
         question = (

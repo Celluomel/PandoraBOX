@@ -3561,6 +3561,10 @@ class PersonaBridge:
                 _are_result = await asyncio.to_thread(
                     _state_are.are.reason, user_id, effective_input,
                     allow_interactive_turn=True,
+                    semantic_gate=(
+                        _goal_means_route.get("abstract_reasoning")
+                        if isinstance(_goal_means_route, dict) else None
+                    ),
                 )
                 _are_method = getattr(_are_result, "method", None) if _are_result else None
                 _are_turn_status = (
@@ -3578,9 +3582,14 @@ class PersonaBridge:
                         "reason_code": getattr(_are_result, "reason_code", "") if _are_result else "below_threshold_or_unavailable",
                         "llm_call_count": getattr(_are_result, "llm_call_count", 0) if _are_result else 0,
                         "abstract_score": getattr(_are_result, "abstract_score", None),
+                        "abstract_score_semantics": "uncalibrated semantic cosine; not a probability",
                         "causal_pair_available": bool(_are_pair and _are_pair[0] and _are_pair[1]),
                     },
-                    consumes=("turn_input",), turn_id=_audit_turn_id,
+                    consumes=(
+                        ("goal_means_semantic_route", "turn_input")
+                        if isinstance(_goal_means_route, dict) else ("turn_input",)
+                    ),
+                    turn_id=_audit_turn_id,
                 )
             else:
                 _are_turn_status = "skipped_unavailable"

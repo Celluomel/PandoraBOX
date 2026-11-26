@@ -54,6 +54,7 @@ DEFAULT_FAST_MODEL    = "all-MiniLM-L6-v2"
 DEFAULT_QUALITY_MODEL = "text-embedding-nomic-embed-text-v1.5"
 DEFAULT_BASE_URL      = "http://127.0.0.1:1234/v1"
 QUALITY_REQUEST_TIMEOUT = 8
+QUALITY_INTERACTIVE_REQUEST_TIMEOUT = 2.5
 QUALITY_TRANSPORT_BACKOFF_SECONDS = 20
 
 
@@ -130,14 +131,17 @@ class APIEmbedder:
     def embedding_space_id(self):
         return f"api:{self.base_url}:{self.model_name}"
 
-    def _post(self, texts):
+    def _post(self, texts, *, timeout=None):
         body = json.dumps({"model": self.model_name, "input": list(texts)}).encode("utf-8")
         req = urllib.request.Request(
             self.base_url + "/embeddings",
             data=body,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+        request_timeout = self.timeout if timeout is None else min(
+            float(self.timeout), max(0.1, float(timeout)),
+        )
+        with urllib.request.urlopen(req, timeout=request_timeout) as r:
             return json.loads(r.read().decode("utf-8"))
 
     def _encode_list(self, texts, batch_size=32):
@@ -256,7 +260,9 @@ class APIEmbedder:
             vectors = []
             for offset in range(0, len(values), 32):
                 chunk = values[offset:offset + 32]
-                payload = self._post(chunk)
+                payload = self._post(
+                    chunk, timeout=QUALITY_INTERACTIVE_REQUEST_TIMEOUT,
+                )
                 reported_model = payload.get("model")
                 if reported_model and reported_model != self.model_name:
                     raise RuntimeError(
@@ -274,9 +280,18 @@ class APIEmbedder:
             matrix = np.asarray(vectors, dtype="float32")
             if matrix.ndim != 2 or matrix.shape[0] != len(values):
                 raise ValueError("embedding endpoint returned an invalid matrix")
+            with self._transport_backoff_lock:
+                self._transport_backoff_until = 0.0
             if single:
                 return matrix[0], self.embedding_space_id
             return matrix, self.embedding_space_id
+        except Exception as exc:
+            if self._is_transient_transport_error(exc):
+                with self._transport_backoff_lock:
+                    self._transport_backoff_until = (
+                        time.monotonic() + QUALITY_TRANSPORT_BACKOFF_SECONDS
+                    )
+            raise
         finally:
             _quality_request_lock.release()
 

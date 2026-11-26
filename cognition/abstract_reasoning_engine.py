@@ -16,7 +16,7 @@ Side effects:
 
 Activation:
   ARE only fires when the topic is abstract / conceptual.
-  Heuristic detection + optional LLM trigger-check.
+  Semantic embedding route shared with the goal-means intent pass.
   Skips when LLM scheduler is busy (returns cached result or None).
 
 Prompt injection:
@@ -49,29 +49,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# ── Topic abstractness thresholds ─────────────────────────────────────────
-ABSTRACT_TOPIC_KEYWORDS = {
-    # Philosophical / conceptual
-    "consciousness", "identity", "meaning", "existence", "reality", "truth",
-    "free will", "ethics", "morality", "justice", "beauty", "knowledge",
-    "causation", "time", "infinity", "emergence", "complexity",
-    # Structural / systemic
-    "system", "pattern", "structure", "model", "framework", "architecture",
-    "hierarchy", "network", "feedback", "recursion", "iteration",
-    # Cross-domain analogies
-    "like", "analogy", "similar to", "metaphor", "mirrors", "parallels",
-    "just as", "in the same way", "equivalent to",
-    # Hypothetical
-    "what if", "imagine", "suppose", "could we", "would it", "hypothetically",
-    "in theory", "let's say", "assuming",
-    # Reasoning signals
-    "because", "therefore", "implies", "leads to", "causes", "results in",
-    "conclude", "derive", "follows that", "logic", "reasoning", "argument",
-    "principle", "axiom", "assumption",
-}
-
-MIN_ABSTRACT_KEYWORD_HITS = 2   # how many keywords needed to trigger ARE
-MIN_TEXT_LENGTH            = 20  # ignore very short messages
 ARE_COOLDOWN_S             = 30  # min seconds between full LLM ARE runs per user
 
 
@@ -99,7 +76,7 @@ class ReasoningResult:
 
     # Meta
     method:         str       = "unavailable"
-    abstract_score: float     = 0.0            # 0–1 how abstract the input was
+    abstract_score: float     = 0.0            # uncalibrated semantic cosine; not a probability
     prompt_fragment: str      = ""
     llm_call_count: int       = 0
     reason_code:    str       = ""
@@ -153,6 +130,7 @@ class AbstractReasoningEngine:
 
     def reason(
         self, user_id: str, user_text: str, *, allow_interactive_turn: bool = False,
+        semantic_gate: Optional[Dict[str, Any]] = None,
     ) -> Optional[ReasoningResult]:
         """
         Run abstract reasoning on user_text if the topic warrants it.
@@ -160,8 +138,12 @@ class AbstractReasoningEngine:
         Background calls defer during a live turn. An explicitly authorized
         foreground analysis uses the manager's bounded interactive path.
         """
-        # ── Abstractness check ─────────────────────────────────────────────
-        abstract_score = self._score_abstractness(user_text)
+        # ── Semantic abstractness check ─────────────────────────────────────
+        # The normal chat path passes the semantic classification it already
+        # computed for this turn, avoiding a second embedding request. Direct
+        # callers use the same shared semantic router. No language-specific
+        # keyword list or extra LLM classification call is involved.
+        abstract_score = self._score_abstractness(user_text, semantic_gate=semantic_gate)
         if abstract_score < 0.3:
             # Preserve the prior insight for conversational continuity, but
             # remove it from the current-turn slot so it cannot masquerade as
@@ -311,40 +293,30 @@ class AbstractReasoningEngine:
         )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    #  Abstractness scoring
+    #  Semantic abstractness routing
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def _score_abstractness(self, text: str) -> float:
+    def _score_abstractness(
+        self, text: str, *, semantic_gate: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """Return semantic-router cosine only for a selected abstract turn.
+
+        This is an uncalibrated routing similarity, not a probability or a
+        measure of reasoning quality. The router returns ``skip`` when its
+        embedding evidence is uncertain or unavailable.
         """
-        0–1 score of how abstract/conceptual the input is.
-        Combines keyword density, question complexity, length, and structure.
-        """
-        if len(text.strip()) < MIN_TEXT_LENGTH:
+        if semantic_gate is None:
+            try:
+                from cognition.goal_means_reasoning import classify_goal_means_intent
+                semantic_gate = classify_goal_means_intent(text).get("abstract_reasoning")
+            except Exception:
+                semantic_gate = None
+        if not isinstance(semantic_gate, dict) or semantic_gate.get("route") != "analyze":
             return 0.0
-
-        text_lower = text.lower()
-        words      = text_lower.split()
-
-        # Keyword density
-        hits = sum(
-            1 for kw in ABSTRACT_TOPIC_KEYWORDS
-            if kw in text_lower
-        )
-        density = min(1.0, hits / MIN_ABSTRACT_KEYWORD_HITS)
-
-        # Structural complexity (longer = more likely abstract)
-        length_bonus = min(0.3, len(words) / 100.0)
-
-        # Question complexity
-        question_bonus = 0.1 if "?" in text else 0.0
-
-        # Negation / qualification (signs of nuanced thinking)
-        qualification = 0.1 if any(
-            w in words for w in ["but", "however", "although", "despite", "unless"]
-        ) else 0.0
-
-        score = density * 0.6 + length_bonus + question_bonus + qualification
-        return min(1.0, score)
+        try:
+            return max(0.0, min(1.0, float(semantic_gate.get("positive_similarity", 0.0))))
+        except (TypeError, ValueError):
+            return 0.0
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Single-call structured reasoning
