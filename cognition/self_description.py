@@ -63,6 +63,117 @@ _RUNTIME_API_ROUTE_NEGATIVE = (
 _RUNTIME_API_ROUTE_CENTROIDS: dict[str, tuple[Any, Any]] = {}
 _RUNTIME_API_ROUTE_CENTROIDS_LOCK = Lock()
 
+# Semantic intent prototypes, not trigger phrases. This distinguishes requests
+# for actual robot observations (including recorded motion/odometry) from
+# conceptual or hypothetical robot discussion across languages.
+_BODY_OBSERVATION_POSITIVE = (
+    "Report what the robot actually sensed or physically did, using its timestamped sensor observations, camera frames, odometry, or telemetry.",
+    "What measured path did the robot travel, and what recorded movement evidence supports that trajectory?",
+    "Answer from the robot's current or recorded sensor readings, observed motion, position, or physical state.",
+    "Décris ce que le robot a réellement perçu ou parcouru à partir de ses mesures horodatées, de son odométrie ou de sa télémétrie.",
+    "Describe what the robot physically observed or traveled using timestamped measurements and recorded odometry.",
+    "Welche Strecke hat der Roboter laut seinen aufgezeichneten Sensordaten und seiner Odometrie tatsächlich zurückgelegt?",
+    "¿Qué recorrido hizo realmente el robot según sus mediciones con marca de tiempo y su odometría registrada?",
+    "Qual trajeto o robô percorreu de fato segundo as medições com horário e a odometria registrada?",
+    "ロボットの時刻付きセンサー記録やオドメトリーによると、実際にどの経路を移動しましたか？",
+    "ما المسار الذي قطعه الروبوت فعليًا وفقًا لقياسات المستشعرات المؤرخة وبيانات قياس الحركة المسجلة؟",
+)
+_BODY_OBSERVATION_NEGATIVE = (
+    "Explain how robot odometry works in general, without reporting this robot's measured state.",
+    "What could a robot do if it had motors and working sensors? This is a hypothetical capability question.",
+    "Discuss the software architecture, design, or meaning of a route without reporting a physical observation.",
+    "Explique le principe général de l’odométrie sans décrire les mesures actuelles d’un robot précis.",
+    "¿Cómo funciona la navegación de robots en general? No preguntes por los datos de un robot concreto.",
+    "Wie kann man einen Roboter grundsätzlich programmieren, ohne nach seinen aktuellen Messwerten zu fragen?",
+    "ロボットの経路計画の仕組みを一般論として説明してください。実際の測定結果は求めていません。",
+    "اشرح بشكل عام كيف تعمل الملاحة الآلية، دون السؤال عن قياسات روبوت محدد أو حالته الحالية.",
+)
+_BODY_OBSERVATION_CENTROIDS: dict[str, tuple[Any, Any]] = {}
+_BODY_OBSERVATION_CENTROIDS_LOCK = Lock()
+
+
+def classify_body_observation_intent(
+    user_input: str, *, embedder: Any = None,
+) -> dict[str, Any]:
+    """Classify whether answering depends on actual robot observation records.
+
+    This fail-open semantic router supports source-sufficiency decisions in
+    the Brain. It uses the configured Nomic v1.5 multilingual embedding space,
+    never keyword matching. Similarity values are uncalibrated scores, not
+    probabilities; uncertain or unavailable results do not block generation.
+    """
+    value = " ".join(str(user_input or "").split()).strip()
+    if not value:
+        return {"status": "empty_input", "route": False, "reason_code": "empty_input"}
+    try:
+        if embedder is None:
+            from utils.shared_embedder import get_quality_embedder
+            embedder = get_quality_embedder()
+        encoder = getattr(embedder, "encode_interactive_with_metadata", None)
+        if not callable(encoder):
+            raise RuntimeError("interactive quality embedding unavailable")
+        space_hint = str(
+            getattr(embedder, "embedding_space_id", "")
+            or getattr(embedder, "model_name", "")
+        )
+        with _BODY_OBSERVATION_CENTROIDS_LOCK:
+            cached = _BODY_OBSERVATION_CENTROIDS.get(space_hint)
+        if cached is None:
+            vectors, actual_space = encoder([
+                *_BODY_OBSERVATION_POSITIVE, *_BODY_OBSERVATION_NEGATIVE, value,
+            ])
+            import numpy as np
+            matrix = np.asarray(vectors, dtype="float64")
+            expected_rows = len(_BODY_OBSERVATION_POSITIVE) + len(_BODY_OBSERVATION_NEGATIVE) + 1
+            if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
+                raise ValueError("Body observation intent received invalid embeddings")
+            normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
+            positive_end = len(_BODY_OBSERVATION_POSITIVE)
+            positive = normalized[:positive_end].mean(axis=0)
+            negative = normalized[positive_end:-1].mean(axis=0)
+            positive /= max(float(np.linalg.norm(positive)), 1e-12)
+            negative /= max(float(np.linalg.norm(negative)), 1e-12)
+            actual_space = str(actual_space)
+            if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
+                raise RuntimeError("Body observation routing requires Nomic v1.5")
+            with _BODY_OBSERVATION_CENTROIDS_LOCK:
+                _BODY_OBSERVATION_CENTROIDS[actual_space] = (positive, negative)
+            query = normalized[-1]
+        else:
+            positive, negative = cached
+            vectors, actual_space = encoder(value)
+            import numpy as np
+            query = np.asarray(vectors, dtype="float64").reshape(-1)
+            if query.size != positive.size or not np.isfinite(query).all():
+                raise ValueError("Body observation query embedding is incompatible")
+            query /= max(float(np.linalg.norm(query)), 1e-12)
+
+        positive_score = float(query @ positive)
+        negative_score = float(query @ negative)
+        margin = positive_score - negative_score
+        if positive_score >= 0.63 and margin >= 0.035:
+            status, route = "body_observation_intent", True
+        elif positive_score < 0.58 or margin < 0.0:
+            status, route = "non_body_observation_intent", False
+        else:
+            status, route = "intent_uncertain", False
+        return {
+            "status": status,
+            "route": route,
+            "positive_similarity": round(positive_score, 4),
+            "negative_similarity": round(negative_score, 4),
+            "margin": round(margin, 4),
+            "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
+            "embedding_space": actual_space,
+            "reason_code": "cross_lingual_semantic_centroid_margin",
+        }
+    except Exception as exc:
+        return {
+            "status": "router_unavailable",
+            "route": False,
+            "reason_code": type(exc).__name__,
+            "score_semantics": "unavailable; preserve normal generation",
+        }
 
 def runtime_api_surface_context(api_app: Any = None) -> tuple[str, dict[str, Any]]:
     """Describe the HTTP routes actually registered on this Brain process.

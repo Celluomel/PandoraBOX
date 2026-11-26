@@ -22,6 +22,8 @@ from cognition.persona_bridge import (
     _runtime_execution_evidence_snapshot,
     _turn_output_evidence,
     _workspace_focus_state_provenance,
+    _body_observation_gate_applies,
+    _body_observation_unavailable_response,
 )
 from core.module_tick_log import summarize_output
 from cognition.turn_context_evidence import (
@@ -64,6 +66,72 @@ def test_workspace_snapshot_without_focus_writer_stays_unattributed():
             {"source": "world_model", "fields": ["context"], "timestamp": 99.0},
         ],
     }, now=100.0) == {}
+
+
+def test_body_source_gate_blocks_only_clear_data_dependent_turns_without_fresh_source():
+    intent = {"route": True, "status": "body_observation_intent"}
+
+    assert _body_observation_gate_applies("no_current_evidence", intent)
+    assert _body_observation_gate_applies("unavailable", intent)
+    # Stale observations can still support a historical question when their
+    # timestamps and scope are preserved in the prompt.
+    assert not _body_observation_gate_applies("stale_only", intent)
+    assert not _body_observation_gate_applies("injected", intent)
+    assert not _body_observation_gate_applies(
+        "no_current_evidence", {"route": False, "status": "non_body_observation_intent"},
+    )
+    assert not _body_observation_gate_applies(
+        "no_current_evidence", {"route": False, "status": "router_unavailable"},
+    )
+
+    response = _body_observation_unavailable_response(
+        "Quel trajet le Body a-t-il réellement parcouru ?", "auto",
+    )
+    assert response == (
+        "Je ne peux pas confirmer l’information demandée : aucune observation Body "
+        "horodatée n’est disponible pour ce tour."
+    )
+
+
+def test_body_source_gate_receipts_are_visible_but_redacted_in_turn_trace():
+    bridge = _bridge()
+    bridge._record_turn_stage(
+        "body_source_sufficiency_gate", "blocked_missing_current_evidence",
+        output={
+            "type": "body_source_sufficiency_receipt",
+            "source_availability": "no_current_evidence",
+            "intent_status": "body_observation_intent",
+            "route": True,
+            "positive_similarity": 0.81,
+            "negative_similarity": 0.22,
+            "margin": 0.59,
+            "embedding_space": "nomic_v1.5",
+            "private_input": "do not expose",
+        },
+        consumes=("body_observation_context", "turn_input"),
+    )
+    bridge._record_turn_stage(
+        "body_observation_answer", "rendered_from_missing_source",
+        output={
+            "type": "body_observation_answer_receipt",
+            "source_availability": "no_current_evidence",
+            "validation_method": "deterministic_body_observation_availability_projection",
+            "private_answer": "do not expose",
+        },
+        consumes=("body_source_sufficiency_gate", "body_observation_context"),
+    )
+
+    trace = bridge.get_turn_trace("turn-evidence-1")
+    gate = trace["stages"]["body_source_sufficiency_gate"]["output_summary"]
+    answer = trace["stages"]["body_observation_answer"]["output_summary"]
+
+    assert gate["intent_status"] == "body_observation_intent"
+    assert gate["route"] is True
+    assert gate["embedding_space"] == "nomic_v1.5"
+    assert gate["margin"] == 0.59
+    assert "private_input" not in repr(gate)
+    assert answer["source_availability"] == "no_current_evidence"
+    assert "private_answer" not in repr(answer)
 
 
 def test_workspace_focus_provenance_survives_context_source_allowlist():

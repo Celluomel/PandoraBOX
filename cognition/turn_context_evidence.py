@@ -370,6 +370,80 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 receipt[field_name] = max(0, min(100000, number))
         return receipt
 
+    if value.get("type") == "body_source_sufficiency_receipt":
+        availability = str(value.get("source_availability") or "unavailable")
+        if availability not in {
+            "fresh", "stale_only", "no_current_evidence", "unavailable",
+            "failed", "fresh_evidence_not_in_prompt",
+        }:
+            availability = "unavailable"
+        intent_status = str(value.get("intent_status") or "unavailable")
+        if intent_status not in {
+            "body_observation_intent", "non_body_observation_intent",
+            "intent_uncertain", "router_unavailable", "empty_input",
+        }:
+            intent_status = "unavailable"
+        receipt = {
+            "type": "body_source_sufficiency_receipt",
+            "quality": "present",
+            "source_availability": availability,
+            "intent_status": intent_status,
+            "route": bool(value.get("route")),
+        }
+        for key in ("positive_similarity", "negative_similarity", "margin"):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                number = float(number)
+                if math.isfinite(number):
+                    receipt[key] = round(max(-1.0, min(1.0, number)), 4)
+        if value.get("embedding_space") == "nomic_v1.5":
+            receipt["embedding_space"] = "nomic_v1.5"
+        if value.get("reason_code") in {
+            "cross_lingual_semantic_centroid_margin", "router_unavailable",
+            "empty_input", "unknown",
+        }:
+            receipt["reason_code"] = value["reason_code"]
+        return receipt
+
+    if value.get("type") == "body_observation_answer_receipt":
+        availability = str(value.get("source_availability") or "unavailable")
+        if availability not in {
+            "stale_only", "no_current_evidence", "unavailable", "failed",
+            "fresh_evidence_not_in_prompt",
+        }:
+            availability = "unavailable"
+        return {
+            "type": "body_observation_answer_receipt",
+            "quality": "present",
+            "source_availability": availability,
+            "validation_method": "deterministic_body_observation_availability_projection",
+        }
+
+    if value.get("type") == "body_observation_validation_receipt":
+        availability = str(value.get("source_availability") or "unavailable")
+        if availability not in {
+            "stale_only", "no_current_evidence", "unavailable", "failed",
+            "fresh_evidence_not_in_prompt",
+        }:
+            availability = "unavailable"
+        return {
+            "type": "body_observation_validation_receipt",
+            "quality": "present",
+            "source_availability": availability,
+            "intent_status": (
+                str(value.get("intent_status"))
+                if value.get("intent_status") in {
+                    "body_observation_intent", "non_body_observation_intent",
+                    "intent_uncertain", "router_unavailable", "empty_input",
+                } else "unavailable"
+            ),
+            "route": bool(value.get("route")),
+            "validation_method": "exact_body_source_availability_abstention",
+            "response_matched_source": bool(value.get("response_matched_source")),
+            "final_response_matches_source": bool(value.get("final_response_matches_source")),
+            "response_replaced": bool(value.get("response_replaced")),
+        }
+
     if value.get("type") == "affect_advisory_context_receipt":
         receipt: dict[str, Any] = {
             "type": "affect_advisory_context_receipt",

@@ -22,6 +22,7 @@ from cognition.self_description import (
     is_social_status_greeting,
     is_structured_affect_status_query,
     classify_runtime_api_route_intent,
+    classify_body_observation_intent,
     render_affect_self_report,
     render_affect_change_analysis,
     render_detailed_affect_status,
@@ -129,6 +130,62 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertEqual(decision["status"], "non_api_route_intent")
         self.assertFalse(is_runtime_api_route_question(question, embedder=self._SemanticIntentEmbedder()))
         self.assertFalse(is_architecture_query(question, api_route_intent=False))
+
+    def test_body_observation_intent_uses_semantic_space_and_fails_open(self):
+        import numpy as np
+        from cognition.self_description import (
+            _BODY_OBSERVATION_POSITIVE, _BODY_OBSERVATION_NEGATIVE,
+        )
+
+        class SemanticEmbedder:
+            model_name = "text-embedding-nomic-embed-text-v1.5"
+            embedding_space_id = "test-body:text-embedding-nomic-embed-text-v1.5"
+
+            def __init__(self, observation_intent):
+                self.observation_intent = observation_intent
+
+            def encode_interactive_with_metadata(self, texts):
+                values = [texts] if isinstance(texts, str) else list(texts)
+                positive_query = np.asarray([0.98, 0.2, 0.0], dtype="float32")
+                negative_query = np.asarray([0.2, 0.98, 0.0], dtype="float32")
+                if len(values) == 1:
+                    query = positive_query if self.observation_intent else negative_query
+                    return query, self.embedding_space_id
+                rows = []
+                for value in values[:-1]:
+                    rows.append(
+                        [1.0, 0.0, 0.0] if value in _BODY_OBSERVATION_POSITIVE
+                        else [0.0, 1.0, 0.0] if value in _BODY_OBSERVATION_NEGATIVE
+                        else [0.0, 0.0, 1.0]
+                    )
+                rows.append(positive_query if self.observation_intent else negative_query)
+                return np.asarray(rows, dtype="float32"), self.embedding_space_id
+
+        factual = classify_body_observation_intent(
+            "Quel trajet le Body a-t-il réellement parcouru ?",
+            embedder=SemanticEmbedder(True),
+        )
+        conceptual = classify_body_observation_intent(
+            "Explain the concept of a route in software architecture.",
+            embedder=SemanticEmbedder(False),
+        )
+        unavailable = classify_body_observation_intent(
+            "What did the robot measure?",
+            embedder=type("WrongSpace", (), {
+                "model_name": "other-model",
+                "embedding_space_id": "test-body-wrong:other-model",
+                "encode_interactive_with_metadata": lambda self, texts: (
+                    np.ones((len(texts), 3), dtype="float32"), "test:other-model"
+                ),
+            })(),
+        )
+
+        self.assertTrue(factual["route"])
+        self.assertEqual(factual["status"], "body_observation_intent")
+        self.assertFalse(conceptual["route"])
+        self.assertEqual(conceptual["status"], "non_body_observation_intent")
+        self.assertFalse(unavailable["route"])
+        self.assertEqual(unavailable["status"], "router_unavailable")
 
     def test_api_route_question_abstains_when_route_match_is_ambiguous(self):
         from types import SimpleNamespace

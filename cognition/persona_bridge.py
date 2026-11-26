@@ -181,6 +181,45 @@ def _research_unavailable_response(user_input: str, response_language: str = "au
     )
 
 
+def _body_observation_unavailable_response(
+    user_input: str, response_language: str = "auto",
+) -> str:
+    """State the source gap when a semantic Body query has no observation record."""
+    language = str(response_language or "auto").casefold().strip()
+    if language == "auto":
+        normalized = str(user_input or "").casefold()
+        french_words = re.compile(
+            r"\b(?:quel(?:le|s|les)?|qu['’]est|trajet|parcouru|mesures|données|"
+            r"donnees|capteurs|état|etat|comment|pourquoi|où|ou|ton|ta|tes|"
+            r"du|des|le|la|les|est|sont|as|tu)\b",
+        )
+        language = (
+            "fr" if any(char in normalized for char in "àâçéèêëîïôùûüÿœ")
+            or french_words.search(normalized) else "en"
+        )
+    if language.startswith("fr"):
+        return (
+            "Je ne peux pas confirmer l’information demandée : aucune observation Body "
+            "horodatée n’est disponible pour ce tour."
+        )
+    return (
+        "I can’t confirm the requested information: no timestamped Body observation "
+        "is available for this turn."
+    )
+
+
+def _body_observation_gate_applies(availability: str, intent: dict[str, Any]) -> bool:
+    """Require source-backed abstention only for a clear observation-dependent turn."""
+    return bool(
+        str(availability or "") in {
+            "no_current_evidence", "unavailable", "failed",
+            "fresh_evidence_not_in_prompt",
+        }
+        and isinstance(intent, dict)
+        and intent.get("route") is True
+    )
+
+
 def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
     """Return a stable fingerprint and redacted shape summary for turn data."""
     try:
@@ -4386,22 +4425,105 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 consumes=("goal_means_pre_response_analysis", "turn_input"),
                 turn_id=_audit_turn_id,
             )
+        _body_source_stage = (
+            self._last_turn_trace.get("stages", {}).get("body_observation_context", {})
+            if isinstance(self._last_turn_trace.get("stages", {}), dict) else {}
+        )
+        _body_source_status = str(
+            _body_source_stage.get("status") or "unknown"
+        ) if isinstance(_body_source_stage, dict) else "unknown"
+        _body_source_gate_applied = False
+        if (
+            not _deterministic_response
+            and not peer_name
+            and not _explicit_memory_recall
+            and not _explicit_named_profile_query
+            and not _deterministic_affect_report
+            and not _factual_plan_query
+            and _body_source_status in {
+                "no_current_evidence", "unavailable", "failed",
+                "fresh_evidence_not_in_prompt",
+            }
+        ):
+            from cognition.self_description import classify_body_observation_intent
+            _body_intent = classify_body_observation_intent(effective_input)
+            _body_source_gate_applied = _body_observation_gate_applies(
+                _body_source_status, _body_intent,
+            )
+            _gate_status = (
+                "blocked_missing_current_evidence" if _body_source_gate_applied else
+                "intent_uncertain" if _body_intent.get("status") == "intent_uncertain" else
+                "router_unavailable" if _body_intent.get("status") == "router_unavailable" else
+                "not_required"
+            )
+            _gate_receipt = {
+                "type": "body_source_sufficiency_receipt",
+                "source_availability": _body_source_status,
+                "intent_status": str(_body_intent.get("status") or "unavailable")[:48],
+                "route": _body_source_gate_applied,
+                "score_semantics": str(_body_intent.get("score_semantics") or "unavailable")[:96],
+                "reason_code": str(_body_intent.get("reason_code") or "unknown")[:48],
+                "embedding_space": (
+                    "nomic_v1.5"
+                    if str(_body_intent.get("embedding_space") or "").endswith(
+                        ":text-embedding-nomic-embed-text-v1.5"
+                    ) else "unavailable"
+                ),
+            }
+            for _score_name in (
+                "positive_similarity", "negative_similarity", "margin",
+            ):
+                _score = _body_intent.get(_score_name)
+                if isinstance(_score, (int, float)) and math.isfinite(float(_score)):
+                    _gate_receipt[_score_name] = round(float(_score), 4)
+            self._record_turn_stage(
+                "body_source_sufficiency_gate", _gate_status,
+                "Semantic intent routing is applied only when current Body evidence is absent; it cannot infer a measurement.",
+                output=_gate_receipt,
+                consumes=("body_observation_context", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
+            if _body_source_gate_applied:
+                try:
+                    from managers.settings_manager import config as _body_response_cfg
+                    _body_response_language = str(
+                        getattr(_body_response_cfg, "RESPONSE_LANGUAGE", "auto") or "auto"
+                    )
+                except Exception:
+                    _body_response_language = "auto"
+                _deterministic_response = _body_observation_unavailable_response(
+                    effective_input, _body_response_language,
+                )
+                self._record_turn_stage(
+                    "body_observation_answer", "rendered_from_missing_source",
+                    "A deterministic source-availability answer replaces generation only for a semantically identified request that depends on actual Body observations.",
+                    output={
+                        "type": "body_observation_answer_receipt",
+                        "source_availability": _body_source_status,
+                        "validation_method": "deterministic_body_observation_availability_projection",
+                    },
+                    consumes=("body_source_sufficiency_gate", "body_observation_context", "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
         self._record_turn_stage(
             "deterministic_reasoning",
             "selected" if _deterministic_response else "not_selected",
-            consumes=deterministic_reasoning_dependencies(
-                selected=bool(_deterministic_response),
-                memory_recall=bool(_explicit_memory_recall and _memory_recall_result is not None),
-                cognitive_audit_report=bool(
-                    _cognitive_audit_status_query and _deterministic_response
+            consumes=(
+                *deterministic_reasoning_dependencies(
+                    selected=bool(_deterministic_response),
+                    memory_recall=bool(_explicit_memory_recall and _memory_recall_result is not None),
+                    cognitive_audit_report=bool(
+                        _cognitive_audit_status_query and _deterministic_response
+                    ),
+                    api_route_answer=bool(_api_route_query and _deterministic_response),
+                    named_profile_facts=bool(
+                        _explicit_named_profile_query and _deterministic_response
+                    ),
+                    source_provenance_report=bool(
+                        _prompt_source_provenance_query and _deterministic_response
+                    ),
                 ),
-                api_route_answer=bool(_api_route_query and _deterministic_response),
-                named_profile_facts=bool(
-                    _explicit_named_profile_query and _deterministic_response
-                ),
-                source_provenance_report=bool(
-                    _prompt_source_provenance_query and _deterministic_response
-                ),
+                *(('body_observation_answer',) if _body_source_gate_applied else ()),
             ),
             turn_id=_audit_turn_id,
         )
@@ -5322,6 +5444,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         if (
             raw_response.strip() and not _generation_failed
             and not _source_recall_attempt and not _deterministic_affect_report
+            and not _body_source_gate_applied
             and not _explicit_named_profile_query
             and not (
                 _factual_plan_query
@@ -5380,6 +5503,39 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "evidence_support": "supported",
                     "contract_compliant": True,
                     "validation_method": "deterministic_template_from_structured_channels",
+                },
+            )
+            _response_source_stage = "semantic_answer_validation"
+        elif raw_response.strip() and not _generation_failed and _body_source_gate_applied:
+            expected_body_answer = str(_deterministic_response or "").strip()
+            exact_result_match = bool(expected_body_answer) and raw_response.strip() == expected_body_answer
+            if not exact_result_match:
+                raw_response = expected_body_answer
+            _semantic_status = "passed_deterministic_source_projection"
+            self._record_turn_stage(
+                "semantic_answer_validation", _semantic_status,
+                "The delivered answer is checked against the deterministic result of the current-turn Body evidence sufficiency gate.",
+                output={
+                    "type": "body_observation_validation_receipt",
+                    "source_availability": _body_source_status,
+                    "intent_status": str(_body_intent.get("status") or "unavailable")[:48],
+                    "route": _body_source_gate_applied,
+                    "validation_method": "exact_body_source_availability_abstention",
+                    "response_matched_source": exact_result_match,
+                    "final_response_matches_source": raw_response.strip() == expected_body_answer,
+                    "response_replaced": not exact_result_match,
+                },
+                consumes=("body_observation_answer", "body_source_sufficiency_gate", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
+            self._record_semantic_validation_summary(
+                _audit_turn_id, _semantic_status,
+                {
+                    "relevant": True,
+                    "claim_basis": "factual",
+                    "evidence_support": "insufficient_evidence",
+                    "contract_compliant": True,
+                    "validation_method": "exact_body_source_availability_abstention",
                 },
             )
             _response_source_stage = "semantic_answer_validation"
