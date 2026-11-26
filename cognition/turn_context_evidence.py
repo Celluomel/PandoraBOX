@@ -513,7 +513,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         "cognitive_trace_query", "runtime_execution_query", "explicit_memory_recall",
     )
     if all(isinstance(value.get(key), bool) for key in routing_fields):
-        return {
+        receipt = {
             "type": "turn_evidence_routing_receipt",
             "quality": "present",
             **{key: value[key] for key in routing_fields},
@@ -525,6 +525,28 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 value.get("prompt_source_provenance_query", False)
             ),
         }
+        route_status = str(value.get("api_route_intent_status") or "")
+        if route_status in {
+            "api_route_intent", "non_api_route_intent", "intent_uncertain",
+            "router_unavailable", "empty_input", "not_checked",
+        }:
+            receipt["api_route_intent_status"] = route_status
+        for key in (
+            "api_route_intent_positive_similarity",
+            "api_route_intent_negative_similarity",
+            "api_route_intent_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        if value.get("api_route_intent_space") in {"nomic_v1.5", "unavailable"}:
+            receipt["api_route_intent_space"] = value["api_route_intent_space"]
+        reason = str(value.get("api_route_intent_reason") or "")
+        if reason in {"cross_lingual_semantic_centroid_margin", "router_unavailable"}:
+            receipt["api_route_intent_reason"] = reason
+        return receipt
 
     if value.get("type") == "cognitive_deliberation_receipt":
         receipt: dict[str, Any] = {

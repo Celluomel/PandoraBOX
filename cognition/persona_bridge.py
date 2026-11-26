@@ -3184,8 +3184,18 @@ class PersonaBridge:
                     "prompt_source_provenance_query": bool(_prompt_source_provenance_query),
                     "api_route_query": bool(_api_route_query),
                     "api_route_intent_status": str(_api_route_intent.get("status") or "unavailable"),
+                    "api_route_intent_positive_similarity": _api_route_intent.get("positive_similarity"),
+                    "api_route_intent_negative_similarity": _api_route_intent.get("negative_similarity"),
                     "api_route_intent_margin": _api_route_intent.get("margin"),
-                    "api_route_intent_space": _api_route_intent.get("embedding_space"),
+                    "api_route_intent_space": (
+                        "nomic_v1.5"
+                        if str(_api_route_intent.get("embedding_space") or "").endswith(
+                            ":text-embedding-nomic-embed-text-v1.5"
+                        ) else "unavailable"
+                    ),
+                    "api_route_intent_reason": str(
+                        _api_route_intent.get("reason_code") or "router_unavailable"
+                    ),
                     "explicit_named_profile_query": bool(_explicit_named_profile_query),
                 },
                 consumes=("turn_input",),

@@ -308,6 +308,14 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             "cognitive_trace_query": False,
             "runtime_execution_query": False,
             "explicit_memory_recall": False,
+            "api_route_query": False,
+            "api_route_intent_status": "non_api_route_intent",
+            "api_route_intent_positive_similarity": 0.5375,
+            "api_route_intent_negative_similarity": 0.626,
+            "api_route_intent_margin": -0.0884,
+            "api_route_intent_space": "nomic_v1.5",
+            "api_route_intent_reason": "cross_lingual_semantic_centroid_margin",
+            "private_embedding_space": "http://sensitive-host/v1",
             "private_query": "do not expose",
         })
 
@@ -316,6 +324,10 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertTrue(summary["closed_world_report"])
         self.assertFalse(summary["explicit_memory_recall"])
         self.assertFalse(summary["prompt_source_provenance_query"])
+        self.assertEqual(summary["api_route_intent_status"], "non_api_route_intent")
+        self.assertEqual(summary["api_route_intent_margin"], -0.0884)
+        self.assertEqual(summary["api_route_intent_space"], "nomic_v1.5")
+        self.assertNotIn("private_embedding_space", str(summary))
         self.assertNotIn("private_query", str(summary))
         self.assertNotIn("do not expose", str(summary))
 
