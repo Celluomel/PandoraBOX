@@ -514,6 +514,11 @@ class GoalQualityFilter:
             # completing, and a topic frozen only at creation would still
             # repeat verbatim for the goal's whole lifetime otherwise).
             topic_receipt = generate_topic_with_provenance(tension_key, self.persona_dir)
+            if tension_key == "curiosity_drive" and topic_receipt.get("source_kind") != "state_record":
+                logger.info(
+                    "[GQF] Deferred curiosity goal: no grounded user-topic source record"
+                )
+                continue
             topic = topic_receipt.get("topic") or template["topic"]
             topic_source = topic_receipt.get("generator") or "cognition.tension_topics.TENSION_GOALS"
 

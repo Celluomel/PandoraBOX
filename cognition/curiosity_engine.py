@@ -56,6 +56,9 @@ class CuriosityNode:
     last_researched: Optional[float] = None
     related_topics: List[str] = field(default_factory=list)
     questions: List[str] = field(default_factory=list)    # pending questions about this topic
+    source_turn_ids: List[str] = field(default_factory=list)  # grounded user-topic evidence
+    source_history: List[str] = field(default_factory=list)
+    source_history_complete: bool = True
 
 
 class CuriosityEngine:
@@ -101,6 +104,15 @@ class CuriosityEngine:
                 data = json.loads(raw_text)
                 self._global = float(data.get("global_curiosity", 0.5))
                 for t, d in data.get("topics", {}).items():
+                    raw_turn_ids = d.get("source_turn_ids", [])
+                    if not isinstance(raw_turn_ids, list):
+                        raw_turn_ids = []
+                    raw_source_history = d.get("source_history")
+                    history_complete = isinstance(raw_source_history, list)
+                    if not history_complete:
+                        # Older versions overwrote `source` on every stimulus,
+                        # so a legacy row cannot prove its full source lineage.
+                        raw_source_history = [d.get("source", "novelty")]
                     self._topics[t] = CuriosityNode(
                         topic=t,
                         curiosity=float(d.get("curiosity", NOVELTY_SEED)),
@@ -111,6 +123,18 @@ class CuriosityEngine:
                         last_researched=d.get("last_researched"),
                         related_topics=d.get("related_topics", []),
                         questions=d.get("questions", []),
+                        source_turn_ids=[
+                            value.strip() for value in raw_turn_ids
+                            if isinstance(value, str) and value.strip()
+                        ][-20:],
+                        source_history=list(dict.fromkeys(
+                            str(value).strip() for value in raw_source_history
+                            if str(value).strip()
+                        ))[-20:],
+                        source_history_complete=(
+                            history_complete
+                            and bool(d.get("source_history_complete", True))
+                        ),
                     )
             # Clean up low-quality topics using the statistical filter
             _tqf = get_topic_filter()
@@ -136,6 +160,9 @@ class CuriosityEngine:
                     "last_researched": node.last_researched,
                     "related_topics": node.related_topics[:5],
                     "questions": node.questions[-3:],
+                    "source_turn_ids": node.source_turn_ids[-20:],
+                    "source_history": node.source_history[-20:],
+                    "source_history_complete": node.source_history_complete,
                 }
             _tmp_path = self._path.with_suffix('.json.tmp')
             _tmp_path.write_text(json.dumps({
@@ -170,6 +197,7 @@ class CuriosityEngine:
         amount: float = 0.25,
         source: str = "novelty",
         related: Optional[List[str]] = None,
+        source_turn_id: str = "",
     ) -> float:
         """
         Increase curiosity for a topic. Creates the topic if new.
@@ -211,12 +239,21 @@ class CuriosityEngine:
                     times_researched=0,
                     source=source,
                     last_stimulated=time.time(),
+                    source_history=[source],
                 )
             node = self._topics[topic]
             node.curiosity = min(1.0, node.curiosity + amount)
             node.times_encountered += 1
             node.last_stimulated = time.time()
             node.source = source
+            if source not in node.source_history:
+                node.source_history.append(source)
+                node.source_history = node.source_history[-20:]
+            if trusted_semantic_source and str(source_turn_id or "").strip():
+                turn_ref = str(source_turn_id).strip()
+                if turn_ref not in node.source_turn_ids:
+                    node.source_turn_ids.append(turn_ref)
+                    node.source_turn_ids = node.source_turn_ids[-20:]
             if related:
                 for r in related:
                     if r not in node.related_topics:

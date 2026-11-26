@@ -351,6 +351,7 @@ class SemanticExtractor:
                     try:
                         curiosity_level = curiosity.stimulate(
                             topic, amount=0.15, source="user_semantic",
+                            source_turn_id=turn_id,
                         )
                         receipt["curiosity_status"] = "stimulated"
                         receipt["curiosity_topic_selected"] = True

@@ -7,6 +7,7 @@ from cognition.tension_topics import generate_topic_with_provenance
 def test_curiosity_topic_receipt_names_and_fingerprints_the_source_record(tmp_path: Path):
     node = {
         "curiosity": 0.91,
+        "source_turn_ids": ["turn-user-topic-42"],
         "questions": ["How does memory consolidation work?"],
         "times_encountered": 3,
         "times_researched": 0,
@@ -17,12 +18,60 @@ def test_curiosity_topic_receipt_names_and_fingerprints_the_source_record(tmp_pa
 
     receipt = generate_topic_with_provenance("curiosity_drive", tmp_path)
 
-    assert receipt["topic"] == node["questions"][-1]
+    assert receipt["topic"] == "memory consolidation"
     assert receipt["generator"] == "cognition.tension_topics.generate_curiosity_topic"
     assert receipt["source_kind"] == "state_record"
     assert receipt["source_ref"] == "curiosity.json#/topics/memory consolidation"
     assert len(receipt["source_sha256"]) == 64
     assert "curiosity" not in receipt
+
+
+def test_generated_curiosity_questions_and_unlinked_topics_do_not_ground_goals(
+    tmp_path: Path,
+):
+    (tmp_path / "curiosity.json").write_text(json.dumps({
+        "topics": {
+            "rappelle": {
+                "curiosity": 0.99,
+                "source": "goal_exploration",
+                "times_encountered": 276,
+                "times_researched": 1,
+                "questions": ["What can I learn about rappelle?"],
+            },
+            "cognitive architecture": {
+                "curiosity": 0.62,
+                "source": "goal_exploration",
+                "source_turn_ids": ["turn-topic-17"],
+                "times_encountered": 4,
+                "times_researched": 0,
+                "questions": ["What can I learn about cognitive architecture?"],
+            },
+        },
+    }), encoding="utf-8")
+
+    receipt = generate_topic_with_provenance("curiosity_drive", tmp_path)
+
+    assert receipt["topic"] == "cognitive architecture"
+    assert receipt["source_kind"] == "state_record"
+    assert receipt["source_ref"] == "curiosity.json#/topics/cognitive architecture"
+
+
+def test_curiosity_source_turn_ids_must_be_structured_and_nonempty(tmp_path: Path):
+    (tmp_path / "curiosity.json").write_text(json.dumps({
+        "topics": {
+            "stale question": {
+                "curiosity": 0.99,
+                "source_turn_ids": "legacy-string-is-not-a-turn-list",
+                "questions": ["What can I learn about stale question?"],
+            },
+        },
+    }), encoding="utf-8")
+
+    receipt = generate_topic_with_provenance("curiosity_drive", tmp_path)
+
+    assert receipt["topic"] == ""
+    assert receipt["source_kind"] == "unresolved"
+    assert receipt["source_ref"] == ""
 
 
 def test_identity_topic_receipt_points_to_the_selected_belief(tmp_path: Path):
@@ -104,7 +153,7 @@ def test_topic_without_a_matching_state_record_is_not_called_evidence(tmp_path: 
 
     receipt = generate_topic_with_provenance("curiosity_drive", tmp_path)
 
-    assert receipt["topic"]
+    assert receipt["topic"] == ""
     assert receipt["source_kind"] == "unresolved"
     assert receipt["source_ref"] == ""
     assert receipt["source_sha256"] == ""

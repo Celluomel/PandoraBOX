@@ -1715,7 +1715,8 @@ class GoalEngine:
                                 "rejected_count": 0, "unscored_count": 0},
             "curiosity": {"candidate_count": 0, "accepted_count": 0,
                           "rejected_count": 0, "unscored_count": 0,
-                          "user_origin_suppressed_count": 0},
+                          "user_origin_suppressed_count": 0,
+                          "provenance_unverified_suppressed_count": 0},
             "autonomous": {"candidate_count": 0, "accepted_count": 0,
                            "rejected_count": 0, "unscored_count": 0},
             "embedding_status": "not_requested",
@@ -1839,10 +1840,31 @@ class GoalEngine:
                             for node in cu._topics.values():
                                 if node.curiosity < 0.45:
                                     continue
-                                source = str(getattr(node, "source", "") or "").strip().casefold()
-                                if source in _USER_ORIGINATED_CURIOSITY_SOURCES:
+                                source_history = getattr(node, "source_history", None)
+                                history_complete = bool(
+                                    getattr(node, "source_history_complete", False)
+                                )
+                                sources = {
+                                    str(value).strip().casefold()
+                                    for value in source_history
+                                    if str(value).strip()
+                                } if isinstance(source_history, (list, tuple)) else set()
+                                latest_source = str(
+                                    getattr(node, "source", "") or ""
+                                ).strip().casefold()
+                                # `node.source` is the latest stimulus in older
+                                # schemas, not reliable lineage. Do not promote
+                                # a mixed or legacy topic into a durable goal.
+                                if sources & _USER_ORIGINATED_CURIOSITY_SOURCES or (
+                                    latest_source in _USER_ORIGINATED_CURIOSITY_SOURCES
+                                ):
                                     topic_quality_metrics["curiosity"][
                                         "user_origin_suppressed_count"
+                                    ] += 1
+                                    continue
+                                if not history_complete or not sources:
+                                    topic_quality_metrics["curiosity"][
+                                        "provenance_unverified_suppressed_count"
                                     ] += 1
                                     continue
                                 curiosity_topics.append(node.topic)

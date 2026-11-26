@@ -228,10 +228,9 @@ class ExecutionLayer:
                     f"pursuing: {topic[:60]}",
                     priority=0.60,
                 )
-                # Also stimulate curiosity so the engine tracks this topic
-                cu = getattr(self._o, 'curiosity', None)
-                if cu and topic:
-                    cu.stimulate(topic[:40], amount=0.08, source="goal_exploration")
+                # A goal being dispatched is not new evidence about its topic.
+                # Re-stimulating curiosity here fed the same selected goal
+                # back into goal generation and inflated its own priority.
                 logger.debug(f"[ExecutionLayer] goal_exploration: {topic!r} (goal={goal!r})")
         except Exception as e:
             logger.debug(f"[ExecutionLayer] goal_exploration: {e}")

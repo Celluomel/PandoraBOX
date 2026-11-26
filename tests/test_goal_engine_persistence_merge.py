@@ -176,6 +176,15 @@ def test_tick_admits_persists_and_activates_goal_with_terminal_history_present(t
 
 def test_quality_filter_submits_new_tension_goal_through_goal_engine(tmp_path):
     submissions = []
+    (tmp_path / "curiosity.json").write_text(json.dumps({
+        "topics": {
+            "memory consolidation": {
+                "curiosity": 0.91,
+                "source_turn_ids": ["turn-curiosity-grounded"],
+                "questions": ["How does memory consolidation work?"],
+            },
+        },
+    }), encoding="utf-8")
 
     class _Dal:
         def get_goals(self):
@@ -199,8 +208,36 @@ def test_quality_filter_submits_new_tension_goal_through_goal_engine(tmp_path):
         "cognition.tension_topics.generate_curiosity_topic"
     )
     assert generated[0]["source_concept_method"] == submissions[0].source_concept_method
-    assert submissions[0].source_concept_kind in {"state_record", "unresolved"}
+    assert submissions[0].source_concept_kind == "state_record"
     assert generated[0]["source_concept_kind"] == submissions[0].source_concept_kind
+
+
+def test_quality_filter_defers_curiosity_goal_without_grounded_source_turn(tmp_path):
+    (tmp_path / "curiosity.json").write_text(json.dumps({
+        "topics": {
+            "rappelle": {
+                "curiosity": 0.99,
+                "source": "goal_exploration",
+                "times_encountered": 276,
+                "times_researched": 1,
+                "questions": ["What can I learn about rappelle?"],
+            },
+        },
+    }), encoding="utf-8")
+    submissions = []
+
+    class _Dal:
+        def get_goals(self):
+            return []
+
+    filter_ = GoalQualityFilter(str(tmp_path))
+    generated = filter_._generate_tension_goals(
+        {"curiosity_drive": 0.9}, [], _Dal(),
+        goal_engine=SimpleNamespace(add_goal=lambda goal: submissions.append(goal) or True),
+    )
+
+    assert generated == []
+    assert submissions == []
 
 
 def test_tension_source_receipt_survives_goal_engine_persistence(tmp_path):

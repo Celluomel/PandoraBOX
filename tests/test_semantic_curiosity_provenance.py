@@ -1,10 +1,12 @@
 import json
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from cognition.curiosity_engine import CuriosityEngine
 from cognition.semantic_extractor import SemanticExtractor
+from core.orchestrator.execution_layer import ExecutionLayer
 
 
 class _Memory:
@@ -49,6 +51,7 @@ def test_grounded_user_topic_is_the_only_semantic_path_to_curiosity():
 
     curiosity.stimulate.assert_called_once_with(
         "robot locomotion", amount=0.15, source="user_semantic",
+        source_turn_id="turn-semantic-1",
     )
     assert receipt["turn_id"] == "turn-semantic-1"
     assert receipt["curiosity_status"] == "stimulated"
@@ -96,10 +99,65 @@ def test_user_semantic_curiosity_uses_grounding_not_word_filter(tmp_path: Path):
         topic_filter.return_value.is_valid.return_value = False
         engine.stimulate(
             "robot locomotion", amount=0.15, source="user_semantic",
+            source_turn_id="turn-semantic-2",
         )
 
     assert engine.top_interests(1)[0][0] == "robot locomotion"
     topic_filter.assert_not_called()
+    saved = json.loads((tmp_path / "curiosity.json").read_text(encoding="utf-8"))
+    assert saved["topics"]["robot locomotion"]["source_turn_ids"] == ["turn-semantic-2"]
+
+
+def test_internal_curiosity_stimulation_does_not_replace_user_source_turn(tmp_path: Path):
+    engine = CuriosityEngine(str(tmp_path / "curiosity.json"))
+    engine.stimulate(
+        "robot locomotion", amount=0.15, source="user_semantic",
+        source_turn_id="turn-grounded-1",
+    )
+    engine.stimulate(
+        "robot locomotion", amount=0.08, source="goal_exploration",
+    )
+
+    saved = json.loads((tmp_path / "curiosity.json").read_text(encoding="utf-8"))
+    node = saved["topics"]["robot locomotion"]
+    assert node["source_turn_ids"] == ["turn-grounded-1"]
+    assert node["source"] == "goal_exploration"
+    assert node["source_history"] == ["user_semantic", "goal_exploration"]
+    assert node["source_history_complete"] is True
+
+
+def test_legacy_curiosity_source_is_not_treated_as_complete_lineage(tmp_path: Path):
+    path = tmp_path / "curiosity.json"
+    path.write_text(json.dumps({
+        "topics": {
+            "cognitive architecture": {
+                "curiosity": 0.9,
+                "source": "goal_exploration",
+                "times_encountered": 50,
+            },
+        },
+    }), encoding="utf-8")
+    engine = CuriosityEngine(str(path))
+
+    node = engine._topics["cognitive architecture"]
+
+    assert node.source_history == ["goal_exploration"]
+    assert node.source_history_complete is False
+
+
+def test_goal_exploration_broadcast_does_not_stimulate_curiosity_again():
+    curiosity = Mock()
+    workspace = Mock()
+    organism = SimpleNamespace(curiosity=curiosity)
+    layer = ExecutionLayer(organism, workspace)
+
+    asyncio.run(layer._goal_exploration({
+        "topic": "grounded topic",
+        "goal": "persistent goal",
+    }))
+
+    curiosity.stimulate.assert_not_called()
+    workspace.broadcast.assert_called_once()
 
 
 def test_single_grounded_concept_resolves_missing_or_mismatched_dominant_topic():
@@ -250,4 +308,5 @@ def test_upstream_decision_classification_keeps_semantic_learning_in_background(
     memory.record_observation.assert_called_once()
     curiosity.stimulate.assert_called_once_with(
         "lavage auto", amount=0.15, source="user_semantic",
+        source_turn_id="turn-decision-learning",
     )

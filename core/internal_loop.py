@@ -2697,23 +2697,11 @@ class InternalThoughtLoop:
                     # focus. It is not an executed effect; GoalActionExecutor
                     # records action feedback only after it actually runs.
 
-                    # Refresh curiosity with winner topic — prevents monotonic decay.
-                    # Fix: previously did _winner.get('name','').replace('_',' ')
-                    # — feeding slug fragments like "curiosity_wonder_dont" straight
-                    # back into curiosity.json, actively injecting noise topics.
-                    # Now uses the clean 'topic' field; skips entirely if absent
-                    # rather than falling back to slug-mangling.
-                    if (
-                        _proposal_focus_admitted
-                        and hasattr(o, 'curiosity')
-                        and _winner.get('type') in ('goal', 'thought')
-                    ):
-                        try:
-                            _topic = _winner.get('topic', '')
-                            if _topic and len(_topic) > 3:
-                                o.curiosity.add_question(_topic, f"What can I learn about {_topic}?")
-                        except Exception:
-                            pass
+                    # A workspace winner is an arbitration result, not new
+                    # evidence of curiosity. Do not turn every winning goal or
+                    # thought into a stored generic question: the curiosity
+                    # goal generator must be driven by its independently
+                    # grounded source record, not by this loop's own output.
 
                 if not _winner:
                     _no_winner_ref = self._record_cycle_stage(
