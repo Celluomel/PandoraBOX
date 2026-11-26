@@ -76,3 +76,37 @@ def test_live_goal_and_unexpired_cooldown_still_suppress_reentry(tmp_path):
         [topic],
         limit=1,
     ) == []
+
+
+def test_generated_goal_source_provenance_survives_persistence_reload(tmp_path):
+    engine = _engine(tmp_path)
+    topic = "cognitive architecture"
+    engine._topic_quality_cache[topic] = True
+    candidate = engine.generate_candidates(
+        [Motivation(name="develop_capabilities", strength=0.7, origin="trait:curiosity")],
+        [topic],
+        limit=1,
+        topic_source_turns={topic: ["turn-21", "turn-22"]},
+        topic_source_provenance={topic: {
+            "kind": "user_semantic_commitment",
+            "method": "semantic_memory.recent_user_topic_evidence",
+            "ref": "concept:17",
+        }},
+    )[0]
+
+    assert candidate.source_turn_id == "turn-22"
+    assert candidate.source_evidence_turn_ids == ["turn-21", "turn-22"]
+    assert candidate.source_concept_kind == "user_semantic_commitment"
+    assert candidate.source_concept_method == "semantic_memory.recent_user_topic_evidence"
+    assert candidate.source_concept_ref == "concept:17"
+    assert engine.add_goal(candidate)
+
+    reloaded = _engine(tmp_path)
+    restored = reloaded.get_goal_by_id(candidate.id)
+    assert restored is not None
+    assert restored.source_evidence_turn_ids == ["turn-21", "turn-22"]
+    assert restored.source_concept_kind == "user_semantic_commitment"
+    assert restored.source_concept_ref == "concept:17"
+    assert restored.source_provenance_records[0]["source_turn_ids"] == [
+        "turn-21", "turn-22",
+    ]

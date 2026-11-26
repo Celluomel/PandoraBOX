@@ -672,6 +672,34 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(goals[0].source_turn_id, "turn-b")
         self.assertEqual(goals[0].source_evidence_turn_ids, ["turn-a", "turn-b"])
 
+    def test_goal_candidate_persists_source_kind_method_and_reference(self):
+        engine = GoalEngine.__new__(GoalEngine)
+        engine._goals = {}
+        engine._cycle_counter = 1
+        engine._recently_abandoned = {}
+        engine.MAX_ACTIVE_GOALS = 10
+        engine._external_tasks = []
+        engine._topic_quality_cache = {}
+        engine._lock = threading.RLock()
+        with patch.object(engine, "_is_valid_goal_topic", return_value=True):
+            goals = engine.generate_candidates(
+                [Motivation("explore", 0.7, "test")],
+                ["cognitive architecture"],
+                topic_source_turns={"cognitive architecture": ["turn-a", "turn-b"]},
+                topic_source_provenance={
+                    "cognitive architecture": {
+                        "kind": "user_semantic_commitment",
+                        "method": "semantic_memory.recent_user_topic_evidence",
+                        "ref": "concept:42",
+                    },
+                },
+            )
+
+        assert len(goals) == 1
+        assert goals[0].source_concept_kind == "user_semantic_commitment"
+        assert goals[0].source_concept_method == "semantic_memory.recent_user_topic_evidence"
+        assert goals[0].source_concept_ref == "concept:42"
+
     def test_goal_admission_uses_semantic_verdict_not_token_dictionary(self):
         engine = GoalEngine.__new__(GoalEngine)
         engine._topic_quality_cache = {}

@@ -129,6 +129,10 @@ class Goal:
     source_concept_kind: str = ""
     source_concept_ref: str = ""
     source_concept_sha256: str = ""
+    # Full causal source set. Singular source_concept_* fields remain as the
+    # primary source for compatibility; consolidation can retain additional
+    # origins here without flattening them into an ambiguous label.
+    source_provenance_records: List[Dict[str, object]] = field(default_factory=list)
     # Last autonomous action receipt, persisted with the goal so its counters
     # can be audited against the causal ledger instead of inferred from totals.
     last_action_execution_id: str = ""
@@ -831,6 +835,7 @@ class GoalEngine:
         topics: List[str],
         limit: int = 5,
         topic_source_turns: Optional[Dict[str, List[str]]] = None,
+        topic_source_provenance: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> List[Goal]:
         """
         Generate goal candidates by pairing motivations with topics.
@@ -909,6 +914,8 @@ class GoalEngine:
                     continue
 
                 intent_kind, temporal_scope = _goal_intent(motive.name, topic)
+                provenance_key = " ".join(t_lower.split())
+                provenance = (topic_source_provenance or {}).get(provenance_key, {})
                 goal = Goal(
                     id            = str(uuid.uuid4())[:8],
                     topic         = topic,
@@ -926,6 +933,23 @@ class GoalEngine:
                     source_evidence_turn_ids=list(
                         (topic_source_turns or {}).get(topic, [])
                     ),
+                    source_concept_kind=str(provenance.get("kind", "unverified"))[:80],
+                    source_concept_method=str(
+                        provenance.get("method", "goal_engine.generate_candidates")
+                    )[:120],
+                    source_concept_ref=str(
+                        provenance.get("ref", f"topic:{t_lower}")
+                    )[:240],
+                    source_provenance_records=[{
+                        "kind": str(provenance.get("kind", "unverified"))[:80],
+                        "method": str(provenance.get(
+                            "method", "goal_engine.generate_candidates"
+                        ))[:120],
+                        "ref": str(provenance.get("ref", f"topic:{t_lower}"))[:240],
+                        "source_turn_ids": list(
+                            (topic_source_turns or {}).get(topic, [])
+                        )[-20:],
+                    }],
                 )
 
                 candidates.append(goal)
@@ -1195,6 +1219,15 @@ class GoalEngine:
             success_criteria=clean_criteria,
             subject=clean_topic,
             source_turn_id=turn_id,
+            source_concept_kind="user_explicit_goal",
+            source_concept_method="GoalEngine.create_user_requested_goal",
+            source_concept_ref=f"turn:{turn_id}"[:240],
+            source_provenance_records=[{
+                "kind": "user_explicit_goal",
+                "method": "GoalEngine.create_user_requested_goal",
+                "ref": f"turn:{turn_id}"[:240],
+                "source_turn_ids": [turn_id],
+            }],
         )
 
         # Hold the re-entrant lock across admission and read-back so a
@@ -1287,6 +1320,14 @@ class GoalEngine:
             source_thought_type=str(proposal.get("origin_thought_type") or "")[:80],
             source_thought_timestamp=str(proposal.get("origin_thought_timestamp") or "")[:80],
             source_concept_method=str(proposal.get("concept_source") or "legacy_text_extraction")[:80],
+            source_concept_kind="selected_workspace_thought",
+            source_concept_ref=f"thought:{source_thought_id}"[:240],
+            source_provenance_records=[{
+                "kind": "selected_workspace_thought",
+                "method": str(proposal.get("concept_source") or "legacy_text_extraction")[:120],
+                "ref": f"thought:{source_thought_id}"[:240],
+                "source_thought_id": source_thought_id,
+            }],
         )
 
         with self._lock:
@@ -1706,6 +1747,7 @@ class GoalEngine:
         metrics = {}
         filtered_topics = []
         topic_source_turns = {}
+        topic_source_provenance: Dict[str, Dict[str, str]] = {}
         motivations = []
         candidates = []
         accepted = 0
@@ -1818,10 +1860,26 @@ class GoalEngine:
                             str(item.get("topic", "")): list(item.get("turn_ids", []))
                             for item in evidence if item.get("topic")
                         }
+                        topic_source_provenance.update({
+                            " ".join(str(item.get("topic", "")).casefold().split()): {
+                                "kind": "user_semantic_commitment",
+                                "method": "semantic_memory.recent_user_topic_evidence",
+                                "ref": f"concept:{item.get('concept_id', item.get('topic', ''))}",
+                            }
+                            for item in evidence if item.get("topic")
+                        })
                     else:
                         raw_topics = sem.recent_user_topics(
                             limit=15, min_strength=0.5, min_observations=2
                         )
+                        topic_source_provenance.update({
+                            " ".join(str(topic).casefold().split()): {
+                                "kind": "unverified_legacy_semantic_memory",
+                                "method": "semantic_memory.recent_user_topics",
+                                "ref": f"topic:{topic}",
+                            }
+                            for topic in raw_topics if topic
+                        })
                     topics = _admit_semantic_topics(raw_topics, "semantic_memory")
             except Exception as e:
                 logger.debug(f"[GoalEngine] semantic topics: {e}")
@@ -1868,6 +1926,13 @@ class GoalEngine:
                                     ] += 1
                                     continue
                                 curiosity_topics.append(node.topic)
+                                topic_source_provenance[
+                                    " ".join(str(node.topic).casefold().split())
+                                ] = {
+                                    "kind": "internal_curiosity_state",
+                                    "method": "curiosity_engine.stimulate",
+                                    "ref": "topic:" + str(node.topic) + ";sources:" + ",".join(sorted(sources)),
+                                }
                         topics = _admit_semantic_topics(
                             curiosity_topics, "curiosity", limit=6
                         )
@@ -1901,6 +1966,34 @@ class GoalEngine:
             ])
             # Preserve order while avoiding duplicate autonomous goals.
             autonomous_topics = list(dict.fromkeys(autonomous_topics))
+            for topic in autonomous_topics:
+                matching_motivations = [
+                    motivation for motivation in motivations
+                    if (
+                        (motivation.name == "understand_user" and topic == "relational understanding")
+                        or (motivation.name in {"improve_capabilities", "develop_capabilities"}
+                            and topic == "cognitive capability development")
+                        or (motivation.name in {"maintain_coherence", "resolve_uncertainty"}
+                            and topic == "identity coherence")
+                        or (motivation.name == "pursue_aspiration"
+                            and topic == "meaningful aspiration development")
+                        or (motivation.name not in {
+                            "understand_user", "improve_capabilities", "develop_capabilities",
+                            "maintain_coherence", "resolve_uncertainty", "pursue_aspiration",
+                        } and topic == "knowledge integration")
+                    )
+                ]
+                topic_source_provenance.setdefault(
+                    " ".join(topic.casefold().split()),
+                    {
+                        "kind": "autonomous_motivation",
+                        "method": "goal_engine.derive_motivations",
+                        "ref": "motivations:" + ",".join(
+                            f"{getattr(item, 'name', 'unknown')}@{getattr(item, 'origin', 'unspecified')}"
+                            for item in matching_motivations
+                        ) if matching_motivations else "autonomous_domain:" + topic,
+                    },
+                )
             # Autonomous subjects use the same meaning-based admission as
             # conversational and curiosity topics. No token list or minimum
             # word-length rule may override the semantic decision.
@@ -1957,9 +2050,13 @@ class GoalEngine:
                     candidates = self.generate_candidates(
                         motivations, use_topics, limit=3,
                         topic_source_turns=topic_source_turns,
+                        topic_source_provenance=topic_source_provenance,
                     )
                 else:
-                    candidates = self.generate_candidates(motivations, use_topics, limit=3)
+                    candidates = self.generate_candidates(
+                        motivations, use_topics, limit=3,
+                        topic_source_provenance=topic_source_provenance,
+                    )
                 candidate_generation_metrics.update(
                     getattr(self, "_last_candidate_generation_report", {})
                 )

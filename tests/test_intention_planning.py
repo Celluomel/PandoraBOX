@@ -149,6 +149,43 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(status["plans"][0]["status"], "active")
             self.assertEqual(plan.status, "active")
 
+    def test_self_report_carries_goal_source_provenance_into_prompt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            goal = NS(
+                id="goal-provenance", topic="cognitive architecture", status="active",
+                origin="develop_capabilities", priority=0.8, energy=0.7,
+                created_cycle=14, source_turn_id="turn-22",
+                source_evidence_turn_ids=["turn-21", "turn-22"],
+                source_concept_method="semantic_memory.recent_user_topic_evidence",
+                source_concept_kind="user_semantic_commitment",
+                source_concept_ref="concept:17",
+                source_provenance_records=[{
+                    "kind": "user_semantic_commitment",
+                    "method": "semantic_memory.recent_user_topic_evidence",
+                    "ref": "concept:17",
+                    "source_turn_ids": ["turn-21", "turn-22"],
+                }],
+            )
+            planner._organism.ai_system = NS(goal_engine=NS(
+                get_active_goals=lambda min_activation=0.1: [goal],
+            ))
+
+            snapshot = planner.factual_self_report_snapshot()
+            fragment = planner.factual_self_report_fragment()
+
+            self.assertEqual(
+                snapshot["active_goals"][0]["source_concept_kind"],
+                "user_semantic_commitment",
+            )
+            self.assertEqual(
+                snapshot["active_goals"][0]["source_evidence_turn_ids"],
+                ["turn-21", "turn-22"],
+            )
+            self.assertIn("concept_ref=concept:17", fragment)
+            self.assertIn("evidence_turns=turn-21,turn-22", fragment)
+            self.assertIn("merged_source[kind=user_semantic_commitment", fragment)
+
     def test_aspiration_plan_uses_public_context_prediction(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, world_model, aspiration = self._planner(folder)

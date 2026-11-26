@@ -39,3 +39,11 @@ This matrix is the working coverage map for the audit. It describes the modules 
 The currently available local machine has no listener on Lumina/LM Studio ports 8080, 8765, 8767, 8786, or 1234. Brain configuration has Body enabled, but the Body runtime is stopped, so no Body telemetry is flowing. This is `source_unavailable: body_runtime_stopped`, not evidence that Brain-side interpretation failed. Neither configuration intent nor absence of packets proves the source service is running. FAISS reconciliation and internal-loop/goal-provenance fixes require a grouped restart before they can be confirmed in live receipts.
 
 Global progress remains **3/10 closed tracks** under the existing criteria. This matrix does not increase the score: several tracks have only historical live evidence, others have local tests only, and research, current affect, action effects, and post-fix internal-loop outcomes remain open.
+
+### Goal provenance through planner self-report — 26 November 2026
+
+New GoalEngine candidates persist a source kind, method, and reference for user semantic commitments, internal curiosity state, autonomous motivation, or an unverified legacy semantic source. GoalConsolidator now unions these records into the retained goal and keeps archived originals. The planner snapshot and prompt fragment expose source lineage and indicate omitted records when output is bounded. Fourteen related suites pass **287 tests and 4 subtests** locally. Three pre-existing active goals lack recoverable source evidence and remain unmodified. No post-patch live process receipt is available. Body is configured active but stopped, recorded as `source_unavailable: body_runtime_stopped`, outside Brain defect accounting. The audit remains **3/10 closed tracks**.
+
+### Consolidation and planner provenance follow-through — 26 November 2026
+
+GoalConsolidator now unions structured source records and evidence turn IDs into the retained goal while preserving archived source goals. The planner snapshot and factual self-report expose these records. The 14-suite local run passes **287 tests and 4 subtests**; live post-load validation remains open. The three legacy goals with missing provenance remain unmodified. Body being configured active while stopped is tracked as source unavailability, not a Brain failure. Global audit remains **3/10 closed tracks**.

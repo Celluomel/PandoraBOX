@@ -1512,6 +1512,14 @@ class LongHorizonPlanner:
                 "created_cycle": getattr(goal, "created_cycle", None),
                 "created_at": str(getattr(goal, "created_at", "") or "")[:80],
                 "source_turn_id": str(getattr(goal, "source_turn_id", "") or "")[:80] or None,
+                "source_evidence_turn_ids": [
+                    str(turn_id)[:80]
+                    for turn_id in (getattr(goal, "source_evidence_turn_ids", []) or [])[:8]
+                    if str(turn_id).strip()
+                ],
+                "source_evidence_turn_count": len(
+                    getattr(goal, "source_evidence_turn_ids", []) or []
+                ),
                 "source_thought_id": str(getattr(goal, "source_thought_id", "") or "")[:80] or None,
                 "source_thought_source": str(
                     getattr(goal, "source_thought_source", "") or ""
@@ -1522,6 +1530,20 @@ class LongHorizonPlanner:
                 "source_concept_method": str(
                     getattr(goal, "source_concept_method", "") or ""
                 )[:80] or None,
+                "source_concept_kind": str(
+                    getattr(goal, "source_concept_kind", "") or ""
+                )[:80] or None,
+                "source_concept_ref": str(
+                    getattr(goal, "source_concept_ref", "") or ""
+                )[:120] or None,
+                "source_provenance_records": [
+                    dict(record)
+                    for record in (getattr(goal, "source_provenance_records", []) or [])[:8]
+                    if isinstance(record, dict)
+                ],
+                "source_provenance_record_count": len(
+                    getattr(goal, "source_provenance_records", []) or []
+                ),
                 "tension_source": str(getattr(goal, "tension_source", "") or "")[:80] or None,
                 "tension_level": round(float(getattr(goal, "tension_level", 0.0) or 0.0), 3),
                 "intent_kind": str(getattr(goal, "intent_kind", "learn")),
@@ -1770,6 +1792,40 @@ class LongHorizonPlanner:
                 provenance.append(f"thought_source={goal['source_thought_source']}")
             if goal.get("source_concept_method"):
                 provenance.append(f"concept_method={goal['source_concept_method']}")
+            if goal.get("source_concept_kind"):
+                provenance.append(f"concept_kind={goal['source_concept_kind']}")
+            if goal.get("source_concept_ref"):
+                provenance.append(f"concept_ref={goal['source_concept_ref']}")
+            if goal.get("source_evidence_turn_ids"):
+                provenance.append(
+                    "evidence_turns=" + ",".join(goal["source_evidence_turn_ids"][:8])
+                )
+                if goal.get("source_evidence_turn_count", 0) > len(goal["source_evidence_turn_ids"]):
+                    provenance.append(
+                        f"evidence_turns_omitted={goal['source_evidence_turn_count'] - len(goal['source_evidence_turn_ids'])}"
+                    )
+            for source_record in goal.get("source_provenance_records", [])[:4]:
+                if not isinstance(source_record, dict):
+                    continue
+                record_bits = [
+                    f"kind={source_record.get('kind', 'unknown')}",
+                    f"method={source_record.get('method', 'unknown')}",
+                ]
+                if source_record.get("ref"):
+                    record_bits.append(f"ref={source_record['ref']}")
+                record_turns = source_record.get("source_turn_ids", [])
+                if isinstance(record_turns, list) and record_turns:
+                    record_bits.append("turns=" + ",".join(str(item) for item in record_turns[:8]))
+                provenance.append("merged_source[" + ";".join(record_bits) + "]")
+            visible_source_records = min(
+                4, len(goal.get("source_provenance_records", []))
+            )
+            if goal.get("source_provenance_record_count", 0) > visible_source_records:
+                provenance.append(
+                    "source_records_omitted=" + str(
+                        goal["source_provenance_record_count"] - visible_source_records
+                    )
+                )
             if goal.get("tension_source"):
                 provenance.append(
                     f"tension={goal['tension_source']}@{goal.get('tension_level', 0.0):.3f}"

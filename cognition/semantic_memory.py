@@ -280,6 +280,7 @@ class SemanticMemory:
                 ).fetchall()
             evidence.append({
                 "topic": row["name"],
+                "concept_id": int(row["concept_id"]),
                 "observed_at": float(row["observed_at"] or 0),
                 "confidence": float(row["confidence"] or 0),
                 "strength": float(row["strength"] or 0),

@@ -22,7 +22,7 @@ def make_engine(identity_getter=None):
     engine._goals = {}
     engine._topic_quality_cache = {}
     engine._lock = RLock()
-    engine.generate_candidates = lambda _motivations, _topics, limit: []
+    engine.generate_candidates = lambda _motivations, _topics, limit, **_kwargs: []
     engine.add_goal = lambda _goal: False
     engine.update_goals = lambda _pressures: None
     engine.get_metrics = lambda: {"active": 1, "total_goals": 2, "gei": 0.5}
@@ -65,7 +65,7 @@ def test_goal_engine_reports_cooldown_as_skip_not_completion():
 
 def test_goal_engine_counts_only_successful_persistent_admissions():
     engine = make_engine()
-    engine.generate_candidates = lambda _motivations, _topics, limit: [
+    engine.generate_candidates = lambda _motivations, _topics, limit, **_kwargs: [
         SimpleNamespace(id="saved"), SimpleNamespace(id="rejected")
     ]
     engine.add_goal = lambda goal: goal.id == "saved"
@@ -94,7 +94,7 @@ def test_curiosity_topic_fallback_uses_the_same_semantic_admission_gate():
         curiosity=curiosity,
     )
     offered_topics = []
-    engine.generate_candidates = lambda _motivations, topics, limit: offered_topics.extend(topics) or []
+    engine.generate_candidates = lambda _motivations, topics, limit, **_kwargs: offered_topics.extend(topics) or []
 
     # The quality gate's false verdict must apply to curiosity fallback topics,
     # not only to topics returned by SemanticMemory.
@@ -140,7 +140,7 @@ def test_curiosity_topics_are_deferred_when_semantic_quality_is_unavailable():
         curiosity=curiosity,
     )
     offered_topics = []
-    engine.generate_candidates = lambda _motivations, topics, limit: offered_topics.extend(topics) or []
+    engine.generate_candidates = lambda _motivations, topics, limit, **_kwargs: offered_topics.extend(topics) or []
 
     with patch("cognition.goal_semantics.batch_topic_quality", return_value=None):
         engine.tick()
@@ -169,7 +169,7 @@ def test_curiosity_fallback_does_not_repromote_a_conversation_source():
         curiosity=curiosity,
     )
     offered_topics = []
-    engine.generate_candidates = lambda _motivations, topics, limit: offered_topics.extend(topics) or []
+    engine.generate_candidates = lambda _motivations, topics, limit, **_kwargs: offered_topics.extend(topics) or []
 
     with patch("cognition.goal_semantics.batch_topic_quality", return_value={}):
         engine.tick()
@@ -198,7 +198,7 @@ def test_curiosity_latest_internal_stimulus_cannot_erase_user_source_lineage():
         curiosity=curiosity,
     )
     offered_topics = []
-    engine.generate_candidates = lambda _motivations, topics, limit: offered_topics.extend(topics) or []
+    engine.generate_candidates = lambda _motivations, topics, limit, **_kwargs: offered_topics.extend(topics) or []
 
     with patch("cognition.goal_semantics.batch_topic_quality", return_value={}):
         engine.tick()
@@ -225,7 +225,7 @@ def test_curiosity_fallback_rejects_legacy_latest_internal_source_without_lineag
         curiosity=curiosity,
     )
     offered_topics = []
-    engine.generate_candidates = lambda _motivations, topics, limit: offered_topics.extend(topics) or []
+    engine.generate_candidates = lambda _motivations, topics, limit, **_kwargs: offered_topics.extend(topics) or []
 
     with patch("cognition.goal_semantics.batch_topic_quality", return_value={}):
         engine.tick()
@@ -249,9 +249,11 @@ def test_goal_engine_carries_explicit_topic_turn_provenance_into_candidates():
     )
     captured = {}
 
-    def capture_candidates(_motivations, topics, limit, topic_source_turns=None):
+    def capture_candidates(_motivations, topics, limit, topic_source_turns=None,
+                           topic_source_provenance=None):
         captured["topics"] = list(topics)
         captured["topic_source_turns"] = topic_source_turns
+        captured["topic_source_provenance"] = topic_source_provenance
         return []
 
     engine.generate_candidates = capture_candidates
@@ -267,6 +269,10 @@ def test_goal_engine_carries_explicit_topic_turn_provenance_into_candidates():
     assert captured["topic_source_turns"]["cognitive architecture"] == [
         "turn-a", "turn-b",
     ]
+    assert captured["topic_source_provenance"]["cognitive architecture"]["kind"] == (
+        "user_semantic_commitment"
+    )
+    assert captured["topic_source_provenance"]["cognitive architecture"]["ref"] == "concept:cognitive architecture"
 
 
 def test_semantically_admitted_topic_is_not_removed_by_word_length_or_token_rules():
@@ -278,7 +284,7 @@ def test_semantically_admitted_topic_is_not_removed_by_word_length_or_token_rule
         curiosity=None,
     )
     offered_topics = []
-    engine.generate_candidates = lambda _motivations, topics, limit: offered_topics.extend(topics) or []
+    engine.generate_candidates = lambda _motivations, topics, limit, **_kwargs: offered_topics.extend(topics) or []
 
     with patch(
         "cognition.goal_semantics.batch_topic_quality",

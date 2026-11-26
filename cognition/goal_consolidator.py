@@ -12,6 +12,7 @@ semantically identical. This module:
 Run periodically from internal_loop to keep the goal pool clean.
 """
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -202,6 +203,60 @@ class GoalConsolidator:
         keeper['origin_thoughts'] = all_origins
         keeper['merged_from'] = [v['id'] for v in victims]
         keeper['consolidated_at'] = _now()
+
+        # Preserve causal origins from every merged goal. The keeper's
+        # singular fields remain its primary lineage for older readers; the
+        # structured list prevents archived source goals from becoming
+        # unreachable when later planning reads only the keeper.
+        provenance_records: List[Dict[str, Any]] = []
+        seen_provenance: Set[str] = set()
+        for source_goal in cluster:
+            records = source_goal.get('source_provenance_records', [])
+            if not isinstance(records, list):
+                records = []
+            if not records:
+                legacy_record = {
+                    key: source_goal.get(key)
+                    for key in (
+                        'source_concept_kind', 'source_concept_method',
+                        'source_concept_ref', 'source_concept_sha256',
+                        'source_turn_id', 'source_evidence_turn_ids',
+                        'source_thought_id',
+                    )
+                    if source_goal.get(key)
+                }
+                if legacy_record:
+                    records = [legacy_record]
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                normalized = dict(record)
+                evidence_ids = normalized.get('source_turn_ids')
+                if not isinstance(evidence_ids, list):
+                    evidence_ids = normalized.get('source_evidence_turn_ids', [])
+                if not evidence_ids and normalized.get('source_turn_id'):
+                    evidence_ids = [normalized.get('source_turn_id')]
+                if not isinstance(evidence_ids, list):
+                    evidence_ids = []
+                normalized['source_turn_ids'] = list(dict.fromkeys(
+                    str(value).strip() for value in evidence_ids if str(value).strip()
+                ))[:20]
+                fingerprint = json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+                if fingerprint not in seen_provenance:
+                    seen_provenance.add(fingerprint)
+                    provenance_records.append(normalized)
+        if provenance_records:
+            keeper['source_provenance_records'] = provenance_records[-40:]
+            all_source_turns = list(dict.fromkeys(
+                turn_id
+                for record in provenance_records
+                for turn_id in record.get('source_turn_ids', [])
+                if str(turn_id).strip()
+            ))[-40:]
+            if all_source_turns:
+                keeper['source_evidence_turn_ids'] = all_source_turns
+                if not keeper.get('source_turn_id'):
+                    keeper['source_turn_id'] = all_source_turns[-1]
 
         # Boost priority slightly (merged goals are more important)
         keeper['priority'] = min(1.0, keeper.get('priority', 0.5) + 0.05)
