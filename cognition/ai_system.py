@@ -1022,13 +1022,13 @@ class EnhancedMemorySystem:
             return False
 
     def _synchronize_index_with_memory_db(self, index) -> bool:
-        """Append DB memories missing from a valid persisted index.
+        """Reconcile a valid persisted index with the SQLite ID snapshot.
 
         SQLite is committed before periodic FAISS snapshots. After an
-        unclean stop, that leaves a healthy index with a small append-only
-        tail missing. Embed and add only that tail; rebuild from all memories
-        only when the index contains stale/duplicate IDs or synchronization
-        cannot be validated.
+        unclean stop, the index can have both an append-only DB tail and IDs
+        for memories deleted since its snapshot. Remove stale IDs and embed
+        only missing rows; rebuild from all memories only when the ID map is
+        malformed or this differential reconciliation cannot be validated.
         """
         try:
             id_map = getattr(index, "id_map", None)
@@ -1049,34 +1049,64 @@ class EnhancedMemorySystem:
             if len(persisted_by_id) != len(rows):
                 return False
             persisted_ids = set(persisted_by_id)
-            if not index_id_set.issubset(persisted_ids):
-                return False
-
+            stale_ids = index_id_set - persisted_ids
             missing_ids = persisted_ids - index_id_set
-            if not missing_ids:
+            if not stale_ids and not missing_ids:
                 return True
-            missing_rows = [(fid, persisted_by_id[fid]) for fid in sorted(missing_ids)]
-            texts = [
-                memory_embedding_text(
-                    text, "user_message" if text.startswith("User message:") else "",
+
+            if stale_ids:
+                stale_array = np.asarray(sorted(stale_ids), dtype=np.int64)
+                selector = faiss.IDSelectorArray(
+                    len(stale_array), faiss.swig_ptr(stale_array),
                 )
-                for _, text in missing_rows
-            ]
-            vectors = np.asarray(
-                self.embedding_model.encode(
-                    texts, show_progress_bar=False, batch_size=128,
-                ),
-                dtype=np.float32,
-            )
-            if vectors.shape != (len(missing_rows), self.embedding_dim) or not np.isfinite(vectors).all():
+                removed_count = int(index.remove_ids(selector))
+                if removed_count != len(stale_array):
+                    return False
+
+            missing_rows = [(fid, persisted_by_id[fid]) for fid in sorted(missing_ids)]
+            if missing_rows:
+                if self.embedding_model is None:
+                    return False
+                texts = [
+                    memory_embedding_text(
+                        text, "user_message" if text.startswith("User message:") else "",
+                    )
+                    for _, text in missing_rows
+                ]
+                vectors = np.asarray(
+                    self.embedding_model.encode(
+                        texts, show_progress_bar=False, batch_size=128,
+                    ),
+                    dtype=np.float32,
+                )
+                if (
+                    vectors.shape != (len(missing_rows), self.embedding_dim)
+                    or not np.isfinite(vectors).all()
+                ):
+                    return False
+                index.add_with_ids(
+                    vectors, np.asarray([fid for fid, _ in missing_rows], dtype=np.int64),
+                )
+
+            final_id_map = getattr(index, "id_map", None)
+            if final_id_map is None:
                 return False
-            index.add_with_ids(
-                vectors, np.asarray([fid for fid, _ in missing_rows], dtype=np.int64),
-            )
+            final_ids = np.asarray(
+                faiss.vector_to_array(final_id_map), dtype=np.int64,
+            ).reshape(-1)
+            if (
+                final_ids.size != int(index.ntotal)
+                or len(set(map(int, final_ids))) != final_ids.size
+                or set(map(int, final_ids)) != persisted_ids
+            ):
+                return False
             if not self._save_index(index):
-                logger.warning("FAISS tail synchronized in memory but snapshot save failed")
-            else:
-                logger.info("FAISS appended %d missing DB vector(s)", len(missing_rows))
+                logger.warning("FAISS differential synchronization snapshot save failed")
+                return False
+            logger.info(
+                "FAISS index synchronized with SQLite (removed %d stale, appended %d new vectors)",
+                len(stale_ids), len(missing_rows),
+            )
             return True
         except Exception as exc:
             logger.warning("FAISS incremental synchronization failed: %s", exc)
