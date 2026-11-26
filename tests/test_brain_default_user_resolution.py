@@ -100,6 +100,26 @@ def test_provenanced_profile_fact_reader_excludes_legacy_values(tmp_path):
     assert all("legacy" not in item["value"] for item in facts)
 
 
+def test_profile_fact_source_digest_references_the_user_message_not_the_value(tmp_path):
+    manager = UserManager(path=Path(tmp_path) / "users.json")
+    profile = manager.create("Fred")
+    source_message = "I prefer concise technical answers."
+    source_turn_id = "source-digest-turn"
+
+    receipt = manager.learn_from_message(
+        profile.id,
+        source_message,
+        return_receipt=True,
+        source_turn_id=source_turn_id,
+    )
+    fact = manager.provenanced_profile_facts_for(profile.id)[0]
+
+    assert receipt["status"] == "updated"
+    assert fact["source_turn_id"] == source_turn_id
+    assert fact["source_sha256"] == hashlib.sha256(source_message.encode("utf-8")).hexdigest()
+    assert fact["source_sha256"] != hashlib.sha256(fact["value"].encode("utf-8")).hexdigest()
+
+
 def test_legacy_profile_facts_are_excluded_until_reasserted(tmp_path):
     manager = UserManager(path=Path(tmp_path) / "users.json")
     profile = manager.create("Fred")

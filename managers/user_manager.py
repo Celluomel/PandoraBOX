@@ -479,9 +479,11 @@ class UserManager:
                     facts.append({
                         "category": kind,
                         "value": str(value),
-                        "source_sha256": hashlib.sha256(
-                            str(value).encode("utf-8", errors="replace")
-                        ).hexdigest(),
+                        # Return the digest of the original user message stored
+                        # with the provenance record. Hashing the extracted
+                        # value here mislabeled a value fingerprint as a source
+                        # reference and broke independent provenance checks.
+                        "source_sha256": str(valid_sources[-1].get("source_sha256") or ""),
                         "source_turn_id": str(valid_sources[-1].get("turn_id") or ""),
                     })
         return facts

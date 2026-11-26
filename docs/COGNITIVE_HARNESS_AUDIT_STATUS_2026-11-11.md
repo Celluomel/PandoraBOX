@@ -5989,6 +5989,16 @@ Ces scénarios démontrent que le même tour utilise un chemin mémoire récent,
 
 **Validation et statut :** vérification des références par `rg`; `py_compile scripts/prune_report.py` et `git diff --check` réussissent. Aucune modification runtime n’est faite, aucun appel de choix n’est prétendu exécuté. Cela corrige l’inventaire de modules et empêche de compter cette classe comme utilisée. Le score global reste **3/10 pistes closes**.
 
+### Vérification du focus rejeté et correction du reçu source profil — 26 novembre 2026
+
+**Boucle interne :** le log cité précédemment où `notice pull toward` apparaissait comme gagnant correspond à une ancienne exécution. Le code présent conserve le candidat dans la preuve brute du cycle, mais publie `rejected_proposal` sans nom ni sujet comme focus consommable. Le préprocesseur n’injecte donc pas le topic rejeté; le GoalActionExecutor n’utilise pas non plus l’ancien objectif à la place d’une décision de workspace fraîche vide. Quatre tests de régression ciblés passent. Cette vérification est locale; elle ne remplace pas un reçu d’un cycle postérieur au chargement du code.
+
+**Provenance profil :** la lecture du profil renvoyait un champ `source_sha256` calculé sur la valeur extraite (par ex. le texte de préférence) au lieu du hash du message utilisateur conservé à l’écriture. Le champ était donc étiqueté comme référence de source alors qu’il identifiait seulement la valeur. Il retourne maintenant le digest source persistant du même enregistrement de provenance; un test vérifie le digest du message exact, le `turn_id`, et l’inégalité avec le hash de la valeur.
+
+**Limite persistante :** le writer du profil reconnaît toujours explicitement des formulations anglaises/françaises. Le changement ci-dessus corrige la référence de source, pas la couverture linguistique; cette lacune est ouverte et nécessite une conception qui réutilise une extraction sémantique déjà exécutée, sans liste de mots par langue et sans ajouter un appel LLM à chaque tour.
+
+**Disponibilité et progression :** le Brain peut être configuré Body actif alors que le runtime Body est arrêté; le statut reste `source_unavailable: body_runtime_stopped`. Aucun défaut Brain n’est déduit de l’absence de paquets Body. La progression générale reste **3/10 pistes closes** : les tests de focus/provenance valident des contrats locaux, mais l’effet interne et les effets profil exigent des reçus live post-chargement.
+
 ### Routage sémantique partagé et coût du Nomic indisponible — 26 novembre 2026
 
 **Cause racine :** l’Abstract Reasoning Engine utilisait une densité de mots-clés anglais pour décider s’il devait se lancer; cela écartait des questions conceptuelles en français et pouvait traiter toute conversation assez longue comme abstraite. Le chemin interactif de Nomic appelait, lui, l’endpoint de qualité sans le délai court ni le backoff déjà présents dans le chemin batch. Un Nomic arrêté retardait donc un tour, puis le fallback classait `router_unavailable` comme `analyze`, déclenchant un appel Goal-Means auxiliaire même si la preuve sémantique n’existait pas.
