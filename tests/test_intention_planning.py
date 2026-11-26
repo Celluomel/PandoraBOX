@@ -1992,10 +1992,21 @@ class IntentionPlanningTests(unittest.TestCase):
 
             self.assertEqual(retired, 1)
             self.assertEqual(existing.status, "abandoned")
-            candidates = engine.generate_candidates(
-                [Motivation("explore", 0.8, "test")],
-                ["voiture", "what's actual", "architecture cognitive"],
-            )
+            # Exercise GoalEngine's gate deterministically; this unit test
+            # should not depend on LM Studio being reachable.
+            with patch(
+                "cognition.goal_semantics.batch_topic_quality",
+                side_effect=lambda topics: {
+                    topic: (
+                        0.32, 0.18, topic == "architecture cognitive",
+                    )
+                    for topic in topics
+                },
+            ):
+                candidates = engine.generate_candidates(
+                    [Motivation("explore", 0.8, "test")],
+                    ["voiture", "what's actual", "architecture cognitive"],
+                )
             self.assertEqual(
                 [candidate.topic for candidate in candidates],
                 ["architecture cognitive"],
@@ -2010,8 +2021,19 @@ class IntentionPlanningTests(unittest.TestCase):
             engine = GoalEngine(
                 NS(), persistence_file=str(Path(folder) / "goals.json")
             )
-            self.assertFalse(engine._is_valid_goal_topic("travaille certains"))
-            self.assertTrue(engine._is_valid_goal_topic("cognitive architecture"))
+            # Keep this gate test offline and deterministic. The scorer's own
+            # embedding math is covered separately by goal_semantics tests.
+            with patch(
+                "cognition.goal_semantics.batch_topic_quality",
+                side_effect=lambda topics: {
+                    topic: (0.14, 0.22, False)
+                    if topic == "travaille certains"
+                    else (0.34, 0.20, True)
+                    for topic in topics
+                },
+            ):
+                self.assertFalse(engine._is_valid_goal_topic("travaille certains"))
+                self.assertTrue(engine._is_valid_goal_topic("cognitive architecture"))
             fragment = Goal(
                 id="fragment", topic="travaille certains",
                 origin="resolve_uncertainty", priority=0.9, energy=0.9,
