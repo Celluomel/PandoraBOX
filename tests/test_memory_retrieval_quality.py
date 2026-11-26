@@ -10,7 +10,9 @@ sys.modules.setdefault("cognition", package)
 
 from cognition.memory_retrieval import (
     exact_filename_recall_result,
+    explicit_recall_abstention_result,
     explicit_recall_search_term_groups,
+    explicit_recall_source_result,
     faiss_l2_relevance,
     is_explicit_memory_recall_query,
     rank_documents,
@@ -80,6 +82,31 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(faiss_l2_relevance(2.0), 0.0)
         self.assertEqual(faiss_l2_relevance(3.0), 0.0)
         self.assertEqual(faiss_l2_relevance(float("inf")), 0.0)
+
+    def test_semantic_historical_intent_selects_a_strong_user_source_verbatim(self):
+        query = (
+            "From earlier conversations, what concern did I raise about memory recall "
+            "and how my user profile is built?"
+        )
+        result = explicit_recall_source_result(query, [{
+            "id": "source-1", "memory_type": "user_message", "relevance": 0.91,
+            "text": "User message: I have a concern about memory recall and how my user profile is built from exchanges.",
+        }], explicit_intent=True)
+
+        self.assertEqual(result["status"], "supported_verbatim_source")
+        self.assertEqual(result["relevance"], 0.91)
+        self.assertIn("I have a concern about memory recall", result["answer"])
+
+    def test_semantic_historical_intent_abstains_without_a_clear_retrieved_source(self):
+        query = "From earlier conversations, what concern did I raise about memory recall?"
+        result = explicit_recall_abstention_result(query, [{
+            "id": "weak-source", "memory_type": "user_message", "relevance": 0.63,
+            "text": "User message: I asked about an unrelated software setting.",
+        }], explicit_intent=True)
+
+        self.assertEqual(result["status"], "abstained_no_relevant_source")
+        self.assertIsNone(result["source_ref"])
+        self.assertIn("couldn't find", result["answer"])
 
     def test_exact_filename_recall_extracts_user_authored_source_not_answer_guess(self):
         result = exact_filename_recall_result(

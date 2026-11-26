@@ -677,7 +677,7 @@ def exact_filename_recall_result(
 
 
 def explicit_recall_source_result(
-    query: str, memories: Sequence[dict],
+    query: str, memories: Sequence[dict], *, explicit_intent: bool = False,
 ) -> dict | None:
     """Return retrieved user text verbatim for exact-quote recall questions.
 
@@ -686,6 +686,48 @@ def explicit_recall_source_result(
     It returns only a relevant user-authored source, never an assistant claim.
     """
     value = str(query or "")
+    if explicit_intent:
+        # The semantic turn router has already established historical intent.
+        # Requiring the legacy lexical detector again here would silently drop
+        # the route at the source-selection boundary. Use the retriever's
+        # relevance scores to select a single user-authored source, with a
+        # separation margin so adjacent-topic memories cannot be quoted.
+        ranked_sources = []
+        normalized_query = " ".join(value.casefold().split())
+        for memory in memories:
+            if not isinstance(memory, dict):
+                continue
+            kind = str(memory.get("memory_type", "")).casefold()
+            if kind not in {"user_message", "episodic"}:
+                continue
+            source_text = " ".join(extract_user_authored_text(memory).split()).strip()
+            if not source_text or " ".join(source_text.casefold().split()) == normalized_query:
+                continue
+            try:
+                relevance = max(0.0, min(1.0, float(memory.get("relevance", 0.0))))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            ranked_sources.append((relevance, memory, source_text))
+        ranked_sources.sort(key=lambda item: item[0], reverse=True)
+        if not ranked_sources or ranked_sources[0][0] < 0.70:
+            return None
+        if len(ranked_sources) > 1 and ranked_sources[0][0] - ranked_sources[1][0] < 0.08:
+            return None
+        relevance, memory, source_text = ranked_sources[0]
+        excerpt = re.sub(r"\s+", " ", source_text).strip()[:800]
+        stable_key = str(memory.get("id") or memory.get("faiss_id") or source_text)
+        is_french = bool(re.search(r"[àâçéèêëîïôùûüÿœ]|\b(?:quel|quelle|quelles|avais-je|échange)\b", value, re.IGNORECASE))
+        return {
+            "answer": (
+                f'Source utilisateur retrouvée (extrait exact) : « {excerpt} »'
+                if is_french else
+                f'Retrieved user-authored source (verbatim): “{excerpt}”'
+            ),
+            "status": "supported_verbatim_source",
+            "source_ref": hashlib.sha256(stable_key.encode("utf-8", errors="replace")).hexdigest()[:20],
+            "source_type": str(memory.get("memory_type") or "user_message"),
+            "relevance": round(relevance, 4),
+        }
     if not is_explicit_memory_recall_query(value):
         return None
     # Formatting instructions such as "answer in one phrase/sentence" do not
@@ -982,7 +1024,7 @@ def explicit_recall_archive_source_result(
 
 
 def explicit_recall_abstention_result(
-    query: str, memories: Sequence[dict],
+    query: str, memories: Sequence[dict], *, explicit_intent: bool = False,
 ) -> dict | None:
     """Fail closed when an explicit historical query has no source record.
 
@@ -990,6 +1032,24 @@ def explicit_recall_abstention_result(
     request from the error/topic named in the current question. This guard is
     based on source eligibility, not a dictionary of remembered answers.
     """
+    if explicit_intent:
+        if explicit_recall_source_result(query, memories, explicit_intent=True) is not None:
+            return None
+        is_french = bool(re.search(
+            r"[àâçéèêëîïôùûüÿœ]|\b(?:quel|quelle|quelles|avais-je|échange)\b",
+            str(query or ""), re.IGNORECASE,
+        ))
+        return {
+            "answer": (
+                "Je n’ai pas retrouvé de source utilisateur suffisamment pertinente pour vérifier ce souvenir."
+                if is_french else
+                "I couldn't find a sufficiently relevant user-authored source to verify that memory."
+            ),
+            "status": "abstained_no_relevant_source",
+            "source_ref": None,
+            "source_type": None,
+            "relevance": None,
+        }
     if not is_explicit_memory_recall_query(query):
         return None
     if (

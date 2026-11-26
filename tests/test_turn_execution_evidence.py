@@ -1798,6 +1798,7 @@ def test_turn_classification_snapshot_crosses_prompt_worker_boundary():
     passed = {keyword.arg: keyword.value for keyword in worker_call.keywords}
     expected = {
         "explicit_named_profile_query": "_explicit_named_profile_query",
+        "explicit_memory_recall": "_explicit_memory_recall",
         "api_route_intent": "_api_route_intent",
         "api_route_query": "_api_route_query",
         "architecture_context_query": "_architecture_context_query",

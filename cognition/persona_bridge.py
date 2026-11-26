@@ -3286,6 +3286,9 @@ class PersonaBridge:
                     "memory_profile_intent_history_similarity": _memory_profile_intent.get(
                         "history_similarity"
                     ),
+                    "memory_profile_intent_general_similarity": _memory_profile_intent.get(
+                        "general_similarity"
+                    ),
                     "memory_profile_intent_margin": _memory_profile_intent.get("margin"),
                     "memory_profile_intent_space": (
                         "nomic_v1.5"
@@ -3756,6 +3759,7 @@ class PersonaBridge:
             _memory_query,
             _memory_query_prior_count,
             explicit_named_profile_query=_explicit_named_profile_query,
+            explicit_memory_recall=_explicit_memory_recall,
             api_route_intent=_api_route_intent,
             api_route_query=_api_route_query,
             architecture_context_query=_architecture_context_query,
@@ -3790,7 +3794,7 @@ class PersonaBridge:
                 # through to free generation, where the model could invent a
                 # plausible historical request or claim a memory lookup.
                 _memory_recall_result = explicit_recall_abstention_result(
-                    effective_input, [],
+                    effective_input, [], explicit_intent=_explicit_memory_recall,
                 )
         if not peer_name:
             if should_suppress_recent_dialogue(
@@ -6192,6 +6196,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         memory_query: str = "",
         memory_query_prior_count: int = 0,
         explicit_named_profile_query: bool = False,
+        explicit_memory_recall: bool = False,
         api_route_intent: dict[str, Any] | None = None,
         api_route_query: bool = False,
         architecture_context_query: bool = False,
@@ -6208,6 +6213,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         """
         s = self._system
         _explicit_named_profile_query = bool(explicit_named_profile_query)
+        _semantic_explicit_memory_recall = bool(explicit_memory_recall)
         _api_route_intent = api_route_intent or {"status": "router_unavailable", "route": False}
         _api_route_query = bool(api_route_query)
         _architecture_context_query = bool(architecture_context_query)
@@ -6532,7 +6538,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             # ── Detect explicit memory/recall requests ─────────────────
             # When user asks "do you remember X?", extract X and search directly.
-            _is_recall_request = is_explicit_memory_recall_query(user_input)
+            _is_recall_request = (
+                _semantic_explicit_memory_recall
+                or is_explicit_memory_recall_query(user_input)
+            )
             if _is_recall_request:
                 # Search for the requested remembered topic, not the request's
                 # current-turn framing (which otherwise self-matches on retries).
@@ -6790,9 +6799,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 memories = filter_recall_query_records(memories, query=user_input)
                 _memory_recall_result = exact_filename_recall_result(user_input, memories)
                 if _memory_recall_result is None:
-                    _memory_recall_result = explicit_recall_source_result(user_input, memories)
+                    _memory_recall_result = explicit_recall_source_result(
+                        user_input, memories, explicit_intent=_semantic_explicit_memory_recall,
+                    )
                 if _memory_recall_result is None:
-                    _memory_recall_result = explicit_recall_abstention_result(user_input, memories)
+                    _memory_recall_result = explicit_recall_abstention_result(
+                        user_input, memories, explicit_intent=_semantic_explicit_memory_recall,
+                    )
 
             self._record_turn_stage(
                 "memory_retrieval",
@@ -6962,7 +6975,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     turn_id=audit_turn_id,
                 )
                 _trace_only_query = is_cognitive_trace_query(user_input)
-                _explicit_recall_query = is_explicit_memory_recall_query(user_input)
+                _explicit_recall_query = (
+                    _semantic_explicit_memory_recall
+                    or is_explicit_memory_recall_query(user_input)
+                )
                 _architecture_query = bool(
                     (_architecture_context_query or _trace_only_query or _api_route_query)
                     and not _explicit_recall_query
