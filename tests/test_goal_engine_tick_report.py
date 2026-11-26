@@ -81,7 +81,9 @@ def test_curiosity_topic_fallback_uses_the_same_semantic_admission_gate():
         top_topic=lambda: "après chaque",
         _lock=RLock(),
         _topics={
-            "après chaque": SimpleNamespace(topic="après chaque", curiosity=0.8),
+            "après chaque": SimpleNamespace(
+                topic="après chaque", curiosity=0.8, source="contradiction",
+            ),
         },
     )
     semantic_memory = SimpleNamespace(recent_user_topics=lambda **_kwargs: [])
@@ -113,6 +115,7 @@ def test_curiosity_topic_fallback_uses_the_same_semantic_admission_gate():
         "accepted_count": 0,
         "rejected_count": 1,
         "unscored_count": 0,
+        "user_origin_suppressed_count": 0,
     }
     assert report["topic_quality"]["embedding_status"] == "available"
 
@@ -124,6 +127,7 @@ def test_curiosity_topics_are_deferred_when_semantic_quality_is_unavailable():
         _topics={
             "unverified conversation fragment": SimpleNamespace(
                 topic="unverified conversation fragment", curiosity=0.8,
+                source="contradiction",
             ),
         },
     )
@@ -144,6 +148,66 @@ def test_curiosity_topics_are_deferred_when_semantic_quality_is_unavailable():
     assert report["topic_quality"]["curiosity"]["accepted_count"] == 0
     assert report["topic_quality"]["embedding_status"] == "deferred"
     assert report["topic_quality"]["autonomous"]["unscored_count"] > 0
+
+
+def test_curiosity_fallback_does_not_repromote_a_conversation_source():
+    curiosity = SimpleNamespace(
+        top_topic=lambda: "camera calibration",
+        _lock=RLock(),
+        _topics={
+            "camera calibration": SimpleNamespace(
+                topic="camera calibration", curiosity=0.9, source="user_semantic",
+            ),
+        },
+    )
+    engine = make_engine()
+    engine.ai_system._organism = SimpleNamespace(
+        semantic_memory=SimpleNamespace(recent_user_topics=lambda **_kwargs: []),
+        curiosity=curiosity,
+    )
+    offered_topics = []
+    engine.generate_candidates = lambda _motivations, topics, limit: offered_topics.extend(topics) or []
+
+    with patch("cognition.goal_semantics.batch_topic_quality", return_value={}):
+        engine.tick()
+
+    assert "camera calibration" not in offered_topics
+    report = engine.get_last_tick_report()
+    assert report["topic_quality"]["curiosity"]["user_origin_suppressed_count"] == 1
+
+
+def test_goal_engine_carries_explicit_topic_turn_provenance_into_candidates():
+    semantic_memory = SimpleNamespace(
+        recent_user_topic_evidence=lambda **_kwargs: [{
+            "topic": "cognitive architecture",
+            "turn_ids": ["turn-a", "turn-b"],
+        }],
+    )
+    engine = make_engine()
+    engine.ai_system._organism = SimpleNamespace(
+        semantic_memory=semantic_memory,
+        curiosity=None,
+    )
+    captured = {}
+
+    def capture_candidates(_motivations, topics, limit, topic_source_turns=None):
+        captured["topics"] = list(topics)
+        captured["topic_source_turns"] = topic_source_turns
+        return []
+
+    engine.generate_candidates = capture_candidates
+    with patch(
+        "cognition.goal_semantics.batch_topic_quality",
+        side_effect=lambda topics: {
+            topic: (0.70, 0.30, True) for topic in topics
+        },
+    ):
+        engine.tick()
+
+    assert "cognitive architecture" in captured["topics"]
+    assert captured["topic_source_turns"]["cognitive architecture"] == [
+        "turn-a", "turn-b",
+    ]
 
 
 def test_semantically_admitted_topic_is_not_removed_by_word_length_or_token_rules():

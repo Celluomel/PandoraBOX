@@ -43,6 +43,14 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Curiosity entries fed directly by conversation can guide retrieval and
+# attention, but they are not independent evidence of a durable objective.
+# These are structured source identifiers from CuriosityEngine call sites, not
+# words matched against a user's language.
+_USER_ORIGINATED_CURIOSITY_SOURCES = {
+    "conversation", "user_input", "user_semantic", "user_signal",
+}
+
 # ── Phase 5.1 shared constants ──────────────────────────────────────────────
 # Extracted from derive_motivations() so PersistentExecutiveLoop can check
 # whether the reason a goal was created still holds, using the exact same
@@ -1706,7 +1714,8 @@ class GoalEngine:
             "semantic_memory": {"candidate_count": 0, "accepted_count": 0,
                                 "rejected_count": 0, "unscored_count": 0},
             "curiosity": {"candidate_count": 0, "accepted_count": 0,
-                          "rejected_count": 0, "unscored_count": 0},
+                          "rejected_count": 0, "unscored_count": 0,
+                          "user_origin_suppressed_count": 0},
             "autonomous": {"candidate_count": 0, "accepted_count": 0,
                            "rejected_count": 0, "unscored_count": 0},
             "embedding_status": "not_requested",
@@ -1816,23 +1825,27 @@ class GoalEngine:
             except Exception as e:
                 logger.debug(f"[GoalEngine] semantic topics: {e}")
 
-            # Curiosity is a fallback topic source, not a quality exception.
-            # Its nodes can contain the same conversation fragments as
-            # semantic memory, so subject them to the identical embedding gate.
+            # Curiosity is a fallback only for internally stimulated topics.
+            # Conversation-originated topics can guide attention and recall,
+            # but they need an explicit continuing-commitment observation in
+            # SemanticMemory before becoming durable GoalEngine objectives.
             if not topics:
                 try:
                     org = getattr(self.ai_system, '_organism', None)
                     cu  = getattr(org, 'curiosity', None) if org else None
                     if cu:
                         curiosity_topics = []
-                        top = cu.top_topic()
-                        if top:
-                            curiosity_topics.append(top)
                         with cu._lock:
-                            curiosity_topics.extend(
-                                n.topic for n in cu._topics.values()
-                                if n.curiosity >= 0.45
-                            )
+                            for node in cu._topics.values():
+                                if node.curiosity < 0.45:
+                                    continue
+                                source = str(getattr(node, "source", "") or "").strip().casefold()
+                                if source in _USER_ORIGINATED_CURIOSITY_SOURCES:
+                                    topic_quality_metrics["curiosity"][
+                                        "user_origin_suppressed_count"
+                                    ] += 1
+                                    continue
+                                curiosity_topics.append(node.topic)
                         topics = _admit_semantic_topics(
                             curiosity_topics, "curiosity", limit=6
                         )
@@ -1918,10 +1931,13 @@ class GoalEngine:
             # the only valid fallback.
             use_topics = filtered_topics if filtered_topics else autonomous_topics
             if motivations and use_topics and not _generation_blocked:
-                candidates = self.generate_candidates(
-                    motivations, use_topics, limit=3,
-                    topic_source_turns=topic_source_turns,
-                )
+                if topic_source_turns:
+                    candidates = self.generate_candidates(
+                        motivations, use_topics, limit=3,
+                        topic_source_turns=topic_source_turns,
+                    )
+                else:
+                    candidates = self.generate_candidates(motivations, use_topics, limit=3)
                 candidate_generation_metrics.update(
                     getattr(self, "_last_candidate_generation_report", {})
                 )

@@ -91,6 +91,7 @@ Assistant response (context only; never use it as evidence): {response_summary}
 Return exactly this structure:
 {{
   "turn_kind": "topic",
+  "goal_signal": "none",
   "concepts": [{{"name": "concept1", "evidence": "exact words from the incoming message"}}],
   "relations": [
     {{"from": "concept1", "to": "concept2", "type": "leads_to", "evidence": "exact words from the incoming message supporting this relation"}}
@@ -101,6 +102,7 @@ Return exactly this structure:
 
 Rules:
 - Classify the incoming message's primary conversational act as exactly one of: topic, retrieval, social, instruction, feedback, decision, other. Use "topic" for a substantive subject the user asks to explain, investigate, or discuss. Use "retrieval" when they ask what was said, decided, or observed earlier. Use "social" for greetings, thanks, and small talk. Use "instruction" for operational commands to the assistant/system. Use "feedback" for evaluation of a prior response. Use "decision" for a request to compare feasible actions to achieve a concrete outcome. Use "other" when none fits. Classify the user's intent, not the assistant response.
+- Classify whether the user is asking Lumina to maintain an objective beyond this exchange as exactly one of: continuing_commitment, topic_only, none. Use continuing_commitment only when the incoming message clearly expresses an ongoing project, durable objective, or explicit intent to keep pursuing this subject across turns. A question, request for information, one-off task, or repeated mention alone is topic_only; social/non-substantive turns are none. Use the message meaning in any language; do not infer this signal from the assistant response.
 - Persist only concepts and relations grounded in the incoming message. Assistant wording is not evidence of an interlocutor's belief, fact, preference, or intent.
 - concepts: 0-8 lowercase nouns or noun phrases, max 3 words each; every concept needs an exact evidence phrase from the incoming message
 - relations: max 5, both endpoints must be concepts; evidence must directly support the relation in the incoming message
@@ -111,6 +113,7 @@ Rules:
 
 _RELATION_TYPES = {"leads_to", "related_to", "part_of", "causes", "contradicts", "enables"}
 _TURN_KINDS = {"topic", "retrieval", "social", "instruction", "feedback", "decision", "other"}
+_GOAL_SIGNALS = {"continuing_commitment", "topic_only", "none"}
 _MAX_DEFERRED_RETRIES = 30
 _DEFERRED_RETRY_DELAY_SECONDS = 1.0
 
@@ -250,7 +253,7 @@ class SemanticExtractor:
             # instead of spending another LLM call to rediscover it.
             trusted_hint = str(turn_kind_hint or "").strip().casefold()
             if trusted_hint in {"retrieval", "social", "instruction", "feedback", "other"}:
-                parsed = ([], [], "", 0.3, trusted_hint)
+                parsed = ([], [], "", 0.3, trusted_hint, "none")
                 receipt["classification_source"] = "upstream_turn_contract"
             else:
                 # The queue worker runs on a fresh thread, so ContextVars from
@@ -271,17 +274,24 @@ class SemanticExtractor:
                     receipt["classification_source"] = "upstream_turn_contract_plus_semantic_extraction"
                 else:
                     receipt["classification_source"] = "semantic_llm"
-            if len(parsed) >= 5:
+            if len(parsed) >= 6:
+                concepts, relations, topic, cog_load, turn_kind, goal_signal = parsed[:6]
+            elif len(parsed) >= 5:
                 concepts, relations, topic, cog_load, turn_kind = parsed[:5]
+                goal_signal = "none"
             else:
                 # Preserve compatibility for integrations that provide the
                 # pre-turn-kind four-value parser contract. The production
                 # parser always returns an explicit classification.
                 concepts, relations, topic, cog_load = parsed
                 turn_kind = "topic"
+                goal_signal = "none"
             if turn_kind not in _TURN_KINDS:
                 turn_kind = "unclassified"
+            if goal_signal not in _GOAL_SIGNALS:
+                goal_signal = "none"
             receipt["turn_kind"] = turn_kind
+            receipt["goal_signal"] = goal_signal
             receipt["concepts_parsed"] = len(concepts)
             receipt["dominant_topic_selected"] = bool(topic and topic in concepts)
 
@@ -376,6 +386,10 @@ class SemanticExtractor:
                     role=observation_role,
                     confidence=0.8,
                     turn_id=turn_id,
+                    goal_signal=(
+                        goal_signal if c == topic and observation_role == "user_topic"
+                        else "topic_only"
+                    ),
                 )
                 receipt["observation_calls_returned"] += 1
                 if observation_persisted is True:
@@ -455,7 +469,7 @@ class SemanticExtractor:
             # Lexical fallback can suggest concepts but cannot reliably select
             # a dominant semantic topic. Leave topic arbitration to a later
             # stage instead of promoting the first surface token.
-            return kw_concepts, kw_relations, "", 0.3, "unclassified"
+            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none"
 
         try:
             prompt = _EXTRACTION_PROMPT.format(
@@ -479,6 +493,9 @@ class SemanticExtractor:
             turn_kind = str(data.get("turn_kind") or "").strip().casefold()
             if turn_kind not in _TURN_KINDS:
                 turn_kind = "unclassified"
+            goal_signal = str(data.get("goal_signal") or "none").strip().casefold()
+            if goal_signal not in _GOAL_SIGNALS:
+                goal_signal = "none"
             if turn_kind == "topic" and topic not in concepts and len(concepts) == 1:
                 # A single grounded concept is an unambiguous dominant topic;
                 # tolerate a formatting mismatch in the model's duplicate
@@ -492,13 +509,13 @@ class SemanticExtractor:
             # A valid empty extraction means this message did not yield a
             # grounded topic. Do not turn lexical leftovers into a semantic
             # topic merely to force a workspace update.
-            return concepts, relations, topic, cog_load, turn_kind
+            return concepts, relations, topic, cog_load, turn_kind, goal_signal
 
         except Exception as e:
             if getattr(e, "semantic_learning_deferred", False):
                 raise
             logger.debug(f"[SemanticExtractor] LLM parse failed ({e}), using keywords")
-            return kw_concepts, kw_relations, "", 0.3, "unclassified"
+            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none"
 
     def _keyword_extract(self, text: str) -> List[str]:
         """Lightweight keyword extraction — nouns and noun phrases only."""

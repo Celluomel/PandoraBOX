@@ -254,7 +254,7 @@ class MemoryReliabilityTests(unittest.TestCase):
             "cognitive_load": 0.4,
         }))
 
-        concepts, _, topic, _, turn_kind = extractor._parse(
+        concepts, _, topic, _, turn_kind, _goal_signal = extractor._parse(
             "I am.",
             "Camera movement enables future embodiment. " * 20,
         )
@@ -276,7 +276,7 @@ class MemoryReliabilityTests(unittest.TestCase):
             "cognitive_load": 0.3,
         }))
 
-        concepts, relations, topic, _, turn_kind = extractor._parse(
+        concepts, relations, topic, _, turn_kind, _goal_signal = extractor._parse(
             "Décris le rôle du semantic extractor et du profil utilisateur dans le harnais cognitif.",
             "",
         )

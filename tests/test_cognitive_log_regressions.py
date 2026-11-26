@@ -450,12 +450,12 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
             memory.record_observation(
                 "visual odometry", "conversation", "user_topic", 0.8,
-                turn_id="odometry-turn-1",
+                turn_id="odometry-turn-1", goal_signal="continuing_commitment",
             )
             self.assertNotIn("visual odometry", memory.recent_user_topics())
             memory.record_observation(
                 "visual odometry", "conversation", "user_topic", 0.8,
-                turn_id="odometry-turn-2",
+                turn_id="odometry-turn-2", goal_signal="continuing_commitment",
             )
             self.assertIn("visual odometry", memory.recent_user_topics())
 
@@ -465,18 +465,31 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             for _ in range(4):
                 memory.record_observation(
                     "camera calibration", "conversation", "user_topic", 0.8,
-                    turn_id="same-turn",
+                    turn_id="same-turn", goal_signal="continuing_commitment",
                 )
             self.assertNotIn("camera calibration", memory.recent_user_topics())
 
             memory.record_observation(
                 "camera calibration", "conversation", "user_topic", 0.8,
-                turn_id="second-turn",
+                turn_id="second-turn", goal_signal="continuing_commitment",
             )
             evidence = memory.recent_user_topic_evidence()
             self.assertEqual(len(evidence), 1)
             self.assertEqual(evidence[0]["turn_count"], 2)
             self.assertEqual(set(evidence[0]["turn_ids"]), {"same-turn", "second-turn"})
+
+    def test_repeated_topic_only_mentions_do_not_become_autonomous_goal_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
+            memory.record_observation(
+                "camera calibration", "conversation", "user_topic", 0.8,
+                turn_id="question-1", goal_signal="topic_only",
+            )
+            memory.record_observation(
+                "camera calibration", "conversation", "user_topic", 0.8,
+                turn_id="question-2", goal_signal="topic_only",
+            )
+            self.assertNotIn("camera calibration", memory.recent_user_topics())
 
     def test_legacy_observations_without_turn_ids_do_not_count_as_repeated_user_intent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -491,6 +504,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             extractor = SemanticExtractor(memory)
             extractor._parse = lambda *_args: (
                 ["camera calibration"], [], "camera calibration", 0.2, "topic",
+                "continuing_commitment",
             )
             receipt = extractor._extract(
                 "camera calibration is the current topic", "bounded answer",
@@ -502,6 +516,31 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                     "SELECT turn_id FROM concept_observations WHERE role='user_topic'"
                 ).fetchall()
             self.assertEqual([row["turn_id"] for row in rows], ["camera-turn-42"])
+            self.assertIn("camera calibration", memory.recent_user_topics(min_observations=1))
+
+    def test_semantic_extractor_classifies_continuing_intent_in_its_existing_llm_call(self):
+        calls = []
+        extractor = SemanticExtractor(
+            SimpleNamespace(),
+            llm_fn=lambda prompt: calls.append(prompt) or json.dumps({
+                "turn_kind": "topic",
+                "goal_signal": "continuing_commitment",
+                "concepts": [{
+                    "name": "cognitive harness",
+                    "evidence": "cognitive harness",
+                }],
+                "relations": [],
+                "dominant_topic": "cognitive harness",
+                "cognitive_load": 0.3,
+            }),
+        )
+        parsed = extractor._parse(
+            "I want us to keep improving the cognitive harness", "acknowledged"
+        )
+        self.assertEqual(parsed[4], "topic")
+        self.assertEqual(parsed[5], "continuing_commitment")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("goal_signal", calls[0])
 
     def test_goal_created_from_user_topic_keeps_all_evidence_turn_ids(self):
         engine = GoalEngine.__new__(GoalEngine)
