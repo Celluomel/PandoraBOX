@@ -640,6 +640,31 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         reason = str(value.get("api_route_intent_reason") or "")
         if reason in {"cross_lingual_semantic_centroid_margin", "router_unavailable"}:
             receipt["api_route_intent_reason"] = reason
+        memory_profile_intent = str(value.get("memory_profile_intent") or "")
+        if memory_profile_intent in {"profile_lookup", "history_recall", "uncertain"}:
+            receipt["memory_profile_intent"] = memory_profile_intent
+        memory_profile_status = str(value.get("memory_profile_intent_status") or "")
+        if memory_profile_status in {
+            "profile_lookup", "history_recall", "intent_uncertain",
+            "router_unavailable", "empty_input",
+        }:
+            receipt["memory_profile_intent_status"] = memory_profile_status
+        for key in (
+            "memory_profile_intent_profile_similarity",
+            "memory_profile_intent_history_similarity",
+            "memory_profile_intent_general_similarity",
+            "memory_profile_intent_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        if value.get("memory_profile_intent_space") in {"nomic_v1.5", "unavailable"}:
+            receipt["memory_profile_intent_space"] = value["memory_profile_intent_space"]
+        memory_profile_reason = str(value.get("memory_profile_intent_reason") or "")
+        if memory_profile_reason in {"cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input"}:
+            receipt["memory_profile_intent_reason"] = memory_profile_reason
         return receipt
 
     if value.get("type") == "cognitive_deliberation_receipt":

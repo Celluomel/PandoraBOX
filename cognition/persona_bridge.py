@@ -74,8 +74,8 @@ from cognition.conversation_context import (
     recent_dialogue_messages,
 )
 from cognition.profile_flow import (
+    classify_memory_profile_intent,
     has_explicit_profile_learning_opt_out,
-    is_explicit_named_profile_query,
     render_explicit_profile_facts,
 )
 from cognition.stream_channels import ProgressiveOutputGate, strip_private_reasoning
@@ -3168,10 +3168,18 @@ class PersonaBridge:
         s = self._system
         _audit_turn_id = audit_turn_id
         _cognitive_scope = str(cognitive_scope_id or user_id)
-        _explicit_memory_recall = is_explicit_memory_recall_query(effective_input)
+        _memory_profile_intent = await asyncio.to_thread(
+            classify_memory_profile_intent, effective_input,
+        )
+        _explicit_memory_recall = (
+            is_explicit_memory_recall_query(effective_input)
+            or _memory_profile_intent.get("intent") == "history_recall"
+        )
         _explicit_profile_opt_out = has_explicit_profile_learning_opt_out(effective_input)
         _explicit_named_profile_query = (
-            is_explicit_named_profile_query(effective_input) and not bool(peer_name)
+            _memory_profile_intent.get("intent") == "profile_lookup"
+            and not _explicit_memory_recall
+            and not bool(peer_name)
         )
         _prompt_source_provenance_query = False
         _api_route_query = False
@@ -3266,6 +3274,28 @@ class PersonaBridge:
                         _api_route_intent.get("reason_code") or "router_unavailable"
                     ),
                     "explicit_named_profile_query": bool(_explicit_named_profile_query),
+                    "memory_profile_intent": str(
+                        _memory_profile_intent.get("intent") or "uncertain"
+                    ),
+                    "memory_profile_intent_status": str(
+                        _memory_profile_intent.get("status") or "router_unavailable"
+                    ),
+                    "memory_profile_intent_profile_similarity": _memory_profile_intent.get(
+                        "profile_similarity"
+                    ),
+                    "memory_profile_intent_history_similarity": _memory_profile_intent.get(
+                        "history_similarity"
+                    ),
+                    "memory_profile_intent_margin": _memory_profile_intent.get("margin"),
+                    "memory_profile_intent_space": (
+                        "nomic_v1.5"
+                        if str(_memory_profile_intent.get("embedding_space") or "").endswith(
+                            ":text-embedding-nomic-embed-text-v1.5"
+                        ) else "unavailable"
+                    ),
+                    "memory_profile_intent_reason": str(
+                        _memory_profile_intent.get("reason_code") or "router_unavailable"
+                    ),
                 },
                 consumes=("turn_input",),
                 turn_id=_audit_turn_id,

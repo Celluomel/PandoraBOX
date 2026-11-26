@@ -957,6 +957,36 @@ def test_active_context_receipt_keeps_safe_deltas_in_turn_trace_summary():
     assert "must not be copied" not in repr(summary)
 
 
+def test_memory_profile_intent_receipt_preserves_scores_and_drops_untrusted_text():
+    receipt = audit_safe_turn_summary({
+        "type": "turn_evidence_routing_receipt",
+        "factual_plan_query": False,
+        "closed_world_report": True,
+        "architecture_query": False,
+        "cognitive_trace_query": False,
+        "runtime_execution_query": False,
+        "explicit_memory_recall": True,
+        "explicit_named_profile_query": False,
+        "memory_profile_intent": "history_recall",
+        "memory_profile_intent_status": "history_recall",
+        "memory_profile_intent_profile_similarity": 0.6614,
+        "memory_profile_intent_history_similarity": 0.7471,
+        "memory_profile_intent_general_similarity": 0.5301,
+        "memory_profile_intent_margin": -0.0857,
+        "memory_profile_intent_space": "nomic_v1.5",
+        "memory_profile_intent_reason": "cross_lingual_semantic_centroid_margin",
+        "private_query": "must not be copied",
+    })
+
+    assert receipt["memory_profile_intent"] == "history_recall"
+    assert receipt["explicit_memory_recall"] is True
+    assert receipt["explicit_named_profile_query"] is False
+    assert receipt["memory_profile_intent_margin"] == -0.0857
+    assert receipt["memory_profile_intent_general_similarity"] == 0.5301
+    assert receipt["memory_profile_intent_space"] == "nomic_v1.5"
+    assert "private_query" not in repr(receipt)
+
+
 def test_runtime_execution_route_uses_originating_turn_trace_snapshot():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
