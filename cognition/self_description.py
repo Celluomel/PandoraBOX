@@ -59,6 +59,13 @@ _RUNTIME_API_ROUTE_NEGATIVE = (
     "Qual è il tuo percorso personale nella vita?",
     "What route should I take to get to the station?",
     "¿Qué camino debo tomar para llegar a casa?",
+    "What path did the robot actually travel according to its recorded odometry and motion history?",
+    "Quel trajet le robot a-t-il réellement parcouru selon son odométrie et l’historique horodaté de ses mouvements ?",
+    "¿Qué trayectoria recorrió realmente el robot según su odometría y el historial registrado de movimiento?",
+    "Welchen Weg hat der Roboter laut aufgezeichneter Odometrie und Bewegungshistorie tatsächlich zurückgelegt?",
+    "Qual trajeto o robô realmente percorreu segundo a odometria e o histórico registrado de movimento?",
+    "ロボットは記録されたオドメトリと移動履歴によると、実際にどの経路を移動しましたか？",
+    "ما المسار الذي قطعه الروبوت فعليًا وفقًا لبيانات قياس الحركة وسجل الحركة المسجل؟",
 )
 _RUNTIME_API_ROUTE_CENTROIDS: dict[str, tuple[Any, Any]] = {}
 _RUNTIME_API_ROUTE_CENTROIDS_LOCK = Lock()

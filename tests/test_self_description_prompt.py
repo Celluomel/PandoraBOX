@@ -40,8 +40,9 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         model_name = "text-embedding-nomic-embed-text-v1.5"
         embedding_space_id = "test:text-embedding-nomic-embed-text-v1.5"
 
-        def __init__(self, *, semantic_api=False):
+        def __init__(self, *, semantic_api=False, ambiguous=False):
             self.semantic_api = semantic_api
+            self.ambiguous = ambiguous
 
         def encode_interactive_with_metadata(self, texts):
             import numpy as np
@@ -53,7 +54,11 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             if len(values) == 1:
                 # The fake represents semantic output, independent of the
                 # query's language or vocabulary.
-                vector = [0.9, 0.4, 0.0] if self.semantic_api else [0.5, 0.8, 0.0]
+                vector = (
+                    [0.81, 0.79, 0.0] if self.ambiguous else
+                    [0.9, 0.4, 0.0] if self.semantic_api else
+                    [0.5, 0.8, 0.0]
+                )
                 return np.asarray(vector, dtype="float32"), self.embedding_space_id
             vectors = []
             for value in values[:-1]:
@@ -63,7 +68,11 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                     vectors.append([0.0, 1.0, 0.0])
                 else:
                     vectors.append([0.0, 0.0, 1.0])
-            query = [0.9, 0.4, 0.0] if self.semantic_api else [0.5, 0.8, 0.0]
+            query = (
+                [0.81, 0.79, 0.0] if self.ambiguous else
+                [0.9, 0.4, 0.0] if self.semantic_api else
+                [0.5, 0.8, 0.0]
+            )
             vectors.append(query)
             return np.asarray(vectors, dtype="float32"), self.embedding_space_id
 
@@ -131,6 +140,26 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertEqual(decision["status"], "non_api_route_intent")
         self.assertFalse(is_runtime_api_route_question(question, embedder=self._SemanticIntentEmbedder()))
         self.assertFalse(is_architecture_query(question, api_route_intent=False))
+
+    def test_measured_robot_path_is_not_intercepted_as_an_api_route(self):
+        from cognition.self_description import _RUNTIME_API_ROUTE_NEGATIVE
+
+        self.assertTrue(any("robot actually travel" in item for item in _RUNTIME_API_ROUTE_NEGATIVE))
+        decision = classify_runtime_api_route_intent(
+            "Quel est ton chemin ?", embedder=self._SemanticIntentEmbedder(),
+        )
+        self.assertFalse(decision["route"])
+        self.assertEqual(decision["status"], "non_api_route_intent")
+
+    def test_semantically_ambiguous_path_does_not_activate_api_route_renderer(self):
+        decision = classify_runtime_api_route_intent(
+            "Quel est ton chemin ?",
+            embedder=self._SemanticIntentEmbedder(ambiguous=True),
+        )
+
+        self.assertFalse(decision["route"])
+        self.assertEqual(decision["status"], "intent_uncertain")
+        self.assertLess(decision["margin"], 0.035)
 
     def test_body_observation_intent_uses_semantic_space_and_fails_open(self):
         import numpy as np
