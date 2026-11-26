@@ -57,6 +57,7 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -227,6 +228,8 @@ class GoalActionExecutor:
         self._pending_predictions: Dict[Tuple[str, str], Any] = {}
         self._async_actions_in_flight: set[Tuple[str, str]] = set()
         self._async_actions_lock = threading.Lock()
+        self._autonomous_plan_contexts: Dict[str, Dict[str, Any]] = {}
+        self._autonomous_plan_contexts_lock = threading.Lock()
         self._last_tick_outcome: Optional[Dict[str, Any]] = None
         logger.info("[GoalActionExecutor] Initialised")
 
@@ -290,6 +293,161 @@ class GoalActionExecutor:
             if self._pending_insights:
                 return self._pending_insights.popleft()
             return None
+
+    def dispatch_autonomous_plan_step(
+        self,
+        planner: Any,
+        *,
+        aspiration_domain: str,
+        objective: str,
+        operation: str,
+        expected_step_index: int,
+        cycle_id: Optional[int],
+    ) -> Dict[str, Any]:
+        """Execute a supported internal aspiration operator with bound provenance.
+
+        This path is intentionally separate from ``run_tick``: aspiration
+        operations must not be written into GoalEngine or attributed to a
+        user goal. Only local memory recall and self-question are autonomous
+        operators here. Search and user-directed actions need their own
+        explicit routing/consent path.
+        """
+        if operation not in {ACTION_MEMORY_RECALL, ACTION_SELF_QUESTION}:
+            return {
+                "outcome_status": "unsupported_operation",
+                "reason_code": "autonomous_operator_not_enabled",
+                "operation": str(operation),
+                "execution_dispatched": False,
+            }
+
+        execution_id = f"asp_{uuid.uuid4().hex}"
+        if not planner.reserve_autonomous_action_execution(
+            aspiration_domain,
+            operation,
+            execution_id,
+            expected_step_index=expected_step_index,
+            cycle_id=cycle_id,
+        ):
+            return {
+                "outcome_status": "not_dispatched",
+                "reason_code": "aspiration_step_reservation_failed",
+                "operation": operation,
+                "execution_dispatched": False,
+            }
+
+        goal_id = f"aspiration:{aspiration_domain}"
+        goal = SimpleNamespace(
+            id=goal_id,
+            topic=str(objective or aspiration_domain)[:240],
+            name=str(aspiration_domain),
+            origin="aspiration",
+            priority=0.5,
+            energy=1.0,
+            status="active",
+        )
+        async_key = (goal_id, operation)
+        if not self._claim_async_action(async_key):
+            planner.release_autonomous_action_execution(
+                aspiration_domain,
+                execution_id,
+                expected_step_index=expected_step_index,
+                reason="same operator is already running for this aspiration",
+            )
+            return {
+                "outcome_status": "not_dispatched",
+                "reason_code": "duplicate_autonomous_operator_inflight",
+                "operation": operation,
+                "execution_dispatched": False,
+            }
+
+        context = {
+            "planner": planner,
+            "aspiration_domain": aspiration_domain,
+            "expected_step_index": int(expected_step_index),
+            "operation": operation,
+            "execution_id": execution_id,
+            "cycle_id": cycle_id,
+        }
+        with self._autonomous_plan_contexts_lock:
+            self._autonomous_plan_contexts[execution_id] = context
+
+        self._record_async_cycle_evidence(
+            cycle_id,
+            "goal_action_executor.aspiration_step_dispatched",
+            "dispatched",
+            output={
+                "operation": operation,
+                "aspiration_domain_ref": hashlib.sha256(
+                    aspiration_domain.encode("utf-8", errors="replace")
+                ).hexdigest()[:20],
+                "execution_ref": hashlib.sha256(execution_id.encode("utf-8")).hexdigest()[:20],
+                "step_index": int(expected_step_index),
+            },
+            metrics={"operation": operation, "step_index": int(expected_step_index)},
+        )
+
+        def finish() -> None:
+            self._release_async_action(async_key)
+
+        def fail(error: Exception) -> None:
+            self._finalize_async_action(
+                goal,
+                operation,
+                False,
+                f"autonomous operator raised: {type(error).__name__}",
+                execution_id=execution_id,
+                cycle_id=cycle_id,
+            )
+
+        try:
+            if operation == ACTION_MEMORY_RECALL:
+                self._fire_sync(
+                    lambda: self._action_memory_recall_background(
+                        goal, execution_id=execution_id, cycle_id=cycle_id
+                    ),
+                    on_error=fail,
+                    on_complete=finish,
+                )
+            else:
+                self._fire(
+                    self._action_self_question(
+                        goal, execution_id=execution_id, cycle_id=cycle_id
+                    ),
+                    on_error=fail,
+                    on_complete=finish,
+                )
+        except Exception as exc:
+            with self._autonomous_plan_contexts_lock:
+                self._autonomous_plan_contexts.pop(execution_id, None)
+            self._release_async_action(async_key)
+            planner.release_autonomous_action_execution(
+                aspiration_domain,
+                execution_id,
+                expected_step_index=expected_step_index,
+                reason=f"worker could not start: {type(exc).__name__}",
+            )
+            self._record_async_cycle_evidence(
+                cycle_id,
+                "goal_action_executor.aspiration_step_dispatch_failed",
+                "not_dispatched",
+                output={"operation": operation, "reason_code": "autonomous_worker_start_failed"},
+                metrics={"operation": operation},
+            )
+            return {
+                "outcome_status": "not_dispatched",
+                "reason_code": "autonomous_worker_start_failed",
+                "operation": operation,
+                "execution_dispatched": False,
+            }
+
+        return {
+            "outcome_status": "dispatched",
+            "reason_code": "aspiration_operator_started",
+            "operation": operation,
+            "execution_dispatched": True,
+            "execution_ref": hashlib.sha256(execution_id.encode("utf-8")).hexdigest()[:20],
+            "step_index": int(expected_step_index),
+        }
 
     def peek_pending_insight(self) -> Optional[str]:
         """Read the next insight without consuming the UI delivery copy."""
@@ -2765,6 +2923,57 @@ class GoalActionExecutor:
         evidence: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Commit a completed background action to goals, plans and learning."""
+        contexts_lock = getattr(self, "_autonomous_plan_contexts_lock", None)
+        autonomous_context = None
+        if contexts_lock is not None:
+            with contexts_lock:
+                autonomous_context = getattr(
+                    self, "_autonomous_plan_contexts", {}
+                ).pop(str(execution_id or ""), None)
+        if autonomous_context is not None:
+            planner = autonomous_context["planner"]
+            aspiration_domain = autonomous_context["aspiration_domain"]
+            expected_step_index = autonomous_context["expected_step_index"]
+            execution_id = autonomous_context["execution_id"]
+            cycle_id = autonomous_context["cycle_id"]
+            operation = autonomous_context["operation"]
+            planner.record_autonomous_action_outcome(
+                operation,
+                bool(success),
+                str(result or "")[:200],
+                aspiration_domain=aspiration_domain,
+                execution_id=execution_id,
+                cycle_id=cycle_id,
+                expected_step_index=expected_step_index,
+            )
+            receipt = {
+                "aspiration_domain_ref": hashlib.sha256(
+                    aspiration_domain.encode("utf-8", errors="replace")
+                ).hexdigest()[:20],
+                "action": operation,
+                "success": bool(success),
+                "result_present": bool(str(result or "").strip()),
+                "execution_ref": hashlib.sha256(
+                    execution_id.encode("utf-8", errors="replace")
+                ).hexdigest()[:20],
+                "step_index": expected_step_index,
+                "cycle_id": cycle_id,
+                "effect_measured": False,
+            }
+            self._record_async_cycle_evidence(
+                cycle_id,
+                "goal_action_executor.aspiration_step_outcome",
+                "succeeded" if success else "failed",
+                output=receipt,
+                metrics={
+                    "operation": operation,
+                    "success": bool(success),
+                    "step_index": expected_step_index,
+                    "effect_measured": False,
+                },
+            )
+            return receipt
+
         prediction = self._pending_predictions.pop(
             (str(goal.id), action_type), None
         )

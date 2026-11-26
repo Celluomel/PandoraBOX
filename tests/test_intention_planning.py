@@ -36,6 +36,18 @@ def _reserve_step(planner, goal, execution_id, cycle_id=None):
     return operation
 
 
+def _reserve_aspiration_step(
+    planner, domain, operation, execution_id, *, step_index=0, cycle_id=None,
+):
+    assert planner.reserve_autonomous_action_execution(
+        domain,
+        operation,
+        execution_id,
+        expected_step_index=step_index,
+        cycle_id=cycle_id,
+    )
+
+
 class _Prediction:
     def __init__(self, cost=0.04, gain=0.03, confidence=0.8):
         self.self_deltas = {"cognitive_energy": -cost}
@@ -446,10 +458,14 @@ class IntentionPlanningTests(unittest.TestCase):
                 status="active",
             )
             planner._plans["epistemic"] = plan
+            _reserve_aspiration_step(
+                planner, "epistemic", "memory_recall", "exec-failed", cycle_id=9,
+            )
 
             planner.record_autonomous_action_outcome(
                 "memory_recall", False, "no usable evidence",
-                aspiration_domain="epistemic", expected_step_index=0,
+                aspiration_domain="epistemic", execution_id="exec-failed",
+                cycle_id=9, expected_step_index=0,
             )
 
             self.assertEqual(plan.steps_completed, 0)
@@ -474,6 +490,9 @@ class IntentionPlanningTests(unittest.TestCase):
                 status="active",
             )
             planner._plans["epistemic"] = plan
+            _reserve_aspiration_step(
+                planner, "epistemic", "memory_recall", "turn-abc", cycle_id=42,
+            )
 
             planner.record_autonomous_action_outcome(
                 "memory_recall", True, "result without source plan"
@@ -498,6 +517,9 @@ class IntentionPlanningTests(unittest.TestCase):
                 status="active",
             )
             planner._plans["epistemic"] = plan
+            _reserve_aspiration_step(
+                planner, "epistemic", "memory_recall", "turn-abc", cycle_id=42,
+            )
 
             planner.record_autonomous_action_outcome(
                 "memory_recall", True, "recalled one relevant user-authored record",
@@ -538,6 +560,9 @@ class IntentionPlanningTests(unittest.TestCase):
                 status="active",
             )
             planner._plans["epistemic"] = plan
+            _reserve_aspiration_step(
+                planner, "epistemic", "memory_recall", "exec-first", cycle_id=10,
+            )
 
             planner.record_autonomous_action_outcome(
                 "memory_recall", True, "first dispatched retrieval completed",
@@ -554,6 +579,126 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.steps[0].execution_id, "exec-first")
             self.assertEqual(plan.steps[1].status, "pending")
             self.assertEqual(plan.last_outcome["execution_id"], "exec-first")
+
+    def test_autonomous_dispatch_is_reserved_and_terminal_receipt_advances_only_its_step(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[PlanStep(
+                    sequence=0, action_type="analytical", operation="memory_recall",
+                    expected_cost=0.05, expected_gain=0.05,
+                )],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=1,
+                source="aspiration",
+                status="active",
+            )
+            planner._plans["epistemic"] = plan
+            executor = GoalActionExecutor(planner._organism)
+            executor._action_memory_recall_background = lambda goal, *, execution_id, cycle_id=None: (
+                executor._finalize_async_action(
+                    goal, "memory_recall", True, "recalled one relevant record",
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
+            )
+
+            with patch.object(
+                GoalActionExecutor, "_fire_sync",
+                side_effect=lambda action, on_error=None, on_complete=None: (
+                    action(), on_complete() if callable(on_complete) else None
+                ),
+            ):
+                dispatch = executor.dispatch_autonomous_plan_step(
+                    planner,
+                    aspiration_domain="epistemic",
+                    objective="Understand an unresolved question",
+                    operation="memory_recall",
+                    expected_step_index=0,
+                    cycle_id=77,
+                )
+
+            self.assertEqual(dispatch["outcome_status"], "dispatched")
+            self.assertEqual(plan.steps_completed, 1)
+            self.assertEqual(plan.steps[0].status, "completed")
+            self.assertEqual(plan.steps[0].cycle_id, 77)
+            self.assertEqual(plan.steps[0].result, "recalled one relevant record")
+            self.assertFalse(plan.steps[0].effect_measured)
+            self.assertEqual(plan.status, "completed")
+
+    def test_autonomous_reservation_rejects_duplicate_or_wrong_step_dispatch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[PlanStep(
+                    sequence=0, action_type="analytical", operation="memory_recall",
+                    expected_cost=0.05, expected_gain=0.05,
+                )],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=1,
+                source="aspiration",
+                status="active",
+            )
+            planner._plans["epistemic"] = plan
+
+            self.assertTrue(planner.reserve_autonomous_action_execution(
+                "epistemic", "memory_recall", "exec-1",
+                expected_step_index=0, cycle_id=2,
+            ))
+            self.assertFalse(planner.reserve_autonomous_action_execution(
+                "epistemic", "memory_recall", "exec-2",
+                expected_step_index=0, cycle_id=3,
+            ))
+            planner.record_autonomous_action_outcome(
+                "memory_recall", True, "recalled", aspiration_domain="epistemic",
+                execution_id="wrong-id", cycle_id=2, expected_step_index=0,
+            )
+
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.steps[0].pending_execution_id, "exec-1")
+            self.assertEqual(plan.steps[0].status, "dispatched")
+
+    def test_interrupted_autonomous_dispatch_recovers_as_pending_after_restart(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan_path = Path(folder) / "restart-plans.json"
+            plan_path.write_text(json.dumps({
+                "epistemic": {
+                    "aspiration_domain": "epistemic",
+                    "steps": [{
+                        "sequence": 0,
+                        "action_type": "analytical",
+                        "operation": "memory_recall",
+                        "expected_cost": 0.05,
+                        "expected_gain": 0.05,
+                        "status": "dispatched",
+                        "pending_execution_id": "exec-interrupted",
+                        "pending_cycle_id": 31,
+                    }],
+                    "resource_reserve": 0.2,
+                    "revision_trigger": 0.25,
+                    "horizon": 1,
+                    "source": "aspiration",
+                    "status": "active",
+                    "steps_completed": 0,
+                }
+            }), encoding="utf-8")
+
+            restarted = LongHorizonPlanner(
+                planner._organism, NS(), path=str(plan_path)
+            )
+            recovered = restarted._plans["epistemic"]
+
+            self.assertEqual(recovered.steps_completed, 0)
+            self.assertEqual(recovered.steps[0].status, "pending")
+            self.assertEqual(recovered.steps[0].pending_execution_id, "")
+            self.assertEqual(recovered.steps[0].pending_cycle_id, None)
+            self.assertEqual(recovered.last_outcome["status"], "interrupted")
+            self.assertEqual(recovered.last_outcome["execution_id"], "exec-interrupted")
+            self.assertFalse(recovered.last_outcome["success"] is True)
 
     def test_goal_action_receipt_keeps_plan_transition_locked_through_effect_recording(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -672,6 +817,7 @@ class IntentionPlanningTests(unittest.TestCase):
 
             self.assertEqual(plan.steps_completed, 0)
             self.assertEqual(plan.last_outcome, {})
+            self.assertEqual(plan.steps[0].status, "awaiting_user")
 
     def test_unimplemented_social_probe_is_not_reported_as_executed_or_successful(self):
         with tempfile.TemporaryDirectory() as folder:

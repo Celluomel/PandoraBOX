@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 from cognition.conversation_context import recent_dialogue_anchor
-from cognition.persona_bridge import PersonaBridge
+from cognition.persona_bridge import PersonaBridge, _prompt_assembly_dependencies
 
 ROOT = Path(__file__).parents[1]
 
@@ -96,37 +96,20 @@ def test_local_camera_fallback_guard_resolves_at_runtime():
 
 
 def test_history_source_and_continuity_are_linked_into_final_prompt():
-    tree = ast.parse((ROOT / "cognition" / "persona_bridge.py").read_text(encoding="utf-8"))
-    calls = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_record_turn_stage"
-    ]
-    history_source = next(
-        node for node in calls
-        if node.args and isinstance(node.args[0], ast.Constant)
-        and node.args[0].value == "conversation_history"
-    )
-    continuity = next(
-        node for node in calls
-        if node.args and isinstance(node.args[0], ast.Constant)
-        and node.args[0].value == "conversation_continuity_context"
-    )
-    final_prompt = next(
-        node for node in calls
-        if node.args and isinstance(node.args[0], ast.Constant)
-        and node.args[0].value == "prompt_assembly"
-    )
-    continuity_consumes = next(
-        kw.value for kw in continuity.keywords if kw.arg == "consumes"
-    )
-    prompt_consumes = next(
-        kw.value for kw in final_prompt.keywords if kw.arg == "consumes"
-    )
-    assert "conversation_history" in ast.unparse(continuity_consumes)
-    assert "conversation_continuity_context" in ast.unparse(prompt_consumes)
-    assert history_source.lineno < continuity.lineno < final_prompt.lineno
+    stages = {
+        "conversation_continuity_context": {
+            "output_fingerprint": "a" * 64,
+            "output_quality": "present",
+        },
+        "memory_prompt_context": {
+            "output_fingerprint": "b" * 64,
+            "output_quality": "empty",
+        },
+    }
+    dependencies = _prompt_assembly_dependencies(stages)
+    assert "turn_input" in dependencies
+    assert "conversation_continuity_context" in dependencies
+    assert "memory_prompt_context" not in dependencies
 
 
 def test_primary_generation_transports_history_as_role_tagged_messages():

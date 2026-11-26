@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 import threading
 
+import cognition.goal_semantics as goal_semantics
+import cognition.motivational_field as motivational_field
 from cognition.autonomous_curiosity_resolver import AutonomousCuriosityResolver
 from cognition.goal_engine import GoalEngine
 from cognition.motivational_field import FieldState, MotivationalField, MotivationalNeed
@@ -100,7 +102,8 @@ def test_curiosity_resolver_uses_goal_engine_semantics_without_english_word_coun
     resolver = AutonomousCuriosityResolver(organism)
     resolver._is_duplicate = lambda _topic, _existing: False
     monkeypatch.setattr(
-        "cognition.goal_semantics.batch_topic_quality",
+        goal_semantics,
+        "batch_topic_quality",
         lambda topics: {
             topic: (0.72, 0.48, True) for topic in topics
         },
@@ -140,7 +143,7 @@ def test_motivational_field_reports_async_scan_and_prevents_overlap(monkeypatch)
         def start(self):
             workers.append(self)
 
-    monkeypatch.setattr("cognition.motivational_field.threading.Thread", _DeferredThread)
+    monkeypatch.setattr(motivational_field.threading, "Thread", _DeferredThread)
     first = field.tick(20)
     overlapping = field.tick(40)
 

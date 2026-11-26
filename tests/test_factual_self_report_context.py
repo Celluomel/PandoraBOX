@@ -8,6 +8,7 @@ _SPEC = importlib.util.spec_from_file_location("factual_self_report_context_test
 _HELPER = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_HELPER)
 history_without_assistant_claims = _HELPER.history_without_assistant_claims
+should_suppress_recent_dialogue = _HELPER.should_suppress_recent_dialogue
 
 
 class FactualSelfReportContextTests(unittest.TestCase):
@@ -63,35 +64,13 @@ class FactualSelfReportContextTests(unittest.TestCase):
         self.assertIn('error_type=type(_architecture_query_error).__name__', source)
 
     def test_planner_self_report_suppresses_assistant_continuity_and_filters_history(self):
+        self.assertTrue(should_suppress_recent_dialogue(architecture_query=True))
+        self.assertTrue(should_suppress_recent_dialogue(factual_plan_query=True))
+        self.assertTrue(should_suppress_recent_dialogue(explicit_named_profile_query=True))
+        self.assertFalse(should_suppress_recent_dialogue())
         source_path = _HELPER_PATH.parents[1] / "cognition" / "persona_bridge.py"
         source = source_path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        bridge = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge")
-        lifecycle = next(
-            node for node in bridge.body
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_stream_with_full_lifecycle"
-        )
-        closed_world_anchor_guard = next(
-            node for node in ast.walk(lifecycle)
-            if isinstance(node, ast.If)
-            and isinstance(node.test, ast.BoolOp)
-            and isinstance(node.test.op, ast.Or)
-            and {item.id for item in node.test.values if isinstance(item, ast.Name)}
-            == {"_architecture_query", "_factual_plan_query"}
-            and any(
-                isinstance(item, ast.Assign)
-                and any(
-                    isinstance(target, ast.Tuple)
-                    and any(isinstance(name, ast.Name) and name.id == "_recent_anchor" for name in target.elts)
-                    for target in item.targets
-                )
-                and isinstance(item.value, ast.Tuple)
-                and isinstance(item.value.elts[0], ast.Constant)
-                and item.value.elts[0].value == ""
-                for item in node.body
-            )
-        )
-        self.assertIsNotNone(closed_world_anchor_guard)
+        self.assertIn("should_suppress_recent_dialogue(", source)
         self.assertIn('if _factual_self_report:', source)
         self.assertIn('"historical_assistant_context", "filtered"', source)
 

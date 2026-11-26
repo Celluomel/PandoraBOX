@@ -511,7 +511,6 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     routing_fields = (
         "factual_plan_query", "closed_world_report", "architecture_query",
         "cognitive_trace_query", "runtime_execution_query", "explicit_memory_recall",
-        "prompt_source_provenance_query",
     )
     if all(isinstance(value.get(key), bool) for key in routing_fields):
         return {

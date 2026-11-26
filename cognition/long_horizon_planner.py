@@ -50,6 +50,7 @@ from managers.settings_manager import get_persona_name
 logger = logging.getLogger(__name__)
 
 PLAN_EVERY_N     = 70     # slow cycles between planning passes
+AUTONOMOUS_ACTION_EVERY_N = 10  # avoid draining resources on successive internal cycles
 HORIZON          = 30     # interactions
 RESOURCE_FLOOR   = 0.22   # minimum cognitive_energy before inserting recovery step
 REVISION_TRIGGER = 0.25   # deviation fraction that triggers replanning
@@ -119,6 +120,7 @@ class LongHorizonPlanner:
         self._jobs_lock = threading.Lock()
         self._pending_goal_plan_ids: set[str] = set()
         self._aspiration_plan_pending = False
+        self._aspiration_action_executor = None
         self._plans:   Dict[str, Plan] = {}
         self._reasoner = None
         self._self_report_grounding_until = 0.0
@@ -156,7 +158,11 @@ class LongHorizonPlanner:
         # a request to wait indefinitely for a user message.  Execute it from
         # the background planner and use a real chat turn only as additional
         # evidence when one happens to be available.
-        self._execute_autonomous_social_step()
+        autonomous_action = None
+        if slow_cycle % AUTONOMOUS_ACTION_EVERY_N == 0:
+            autonomous_action = self._execute_autonomous_social_step(cycle_id=slow_cycle)
+        else:
+            autonomous_action = {"outcome_status": "cadence_deferred"}
         # Goal plans used to be created only as a side effect of the action
         # executor selecting a goal. That made autonomous goals invisible to
         # planning until after an action had already happened. Prepare the
@@ -244,6 +250,7 @@ class LongHorizonPlanner:
             "goal_plan_schedule_status": goal_plan_schedule_status,
             "aspiration_planning": aspiration_status,
             "aspiration_plan_exists": has_aspiration_plan,
+            "aspiration_action": autonomous_action,
         }
 
     def _prepare_goal_plans_job(self, goals: List[Any]) -> None:
@@ -261,38 +268,113 @@ class LongHorizonPlanner:
             with self._jobs_lock:
                 self._aspiration_plan_pending = False
 
-    def _execute_autonomous_social_step(self) -> None:
-        """Report recovery probes that have no executor without inventing success.
+    def _execute_autonomous_social_step(
+        self, cycle_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Dispatch supported private cognitive aspiration steps with receipts.
 
-        ``social_probe`` is a planner label, not an implemented cognitive
-        operator. A workspace broadcast is telemetry and cannot count as the
-        probe's execution or as evidence that cognitive energy recovered.
-        Keep the step pending and expose the missing operator explicitly.
+        This deliberately supports only memory recall and self-question: both
+        are internal operators already implemented by GoalActionExecutor.
+        User questions, web search, bisociation and the legacy social probe
+        remain non-executable here and must never be reported as completed.
         """
         asp = getattr(self._organism, "aspirational_self", None)
         if not asp:
-            return
-        candidates: List[Tuple[float, str]] = []
+            return {"outcome_status": "unavailable", "reason_code": "aspirational_self_missing"}
+        candidates: List[Tuple[float, str, PlanStep]] = []
         for domain, plan in self._plans.items():
             if plan.source != "aspiration" or plan.status != "active":
                 continue
             step = self.current_step(domain)
-            if (step is None or step.operation == "user_question"
-                    or step.action_type != "social" or step.status != "pending"):
+            if step is None or step.status != "pending":
                 continue
             aspiration = next(
                 (item for item in asp.aspirations.values()
                  if getattr(item, "domain", None) == domain),
                 None,
             )
-            candidates.append((float(getattr(aspiration, "tension", 0.0)), domain))
+            candidates.append((float(getattr(aspiration, "tension", 0.0)), domain, step))
         if not candidates:
-            return
-        _, domain = max(candidates)
+            return {"outcome_status": "no_pending_step"}
+
+        _, domain, step = max(candidates, key=lambda item: item[0])
+        if step.operation == "user_question":
+            # Asking the user is not an autonomous cognitive action. Leave it
+            # pending for a future user-facing interaction path.
+            step.status = "awaiting_user"
+            plan = self._plans[domain]
+            plan.current_decision = (
+                "user_question requires a user-facing interaction; no question "
+                "was sent from the autonomous loop and progress is unchanged."
+            )
+            plan.decision_updated_at = time.time()
+            self._save()
+            return {
+                "outcome_status": "awaiting_user",
+                "operation": step.operation,
+                "execution_dispatched": False,
+            }
+        if step.operation in {"memory_recall", "self_question"}:
+            try:
+                executor = self._aspiration_action_executor
+                if executor is None:
+                    from cognition.goal_action_executor import GoalActionExecutor
+                    executor = GoalActionExecutor(self._organism)
+                    self._aspiration_action_executor = executor
+                result = executor.dispatch_autonomous_plan_step(
+                    self,
+                    aspiration_domain=domain,
+                    objective=self._plans[domain].objective,
+                    operation=step.operation,
+                    expected_step_index=self._plans[domain].steps_completed,
+                    cycle_id=cycle_id,
+                )
+                if result.get("outcome_status") == "dispatched":
+                    return result
+                if result.get("outcome_status") == "not_dispatched":
+                    logger.debug(
+                        "[LongHorizonPlanner] aspiration dispatch deferred (%s)",
+                        result.get("reason_code", "unknown"),
+                    )
+                    return result
+            except Exception as exc:
+                logger.warning(
+                    "[LongHorizonPlanner] aspiration operator dispatch failed: %s",
+                    type(exc).__name__,
+                )
+                return {
+                    "outcome_status": "dispatch_error",
+                    "reason_code": type(exc).__name__,
+                    "execution_dispatched": False,
+                }
+
+        if step.operation != "social_probe":
+            # Keep an unsupported operation visible as a capability gap. Do
+            # not turn a missing executor into failed or completed progress.
+            step.status = "unsupported"
+            step.result = f"No autonomous executor is registered for {step.operation}."
+            plan = self._plans[domain]
+            plan.current_decision = (
+                f"{step.operation} is not executable by the autonomous planner; "
+                "the step remains incomplete and no effect is claimed."
+            )
+            plan.last_outcome = {
+                "operation": step.operation,
+                "success": None,
+                "status": "unsupported",
+                "result": step.result,
+                "effect_measured": False,
+                "observed_at": time.time(),
+            }
+            plan.decision_updated_at = plan.last_outcome["observed_at"]
+            self._save()
+            return {
+                "outcome_status": "unsupported_operation",
+                "operation": step.operation,
+                "execution_dispatched": False,
+            }
+
         plan = self._plans[domain]
-        step = self.current_step(domain)
-        if step is None:
-            return
         step.status = "unavailable"
         step.result = "No executor is registered for social_probe; no effect was measured."
         plan.current_decision = (
@@ -309,6 +391,11 @@ class LongHorizonPlanner:
             "effect_measured": False,
         }
         self._save()
+        return {
+            "outcome_status": "unavailable",
+            "operation": step.operation,
+            "execution_dispatched": False,
+        }
 
     def _prepare_goal_plans(self, goals: List[Any]) -> None:
         """Materialize autonomous goal plans without holding the slow-loop lock."""
@@ -428,6 +515,74 @@ class LongHorizonPlanner:
             # step; only the most recently reserved execution may finalize it.
             step.pending_execution_id = execution_ref
             step.pending_cycle_id = cycle_id
+            return True
+
+    def reserve_autonomous_action_execution(
+        self,
+        aspiration_domain: str,
+        operation: str,
+        execution_id: str,
+        *,
+        expected_step_index: int,
+        cycle_id: Optional[int] = None,
+    ) -> bool:
+        """Reserve one exact aspiration step before handing it to an executor."""
+        execution_ref = str(execution_id or "").strip()
+        with self._lock:
+            plan = self._plans.get(aspiration_domain)
+            if (
+                not execution_ref or not plan or plan.source != "aspiration"
+                or plan.status != "active"
+                or expected_step_index != plan.steps_completed
+                or expected_step_index >= len(plan.steps)
+            ):
+                return False
+            step = plan.steps[expected_step_index]
+            if (
+                step.operation != operation
+                or step.status not in {"pending", "failed"}
+                or step.pending_execution_id
+            ):
+                return False
+            step.pending_execution_id = execution_ref
+            step.pending_cycle_id = cycle_id
+            step.status = "dispatched"
+            plan.current_decision = (
+                f"{operation} dispatched for aspiration step {expected_step_index}; "
+                "completion and objective effect are not yet verified."
+            )
+            plan.decision_updated_at = time.time()
+            self._save()
+            return True
+
+    def release_autonomous_action_execution(
+        self,
+        aspiration_domain: str,
+        execution_id: str,
+        *,
+        expected_step_index: int,
+        reason: str,
+    ) -> bool:
+        """Release a dispatch that never reached an operator, without claiming failure."""
+        with self._lock:
+            plan = self._plans.get(aspiration_domain)
+            if (
+                not plan or expected_step_index != plan.steps_completed
+                or expected_step_index >= len(plan.steps)
+            ):
+                return False
+            step = plan.steps[expected_step_index]
+            if step.pending_execution_id != str(execution_id or ""):
+                return False
+            step.pending_execution_id = ""
+            step.pending_cycle_id = None
+            step.status = "pending"
+            plan.current_decision = (
+                f"{step.operation} was not started ({str(reason)[:120]}); "
+                "the step remains pending and progress is unchanged."
+            )
+            plan.decision_updated_at = time.time()
+            self._save()
             return True
 
     def record_goal_action_outcome(
@@ -810,6 +965,8 @@ class LongHorizonPlanner:
         step.cycle_id = cycle_id
         step.observed_at = observed_at
         step.effect_measured = deviation is not None
+        step.pending_execution_id = ""
+        step.pending_cycle_id = None
         plan.steps_completed += 1
         plan.last_outcome = {
             "operation": step.operation,
@@ -953,6 +1110,15 @@ class LongHorizonPlanner:
                 expected_step_index,
             )
             return
+        if (
+            not execution_ref
+            or step.pending_execution_id != execution_ref
+            or step.pending_cycle_id != cycle_id
+        ):
+            logger.warning(
+                "[LongHorizonPlanner] Ignored autonomous outcome without its dispatch reservation"
+            )
+            return
         if success:
             # Only a completed operation can advance the plan. The former
             # failure path advanced it too, despite having no success evidence.
@@ -968,6 +1134,8 @@ class LongHorizonPlanner:
             # A failed operation is an attempt, not completed progress.
             step.attempts += 1
             step.status = "pending"
+            step.pending_execution_id = ""
+            step.pending_cycle_id = None
             step.result = str(result)[:240]
             plan.last_revised = time.time()
             plan.last_outcome = {
@@ -2083,6 +2251,36 @@ class LongHorizonPlanner:
                     )
                     plan = self._plans[d]
                     plan_migrated_unverified = False
+                    # A worker can disappear on process shutdown after its
+                    # step was reserved. Restore that exact step to pending;
+                    # a dispatch receipt is not evidence of completion.
+                    for index, step in enumerate(plan.steps):
+                        if (
+                            plan.source == "aspiration"
+                            and index == plan.steps_completed
+                            and step.status == "dispatched"
+                            and step.pending_execution_id
+                        ):
+                            interrupted_id = step.pending_execution_id
+                            step.pending_execution_id = ""
+                            step.pending_cycle_id = None
+                            step.status = "pending"
+                            plan.last_outcome = {
+                                "operation": step.operation,
+                                "success": None,
+                                "status": "interrupted",
+                                "result": "Worker did not provide a terminal outcome before restart.",
+                                "effect_measured": False,
+                                "execution_id": interrupted_id,
+                                "cycle_id": None,
+                                "observed_at": time.time(),
+                            }
+                            plan.current_decision = (
+                                f"{step.operation} was interrupted by process restart; "
+                                "the step remains pending and no completion is claimed."
+                            )
+                            plan.decision_updated_at = plan.last_outcome["observed_at"]
+                            plan_migrated_unverified = True
                     # Older versions advanced counters and wrote a plan-level
                     # success summary without a per-step execution receipt.
                     # Keep those claims for audit, but do not present or skip

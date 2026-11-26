@@ -62,7 +62,10 @@ from cognition.turn_context_evidence import (
     USER_PROFILE_PROVENANCE_POLICY,
     tag_memory_retrieval_lane,
 )
-from cognition.factual_self_report_context import history_without_assistant_claims
+from cognition.factual_self_report_context import (
+    history_without_assistant_claims,
+    should_suppress_recent_dialogue,
+)
 from cognition.conversation_context import (
     CURRENT_TURN_AUTHORITY_INSTRUCTIONS,
     RECENT_DIALOGUE_INSTRUCTIONS,
@@ -3668,7 +3671,11 @@ class PersonaBridge:
                     effective_input, [],
                 )
         if not peer_name:
-            if _architecture_query or _factual_plan_query or _explicit_named_profile_query:
+            if should_suppress_recent_dialogue(
+                architecture_query=_architecture_query,
+                factual_plan_query=_factual_plan_query,
+                explicit_named_profile_query=_explicit_named_profile_query,
+            ):
                 # Closed-world self-reports must be grounded in the current
                 # registry/snapshot. Do not even advertise prior assistant
                 # continuity as an available source for these answers.
@@ -8337,10 +8344,49 @@ Memory honesty — two distinct cases:
             # outside PersonaBridge's coordinated streaming lifecycle.
             if not response_learning_already_run:
                 active_stage = "response_learning_and_memory"
-                self._run_response_learning_and_memory(
+                learning_receipt = self._run_response_learning_and_memory(
                     user_input, user_id, response, emo_dict, cond_dict,
                     audit_turn_id,
                 )
+                if (
+                    not isinstance(learning_receipt, dict)
+                    or learning_receipt.get("status") != "completed"
+                ):
+                    failed_operations = learning_receipt.get("failed_operations", []) if isinstance(
+                        learning_receipt, dict
+                    ) else []
+                    persisted_count = learning_receipt.get("memory_persisted_count", 0) if isinstance(
+                        learning_receipt, dict
+                    ) else 0
+                    partial_persistence = (
+                        isinstance(persisted_count, int)
+                        and not isinstance(persisted_count, bool)
+                        and persisted_count > 0
+                        and isinstance(failed_operations, list)
+                        and bool(failed_operations)
+                    )
+                    # A known partial write is a failed substage, not proof
+                    # that independent post-turn modules must be skipped.
+                    # Unknown/exception outcomes remain a hard prerequisite
+                    # failure because downstream work cannot rely on them.
+                    if partial_persistence:
+                        logger.warning(
+                            "Post-turn memory write was partial for turn %s; continuing independent stages",
+                            audit_turn_id,
+                        )
+                    else:
+                        failure = (
+                            str(learning_receipt.get("status") or "unreported")
+                            if isinstance(learning_receipt, dict)
+                            else "unreported"
+                        )
+                        self._record_turn_stage(
+                            "cognitive_post_turn",
+                            "failed",
+                            f"response learning prerequisite failed: {failure}",
+                            turn_id=audit_turn_id,
+                        )
+                        return False
 
             # 13: queue background tasks — THIS is what fires dream/learning cycles
             active_stage = "background_learning_tasks"

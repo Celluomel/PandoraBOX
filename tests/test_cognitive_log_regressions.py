@@ -315,6 +315,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertTrue(summary["factual_plan_query"])
         self.assertTrue(summary["closed_world_report"])
         self.assertFalse(summary["explicit_memory_recall"])
+        self.assertFalse(summary["prompt_source_provenance_query"])
         self.assertNotIn("private_query", str(summary))
         self.assertNotIn("do not expose", str(summary))
 

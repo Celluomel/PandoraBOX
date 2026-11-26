@@ -4,6 +4,16 @@ from __future__ import annotations
 from typing import Any
 
 
+def should_suppress_recent_dialogue(
+    *,
+    architecture_query: bool = False,
+    factual_plan_query: bool = False,
+    explicit_named_profile_query: bool = False,
+) -> bool:
+    """Whether a closed-world self-report must exclude prior assistant claims."""
+    return bool(architecture_query or factual_plan_query or explicit_named_profile_query)
+
+
 def history_without_assistant_claims(history: Any) -> tuple[list[dict], dict[str, int]]:
     """Keep user-authored context while excluding prior model claims as evidence.
 
