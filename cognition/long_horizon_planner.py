@@ -286,7 +286,15 @@ class LongHorizonPlanner:
             if plan.source != "aspiration" or plan.status != "active":
                 continue
             step = self.current_step(domain)
-            if step is None or step.status != "pending":
+            retry_unverified_read = bool(
+                step is not None
+                and step.status == "unverified"
+                and step.operation == "memory_recall"
+                and not str(step.execution_id or "").strip()
+                and not str(step.result or "").strip()
+                and not step.pending_execution_id
+            )
+            if step is None or (step.status != "pending" and not retry_unverified_read):
                 continue
             aspiration = next(
                 (item for item in asp.aspirations.values()
@@ -538,9 +546,15 @@ class LongHorizonPlanner:
             ):
                 return False
             step = plan.steps[expected_step_index]
+            retry_unverified_read = (
+                operation == "memory_recall"
+                and step.status == "unverified"
+                and not str(step.execution_id or "").strip()
+                and not str(step.result or "").strip()
+            )
             if (
                 step.operation != operation
-                or step.status not in {"pending", "failed"}
+                or (step.status not in {"pending", "failed"} and not retry_unverified_read)
                 or step.pending_execution_id
             ):
                 return False

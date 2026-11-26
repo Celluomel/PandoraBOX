@@ -544,6 +544,77 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(persisted["steps"][0]["execution_id"], "turn-abc")
             self.assertEqual(persisted["last_outcome"]["execution_id"], "turn-abc")
 
+    def test_unverified_read_only_memory_recall_can_retry_without_claiming_old_progress(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[PlanStep(
+                    sequence=0,
+                    action_type="analytical",
+                    operation="memory_recall",
+                    expected_cost=0.05,
+                    expected_gain=0.05,
+                    status="unverified",
+                )],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=1,
+                source="aspiration",
+                status="active",
+                steps_completed=0,
+                last_outcome={"status": "unverified", "success": None},
+            )
+            planner._plans["epistemic"] = plan
+
+            class _DispatchReceipt:
+                def __init__(self):
+                    self.calls = []
+
+                def dispatch_autonomous_plan_step(self, _planner, **kwargs):
+                    self.calls.append(kwargs)
+                    return {"outcome_status": "dispatched", "execution_dispatched": True}
+
+            fake_executor = _DispatchReceipt()
+            planner._aspiration_action_executor = fake_executor
+            result = planner._execute_autonomous_social_step(cycle_id=57)
+
+            self.assertEqual(result["outcome_status"], "dispatched")
+            self.assertEqual(fake_executor.calls[0]["operation"], "memory_recall")
+            self.assertEqual(fake_executor.calls[0]["expected_step_index"], 0)
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.steps[0].status, "unverified")
+            self.assertFalse(plan.steps[0].effect_measured)
+            self.assertTrue(planner.reserve_autonomous_action_execution(
+                "epistemic", "memory_recall", "retry-execution",
+                expected_step_index=0, cycle_id=58,
+            ))
+
+    def test_unverified_self_question_is_not_automatically_retried(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[PlanStep(
+                    sequence=0, action_type="philosophical",
+                    operation="self_question", expected_cost=0.05,
+                    expected_gain=0.05, status="unverified",
+                )],
+                resource_reserve=0.2, revision_trigger=0.25, horizon=1,
+                source="aspiration", status="active", steps_completed=0,
+            )
+            planner._plans["epistemic"] = plan
+
+            class _NoDispatch:
+                def dispatch_autonomous_plan_step(self, *_args, **_kwargs):
+                    raise AssertionError("unverified mutating operator must not auto-retry")
+
+            planner._aspiration_action_executor = _NoDispatch()
+            result = planner._execute_autonomous_social_step(cycle_id=59)
+            self.assertEqual(result["outcome_status"], "no_pending_step")
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.steps[0].status, "unverified")
+
     def test_stale_aspiration_receipt_cannot_advance_a_repeated_next_operation(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, _, _ = self._planner(folder)
