@@ -15,12 +15,14 @@ Design constraints
 """
 
 import json
+import hashlib
 import logging
 import math
 import queue
 import re
 import threading
 import time
+from concurrent.futures import Future
 from typing import Dict, List, Optional, Tuple
 
 from cognition.semantic_memory import SemanticMemory
@@ -96,6 +98,9 @@ Return exactly this structure:
   "relations": [
     {{"from": "concept1", "to": "concept2", "type": "leads_to", "evidence": "exact words from the incoming message supporting this relation"}}
   ],
+  "profile_claims": [
+    {{"category": "preference", "value": "concise answers", "evidence": "I prefer concise answers", "assertion": "explicit_first_person", "durability": "durable"}}
+  ],
   "dominant_topic": "one of the concept names",
   "cognitive_load": 0.0
 }}
@@ -105,6 +110,7 @@ Rules:
 - Classify whether the user is asking Lumina to maintain an objective beyond this exchange as exactly one of: continuing_commitment, topic_only, none. Use continuing_commitment only when the incoming message clearly expresses an ongoing project, durable objective, or explicit intent to keep pursuing this subject across turns. A question, request for information, one-off task, or repeated mention alone is topic_only; social/non-substantive turns are none. Use the message meaning in any language; do not infer this signal from the assistant response.
 - If and only if goal_signal is continuing_commitment, set goal_signal_evidence to the exact contiguous phrase from the incoming message that supports ongoing commitment. Copy it verbatim, preserving its original language. Otherwise set it to an empty string. Never paraphrase or use assistant text as evidence.
 - Persist only concepts and relations grounded in the incoming message. Assistant wording is not evidence of an interlocutor's belief, fact, preference, or intent.
+- profile_claims: 0-3 claims explicitly stated by the user about themself. Allowed categories: preference, dislike, interest, characteristic. Include a claim only when it is a direct first-person assertion, not quoted/reported speech, a question, hypothetical, negation reversal, instruction, or temporary state. Preferences/interests must express a durable preference or interest; characteristics must be explicitly stable identity facts, not current feelings or activities. Set assertion to exactly "explicit_first_person" and durability to exactly "durable" only when both conditions hold; otherwise omit the claim. Evidence must be an exact contiguous quotation from the incoming message. Value must itself be an exact phrase contained in that evidence, in the user's original language. Never infer a fact from context or assistant text.
 - concepts: 0-8 lowercase nouns or noun phrases, max 3 words each; every concept needs an exact evidence phrase from the incoming message
 - relations: max 5, both endpoints must be concepts; evidence must directly support the relation in the incoming message
 - Do not infer a relation from co-occurrence alone
@@ -117,6 +123,23 @@ _TURN_KINDS = {"topic", "retrieval", "social", "instruction", "feedback", "decis
 _GOAL_SIGNALS = {"continuing_commitment", "topic_only", "none"}
 _MAX_DEFERRED_RETRIES = 30
 _DEFERRED_RETRY_DELAY_SECONDS = 1.0
+
+
+class _SemanticParseResult:
+    """Seven-field legacy parse tuple plus non-positional profile metadata."""
+
+    def __init__(self, values, profile_claims=None):
+        self._values = tuple(values)
+        self.profile_claims = list(profile_claims or [])
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+    def __getitem__(self, key):
+        return self._values[key]
 
 
 class SemanticExtractor:
@@ -157,21 +180,23 @@ class SemanticExtractor:
         role = str(observation_role or "user_topic")
         if role not in {"user_topic", "peer_topic"}:
             role = "user_topic"
+        completion_future = Future()
         item = (
             user_input, response, None, workspace, role,
             str(turn_id or ""), completion_callback,
-            str(turn_kind_hint or "").strip().casefold(), 0,
+            str(turn_kind_hint or "").strip().casefold(), 0, completion_future,
         )
         with self._lock:
             self._queue.put_nowait(item)
             if self._worker_running:
-                return
+                return completion_future
             self._worker_running = True
         threading.Thread(
             target=self._drain_queue,
             daemon=True,
             name="SemanticExtractor",
         ).start()
+        return completion_future
 
     def _drain_queue(self) -> None:
         while True:
@@ -184,11 +209,37 @@ class SemanticExtractor:
                         return
                 continue
             try:
-                receipt = self._extract(*item[:8])
+                try:
+                    receipt = self._extract(*item[:8])
+                except Exception as extraction_error:
+                    # A malformed/provider-specific turn must resolve its
+                    # receipt and must not kill the sole queue worker. Without
+                    # this boundary, `_worker_running` stayed True after the
+                    # thread died, so every later extraction could remain
+                    # queued forever with an unresolved Future.
+                    logger.exception(
+                        "[SemanticExtractor] unexpected worker failure for turn %s",
+                        str(item[5] or "")[:120],
+                    )
+                    receipt = {
+                        "type": "semantic_extraction_receipt",
+                        "status": "failed",
+                        "learning_status": "worker_exception",
+                        "turn_id": str(item[5] or "") or None,
+                        "source_message_sha256": hashlib.sha256(
+                            str(item[0] or "").encode("utf-8")
+                        ).hexdigest(),
+                        "profile_claims": [],
+                        "profile_claims_status": "unavailable",
+                        "error_type": type(extraction_error).__name__,
+                    }
                 retry_count = int(item[8]) if len(item) > 8 else 0
                 if receipt.get("status") == "deferred":
                     if retry_count < _MAX_DEFERRED_RETRIES:
-                        self._schedule_retry((*item[:8], retry_count + 1))
+                        self._schedule_retry((
+                            *item[:8], retry_count + 1,
+                            item[9] if len(item) > 9 else None,
+                        ))
                         continue
                     receipt.update({
                         "status": "failed",
@@ -196,14 +247,20 @@ class SemanticExtractor:
                         "retry_exhausted": True,
                     })
                 completion_callback = item[6] if len(item) > 6 else None
+                completion_result = receipt
                 if callable(completion_callback):
                     try:
-                        completion_callback(receipt)
+                        callback_result = completion_callback(receipt)
+                        if callback_result is not None:
+                            completion_result = callback_result
                     except Exception as callback_error:
                         logger.debug(
                             "[SemanticExtractor] Completion receipt callback failed: %s",
                             callback_error,
                         )
+                completion_future = item[9] if len(item) > 9 else None
+                if isinstance(completion_future, Future) and not completion_future.done():
+                    completion_future.set_result(completion_result)
             finally:
                 self._queue.task_done()
 
@@ -234,6 +291,9 @@ class SemanticExtractor:
             "type": "semantic_extraction_receipt",
             "status": "failed",
             "turn_id": str(turn_id or "") or None,
+            "source_message_sha256": hashlib.sha256(
+                str(user_input or "").encode("utf-8")
+            ).hexdigest(),
             "concepts_parsed": 0,
             "concept_upsert_calls_returned": 0,
             "concepts_persisted": 0,
@@ -245,6 +305,8 @@ class SemanticExtractor:
             "persistence_status": "unverified",
             "cag_status": "not_available",
             "workspace_status": "not_requested",
+            "profile_claims": [],
+            "profile_claims_status": "unavailable",
         }
         try:
             t0 = time.time()
@@ -253,6 +315,7 @@ class SemanticExtractor:
             # report or a source-backed memory recall). Preserve that evidence
             # instead of spending another LLM call to rediscover it.
             trusted_hint = str(turn_kind_hint or "").strip().casefold()
+            profile_claims = []
             if trusted_hint in {"retrieval", "social", "instruction", "feedback", "other"}:
                 parsed = ([], [], "", 0.3, trusted_hint, "none", "")
                 receipt["classification_source"] = "upstream_turn_contract"
@@ -264,6 +327,7 @@ class SemanticExtractor:
                 turn_context_token = set_current_turn_id(turn_id)
                 try:
                     parsed = self._parse(user_input, response)
+                    profile_claims = list(getattr(parsed, "profile_claims", []))
                 finally:
                     current_turn_id.reset(turn_context_token)
                 if trusted_hint == "decision" and len(parsed) >= 5:
@@ -271,7 +335,7 @@ class SemanticExtractor:
                     # conversational act. Keep semantic concept extraction in
                     # this post-response worker, but don't spend another model
                     # call rediscovering whether the user asked for a decision.
-                    parsed = (*parsed[:4], "decision")
+                    parsed = (*parsed[:4], "decision", *parsed[5:])
                     receipt["classification_source"] = "upstream_turn_contract_plus_semantic_extraction"
                 else:
                     receipt["classification_source"] = "semantic_llm"
@@ -294,6 +358,13 @@ class SemanticExtractor:
                 goal_signal_evidence = ""
             if turn_kind not in _TURN_KINDS:
                 turn_kind = "unclassified"
+            receipt["profile_claims"] = profile_claims
+            receipt["profile_claims_status"] = (
+                "grounded_candidates" if profile_claims else
+                "unavailable" if turn_kind == "unclassified" else
+                "not_attempted" if receipt.get("classification_source") == "upstream_turn_contract" else
+                "no_grounded_claim"
+            )
             if goal_signal not in _GOAL_SIGNALS:
                 goal_signal = "none"
             normalized_input = " ".join(str(user_input or "").casefold().split())
@@ -484,7 +555,12 @@ class SemanticExtractor:
 
     def _parse(self, user_input: str, response: str
                ) -> Tuple[List[str], List[Dict], str, float, str, str, str]:
-        """Try LLM extraction, fall back to keyword extraction."""
+        """Compatibility wrapper for callers using the original seven-field contract."""
+        parsed = self._parse_with_profile(user_input, response)
+        return _SemanticParseResult(parsed[:7], parsed[7] if len(parsed) >= 8 else [])
+
+    def _parse_with_profile(self, user_input: str, response: str):
+        """Extract semantic topics and evidence-grounded user profile claims."""
 
         # Durable graph evidence comes only from the authored input. If
         # assistant wording were folded into this graph, later recall and
@@ -496,7 +572,7 @@ class SemanticExtractor:
             # Lexical fallback can suggest concepts but cannot reliably select
             # a dominant semantic topic. Leave topic arbitration to a later
             # stage instead of promoting the first surface token.
-            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none", ""
+            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none", "", []
 
         try:
             prompt = _EXTRACTION_PROMPT.format(
@@ -514,6 +590,7 @@ class SemanticExtractor:
             # wording (for example, an imperative verb) enter durable memory.
             concepts = input_llm_concepts[:8]
             relations = self._ground_relations(data.get("relations", []), concepts, input_source)
+            profile_claims = self._ground_profile_claims(data.get("profile_claims", []), user_input)
             topic_value = data.get("dominant_topic", "")
             topic = self._normalize_concept(topic_value)
             turn_kind = str(data.get("turn_kind") or "").strip().casefold()
@@ -546,13 +623,53 @@ class SemanticExtractor:
             # A valid empty extraction means this message did not yield a
             # grounded topic. Do not turn lexical leftovers into a semantic
             # topic merely to force a workspace update.
-            return concepts, relations, topic, cog_load, turn_kind, goal_signal, goal_signal_evidence
+            return concepts, relations, topic, cog_load, turn_kind, goal_signal, goal_signal_evidence, profile_claims
 
         except Exception as e:
             if getattr(e, "semantic_learning_deferred", False):
                 raise
             logger.debug(f"[SemanticExtractor] LLM parse failed ({e}), using keywords")
-            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none", ""
+            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none", "", []
+
+    @staticmethod
+    def _ground_profile_claims(values, user_input: str) -> List[Dict[str, str]]:
+        """Keep only typed claims whose value and verbatim evidence occur in user text."""
+        if not isinstance(values, list):
+            return []
+        source = " ".join(str(user_input or "").casefold().split())
+        accepted: List[Dict[str, str]] = []
+        seen = set()
+        allowed = {"preference", "dislike", "interest", "characteristic"}
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            category = str(item.get("category") or "").strip().casefold()
+            value = " ".join(str(item.get("value") or "").strip().split())
+            evidence = " ".join(str(item.get("evidence") or "").strip().split())
+            assertion = str(item.get("assertion") or "").strip().casefold()
+            durability = str(item.get("durability") or "").strip().casefold()
+            normalized_evidence = evidence.casefold()
+            normalized_value = value.casefold()
+            if (
+                category not in allowed
+                or assertion != "explicit_first_person"
+                or durability != "durable"
+                or not value or not evidence
+                or normalized_evidence not in source
+                or normalized_value not in normalized_evidence
+            ):
+                continue
+            key = (category, normalized_value, normalized_evidence)
+            if key in seen:
+                continue
+            seen.add(key)
+            accepted.append({
+                "category": category, "value": value, "evidence": evidence,
+                "assertion": assertion, "durability": durability,
+            })
+            if len(accepted) >= 3:
+                break
+        return accepted
 
     def _keyword_extract(self, text: str) -> List[str]:
         """Lightweight keyword extraction — nouns and noun phrases only."""

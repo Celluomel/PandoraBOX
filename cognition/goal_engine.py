@@ -433,9 +433,17 @@ class GoalEngine:
             elif kind == "selected_workspace_thought":
                 if thought_id and method and ref == f"thought:{thought_id}":
                     return True, "verified_workspace_thought"
-            elif kind in {"autonomous_motivation", "internal_curiosity_state"}:
+            elif kind == "autonomous_motivation":
                 if method and ref:
-                    return True, f"verified_{kind}"
+                    return True, "verified_autonomous_motivation"
+            elif kind == "internal_curiosity_state":
+                # Curiosity is a signal for attention and exploration, not by
+                # itself authority to create a persistent, executable goal.
+                # A curiosity topic must first become a selected workspace
+                # thought with an actual proposal (or receive user commitment
+                # evidence); otherwise a fragment such as "rappelle" can be
+                # inflated into a generic plan solely because it recurred.
+                continue
             elif kind == "state_record":
                 # Curiosity records can contain self-generated questions. They
                 # are not durable goal authority without repeated user intent.
@@ -1029,7 +1037,7 @@ class GoalEngine:
                 if source_kind not in {
                     "user_semantic_commitment", "user_explicit_goal",
                     "selected_workspace_thought", "autonomous_motivation",
-                    "internal_curiosity_state", "state_record",
+                    "state_record",
                 } or not source_record["method"] or not source_record["ref"]:
                     generation_report["provenance_suppressed_count"] += 1
                     continue

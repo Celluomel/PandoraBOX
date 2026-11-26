@@ -847,6 +847,148 @@ class UserManager:
         }
         return receipt if return_receipt else changed
 
+    def learn_from_evidence_claims(
+        self,
+        user_id: str,
+        claims: list[dict],
+        *,
+        source_message: str,
+        source_turn_id: str = "",
+        return_receipt: bool = False,
+    ):
+        """Persist profile claims extracted from one user-only semantic pass.
+
+        The caller supplies claims from the existing post-turn semantic
+        extraction, not a second model invocation. Every claim must carry an
+        exact quote and a value copied from that quote. Language-independent
+        assertion/scope classification is provided by the extractor; this
+        method enforces provenance and persistence invariants.
+        """
+        profile = self.get(user_id)
+        if not profile or profile.id == self.GUEST_ID:
+            receipt = {"status": "skipped_no_named_profile", "changed": False}
+            return receipt if return_receipt else False
+        source = " ".join(str(source_message or "").strip().split())
+        normalized_source = source.casefold()
+        if not source or not source_turn_id:
+            receipt = {
+                "status": "skipped_missing_source_provenance",
+                "changed": False,
+                "persisted": False,
+            }
+            return receipt if return_receipt else False
+
+        fields = {
+            "preference": "preferences",
+            "dislike": "dislikes",
+            "interest": "interests",
+            "characteristic": "characteristics",
+        }
+        grounded: list[tuple[str, str, str]] = []
+        seen = set()
+        for claim in claims if isinstance(claims, list) else []:
+            if not isinstance(claim, dict):
+                continue
+            category = str(claim.get("category") or "").strip().casefold()
+            value = " ".join(str(claim.get("value") or "").strip().split())
+            evidence = " ".join(str(claim.get("evidence") or "").strip().split())
+            if (
+                category not in fields
+                or claim.get("assertion") != "explicit_first_person"
+                or claim.get("durability") != "durable"
+                or not value or not evidence
+                or evidence.casefold() not in normalized_source
+                or value.casefold() not in evidence.casefold()
+            ):
+                continue
+            if category == "characteristic" and self._is_ephemeral_characteristic(value):
+                continue
+            key = (category, value.casefold())
+            if key not in seen:
+                seen.add(key)
+                grounded.append((category, value, evidence))
+            if len(grounded) >= 3:
+                break
+        if not grounded:
+            receipt = {
+                "status": "no_grounded_profile_claim",
+                "changed": False,
+                "persisted": False,
+                "extracted_count": 0,
+            }
+            return receipt if return_receipt else False
+
+        source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        recorded_at = datetime.now().isoformat()
+        changed = False
+        categories_updated = set()
+        provenance_records = 0
+        with self._lock:
+            previous = {
+                category: list(getattr(profile, fields[category]))
+                for category, _value, _evidence in grounded
+            }
+            previous.setdefault("characteristic", list(profile.characteristics))
+            previous_provenance = json.loads(json.dumps(profile.profile_fact_provenance))
+            previous_last_seen = profile.last_seen
+            previous_quarantine = copy.deepcopy(profile.profile_provenance_quarantine)
+            migrated = self._quarantine_ephemeral_characteristics(profile)
+            for category, value, evidence in grounded:
+                target = getattr(profile, fields[category])
+                fact_key = hashlib.sha256(value.casefold().encode("utf-8")).hexdigest()
+                sources = profile.profile_fact_provenance.setdefault(category, {}).setdefault(fact_key, [])
+                if not any(
+                    isinstance(item, dict) and item.get("turn_id") == source_turn_id
+                    for item in sources
+                ):
+                    sources.append({
+                        "turn_id": str(source_turn_id),
+                        "source_sha256": source_sha256,
+                        "recorded_at": recorded_at,
+                        "source_role": "user",
+                        "evidence_sha256": hashlib.sha256(
+                            evidence.encode("utf-8")
+                        ).hexdigest(),
+                    })
+                    del sources[:-5]
+                    changed = True
+                    provenance_records += 1
+                    categories_updated.add(category)
+                if value.casefold() not in {str(item).casefold() for item in target}:
+                    target.append(value)
+                    del target[:-8]
+                    changed = True
+                    categories_updated.add(category)
+            if changed or migrated:
+                self._prompt_cache.pop(profile.id, None)
+                profile.touch()
+                self._save()
+                if not self._state_is_persisted():
+                    for category, values in previous.items():
+                        setattr(profile, fields[category], values)
+                    profile.profile_fact_provenance = previous_provenance
+                    profile.last_seen = previous_last_seen
+                    profile.profile_provenance_quarantine = previous_quarantine
+                    self._prompt_cache.pop(profile.id, None)
+                    receipt = {
+                        "status": "persistence_failed", "changed": False,
+                        "persisted": False, "categories_updated": [],
+                        "extracted_count": len(grounded),
+                    }
+                    return receipt if return_receipt else False
+        if changed:
+            logger.info("Learned evidence-grounded profile details for %s", profile.id)
+        receipt = {
+            "status": "updated" if changed else "duplicate_explicit_profile_fact",
+            "changed": changed,
+            "persisted": True,
+            "categories_updated": sorted(categories_updated),
+            "extracted_count": len(grounded),
+            "provenance_records": provenance_records,
+            "source_turn_id": str(source_turn_id),
+        }
+        return receipt if return_receipt else changed
+
     # ── Persistence ──────────────────────────────────────────────────────────
 
     def _state_is_persisted(self) -> bool:

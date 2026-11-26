@@ -1093,6 +1093,7 @@ class PersonaBridge:
                     completed_without_write = learning_status in {
                         "no_explicit_profile_fact", "skipped_no_named_profile",
                         "skipped_empty_message", "quarantined_ephemeral_profile_data",
+                        "no_grounded_profile_claim", "skipped_upstream_classification",
                     }
                     return {
                         "status": (
@@ -1581,14 +1582,62 @@ class PersonaBridge:
         )
         return stage_status == "failed"
 
-    def _record_semantic_topic_extraction(self, receipt: Any, turn_id: str) -> None:
-        """Attach the async extractor's redacted completion receipt to its turn."""
+    def _record_semantic_topic_extraction(
+        self, receipt: Any, turn_id: str, *, user_id: str = "",
+        source_message: str = "", learn_profile: bool = False,
+    ) -> None:
+        """Attach semantic and profile-learning effects to their source turn."""
         if not turn_id:
             return
-        safe_receipt = receipt if isinstance(receipt, dict) else {
+        safe_receipt = dict(receipt) if isinstance(receipt, dict) else {
             "status": "invalid_receipt",
             "turn_id": str(turn_id or "") or None,
         }
+        profile_receipt = None
+        if learn_profile:
+            try:
+                expected_source_hash = hashlib.sha256(
+                    str(source_message or "").encode("utf-8")
+                ).hexdigest()
+                source_provenance_valid = bool(
+                    str(safe_receipt.get("turn_id") or "") == str(turn_id)
+                    and str(safe_receipt.get("source_message_sha256") or "")
+                    == expected_source_hash
+                )
+                profile_claim_status = safe_receipt.get("profile_claims_status")
+                if not source_provenance_valid:
+                    profile_receipt = {
+                        "status": "source_provenance_mismatch",
+                        "changed": False,
+                        "persisted": False,
+                    }
+                elif profile_claim_status in {"unavailable", "not_attempted"}:
+                    profile_receipt = {
+                        "status": (
+                            "semantic_extraction_unavailable"
+                            if profile_claim_status == "unavailable"
+                            else "skipped_upstream_classification"
+                        ),
+                        "changed": False,
+                        "persisted": False,
+                    }
+                else:
+                    from managers.user_manager import user_manager
+                    profile_receipt = user_manager.learn_from_evidence_claims(
+                        user_id,
+                        safe_receipt.get("profile_claims", []),
+                        source_message=source_message,
+                        source_turn_id=turn_id,
+                        return_receipt=True,
+                    )
+                safe_receipt["human_profile_learning"] = profile_receipt
+            except Exception as profile_error:
+                profile_receipt = {
+                    "status": "failed",
+                    "changed": False,
+                    "error_type": type(profile_error).__name__,
+                }
+                safe_receipt["human_profile_learning"] = profile_receipt
         self._record_turn_stage(
             "semantic_topic_extraction",
             str(safe_receipt.get("status", "unreported")),
@@ -1597,6 +1646,18 @@ class PersonaBridge:
             consumes=("turn_input",),
             turn_id=turn_id,
         )
+        if learn_profile and isinstance(profile_receipt, dict):
+            profile_status = str(profile_receipt.get("status") or "unreported")
+            self._record_turn_stage(
+                "human_profile_learning",
+                "failed" if profile_status == "failed" else profile_status,
+                str(profile_receipt.get("error_type") or ""),
+                output=profile_receipt,
+                consumes=("turn_input", "semantic_topic_extraction"),
+                turn_id=turn_id,
+            )
+            return profile_receipt
+        return safe_receipt
 
     @staticmethod
     def _provider_events_for_turn(
@@ -6004,12 +6065,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         explicit_named_profile_query=_explicit_named_profile_query,
                     ),
                     not bool(peer_name),
+                    not bool(peer_name)
+                    and not _explicit_profile_opt_out
+                    and not _explicit_named_profile_query,
                 )
 
             post_tasks.append(("cognitive_post_turn", _run_cognitive_lifecycle_after_memory()))
 
-        # Learn explicit profile statements after the visible response. This
-        # is local and bounded, so it adds no latency or extra model call.
+        # Profile learning is now sourced from the existing user-only semantic
+        # extraction callback. This avoids a second, language-specific parser
+        # and keeps profile persistence causally attached to its turn.
         if not peer_name:
             if _explicit_profile_opt_out:
                 self._record_turn_stage(
@@ -6028,38 +6093,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     turn_id=_audit_turn_id,
                 )
             else:
-                try:
-                    from managers.user_manager import user_manager
-                    pending_profiles = getattr(self, "_pending_profile_learning", None)
-                    if pending_profiles is None:
-                        pending_profiles = self._pending_profile_learning = {}
-                    previous_profile = pending_profiles.get(str(user_id or "default"))
-                    previous_profile_future = (
-                        previous_profile.get("future")
-                        if isinstance(previous_profile, dict) else previous_profile
-                    )
-
-                    def _learn_profile_from_turn():
-                        return user_manager.learn_from_message(
-                            user_id, effective_input, return_receipt=True,
-                            source_turn_id=_audit_turn_id,
-                        )
-
-                    profile_future = asyncio.create_task(
-                        self._run_learning_after_predecessor(
-                            previous_profile_future, loop, _learn_profile_from_turn,
-                        )
-                    )
-                    pending_profiles[str(user_id or "default")] = {
-                        "future": profile_future,
-                        "turn_id": _audit_turn_id,
-                    }
-                    post_tasks.append(("human_profile_learning", profile_future))
-                except Exception as _profile_error:
-                    self._record_turn_stage(
-                        "human_profile_learning", "failed", str(_profile_error),
-                        turn_id=_audit_turn_id,
-                    )
+                self._record_turn_stage(
+                    "human_profile_learning", "awaiting_semantic_extraction",
+                    "Profile claims are persisted by the existing post-turn semantic extraction; no second parser or provider call is used.",
+                    output={"status": "awaiting_semantic_extraction", "changed": False},
+                    consumes=("turn_input",),
+                    turn_id=_audit_turn_id,
+                )
         else:
             self._record_turn_stage(
                 "human_profile_learning", "skipped_by_scope",
@@ -8617,6 +8657,7 @@ Memory honesty — two distinct cases:
         audit_turn_id: str = "",
         semantic_turn_kind_hint: str = "",
         response_learning_already_run: bool = False,
+        profile_learning_allowed: bool = False,
     ) -> bool:
         """
         Mirrors everything get_response() does AFTER _generate_response().
@@ -8660,8 +8701,37 @@ Memory honesty — two distinct cases:
                         semantic_turn_kind_hint=semantic_turn_kind_hint,
                         semantic_topic_callback=lambda receipt: self._record_semantic_topic_extraction(
                             receipt, audit_turn_id,
+                            user_id=user_id,
+                            source_message=user_input,
+                            learn_profile=profile_learning_allowed,
                         ),
                     )
+                    semantic_profile_future = (
+                        _post_receipt.get("_semantic_topic_future")
+                        if isinstance(_post_receipt, dict) else None
+                    )
+                    if profile_learning_allowed and callable(
+                        getattr(semantic_profile_future, "done", None)
+                    ):
+                        pending_profiles = getattr(self, "_pending_profile_learning", None)
+                        if pending_profiles is None:
+                            pending_profiles = self._pending_profile_learning = {}
+                        pending_profiles[str(user_id or "default")] = {
+                            "future": semantic_profile_future,
+                            "turn_id": audit_turn_id,
+                        }
+                    elif profile_learning_allowed:
+                        self._record_turn_stage(
+                            "human_profile_learning", "semantic_extraction_unavailable",
+                            "The post-turn semantic extractor did not return a completion handle.",
+                            output={
+                                "status": "semantic_extraction_unavailable",
+                                "changed": False,
+                                "persisted": False,
+                            },
+                            consumes=("turn_input",),
+                            turn_id=audit_turn_id,
+                        )
                     _semantic_topic_receipt = (
                         _post_receipt.get("semantic_topic_learning", {})
                         if isinstance(_post_receipt, dict) else {}
@@ -8864,8 +8934,37 @@ Memory honesty — two distinct cases:
                         semantic_turn_kind_hint=semantic_turn_kind_hint,
                         semantic_topic_callback=lambda receipt: self._record_semantic_topic_extraction(
                             receipt, audit_turn_id,
+                            user_id=user_id,
+                            source_message=user_input,
+                            learn_profile=profile_learning_allowed,
                         ),
                     )
+                    semantic_profile_future = (
+                        _post_receipt.get("_semantic_topic_future")
+                        if isinstance(_post_receipt, dict) else None
+                    )
+                    if profile_learning_allowed and callable(
+                        getattr(semantic_profile_future, "done", None)
+                    ):
+                        pending_profiles = getattr(self, "_pending_profile_learning", None)
+                        if pending_profiles is None:
+                            pending_profiles = self._pending_profile_learning = {}
+                        pending_profiles[str(user_id or "default")] = {
+                            "future": semantic_profile_future,
+                            "turn_id": audit_turn_id,
+                        }
+                    elif profile_learning_allowed:
+                        self._record_turn_stage(
+                            "human_profile_learning", "semantic_extraction_unavailable",
+                            "The post-turn semantic extractor did not return a completion handle.",
+                            output={
+                                "status": "semantic_extraction_unavailable",
+                                "changed": False,
+                                "persisted": False,
+                            },
+                            consumes=("turn_input",),
+                            turn_id=audit_turn_id,
+                        )
                     _semantic_topic_receipt = (
                         _post_receipt.get("semantic_topic_learning", {})
                         if isinstance(_post_receipt, dict) else {}

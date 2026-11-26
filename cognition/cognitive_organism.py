@@ -1577,8 +1577,9 @@ class CognitiveOrganism:
             "status": "not_attempted",
             "turn_id": str(turn_id or "") or None,
         }
+        semantic_topic_future = None
         try:
-            self._semantic_extractor.extract_async(
+            semantic_topic_future = self._semantic_extractor.extract_async(
                 user_input=user_input or "",
                 response=response or "",
                 workspace=self.workspace,
@@ -1950,6 +1951,7 @@ class CognitiveOrganism:
             "world_self_dynamics_outcome": wsdm_outcome_receipt,
             "pcm_outcome": pcm_outcome_receipt,
             "semantic_topic_learning": semantic_topic_receipt,
+            "_semantic_topic_future": semantic_topic_future,
         }
 
     def _read_emotion_state(self) -> str:

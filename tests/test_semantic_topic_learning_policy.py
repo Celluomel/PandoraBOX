@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from cognition.cognitive_organism import CognitiveOrganism
@@ -7,6 +10,8 @@ from cognition.persona_bridge import (
     _semantic_turn_kind_for_route,
 )
 from cognition.semantic_extractor import SemanticExtractor
+from cognition.persona_bridge import PersonaBridge
+from managers.user_manager import UserManager
 
 
 def _organism_stub():
@@ -59,6 +64,224 @@ def test_semantic_learning_prompt_contains_user_input_but_not_assistant_response
     assert "Explain the cognitive memory architecture." in prompts[0]
     assert "ASSISTANT_ONLY_SECRET" not in prompts[0]
     assert "Lumina claims Fred prefers topic X" not in prompts[0]
+
+
+def test_profile_claim_extraction_is_multilingual_and_requires_verbatim_evidence():
+    message = "Ich bevorzuge kurze Antworten."
+    payload = {
+        "turn_kind": "topic",
+        "goal_signal": "none",
+        "concepts": [{"name": "kurze Antworten", "evidence": "kurze Antworten"}],
+        "relations": [],
+        "profile_claims": [
+            {
+                "category": "preference",
+                "value": "kurze Antworten",
+                "evidence": message,
+                "assertion": "explicit_first_person",
+                "durability": "durable",
+            },
+            {
+                "category": "interest",
+                "value": "Quantenphysik",
+                "evidence": "Ich interessiere mich für Quantenphysik.",
+                "assertion": "explicit_first_person",
+                "durability": "durable",
+            },
+            {
+                "category": "characteristic",
+                "value": "müde",
+                "evidence": "Ich bin müde.",
+                "assertion": "explicit_first_person",
+                "durability": "durable",
+            },
+        ],
+        "dominant_topic": "kurze Antworten",
+        "cognitive_load": 0.1,
+    }
+    extractor = SemanticExtractor(
+        semantic_memory=Mock(), llm_fn=lambda _prompt: json.dumps(payload),
+    )
+
+    parsed = extractor._parse_with_profile(message, "assistant response is excluded")
+
+    assert parsed[7] == [{
+        "category": "preference",
+        "value": "kurze Antworten",
+        "evidence": message,
+        "assertion": "explicit_first_person",
+        "durability": "durable",
+    }]
+
+
+def test_semantic_profile_callback_persists_only_grounded_claim_with_turn_provenance():
+    message = "Je préfère des réponses concises."
+    claim = {
+        "category": "preference",
+        "value": "des réponses concises",
+        "evidence": message,
+        "assertion": "explicit_first_person",
+        "durability": "durable",
+    }
+    payload = {
+        "turn_kind": "topic",
+        "goal_signal": "none",
+        "concepts": [{"name": "réponses concises", "evidence": "réponses concises"}],
+        "relations": [],
+        "profile_claims": [claim],
+        "dominant_topic": "réponses concises",
+        "cognitive_load": 0.1,
+    }
+    with TemporaryDirectory() as directory:
+        manager = UserManager(Path(directory) / "users.json")
+        profile = manager.create("Fred")
+        extractor = SemanticExtractor(
+            semantic_memory=Mock(), llm_fn=lambda _prompt: json.dumps(payload),
+        )
+        extraction_receipt = extractor._extract(
+            message, "The assistant text is not profile evidence.", None, None,
+            "user_topic", "turn-profile-1", None, "topic",
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._record_turn_stage = Mock()
+        with patch("managers.user_manager.user_manager", manager):
+            bridge._record_semantic_topic_extraction(
+                extraction_receipt,
+                "turn-profile-1",
+                user_id=profile.id,
+                source_message=message,
+                learn_profile=True,
+            )
+        reloaded = UserManager(Path(directory) / "users.json")
+
+    persisted = reloaded.get(profile.id)
+    assert extraction_receipt["profile_claims_status"] == "grounded_candidates"
+    assert persisted.preferences == ["des réponses concises"]
+    fact_key = next(iter(persisted.profile_fact_provenance["preference"]))
+    assert persisted.profile_fact_provenance["preference"][fact_key][0]["turn_id"] == "turn-profile-1"
+    assert bridge._record_turn_stage.call_args_list[0].args[:2] == (
+        "semantic_topic_extraction", "completed",
+    )
+    assert bridge._record_turn_stage.call_args_list[1].args[:2] == (
+        "human_profile_learning", "updated",
+    )
+    assert bridge._record_turn_stage.call_args_list[1].kwargs["consumes"] == (
+        "turn_input", "semantic_topic_extraction",
+    )
+
+
+def test_semantic_profile_learning_skips_guest_missing_turn_and_opt_out():
+    claim = {
+        "category": "interest", "value": "la botanique",
+        "evidence": "Je m'intéresse à la botanique.",
+        "assertion": "explicit_first_person", "durability": "durable",
+    }
+    with TemporaryDirectory() as directory:
+        manager = UserManager(Path(directory) / "users.json")
+        profile = manager.create("Fred")
+        missing_turn = manager.learn_from_evidence_claims(
+            profile.id, [claim], source_message=claim["evidence"], return_receipt=True,
+        )
+        invalid = manager.learn_from_evidence_claims(
+            profile.id, [claim], source_message="Maybe Fred likes botany.",
+            source_turn_id="turn-invalid", return_receipt=True,
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._record_turn_stage = Mock()
+        with patch("managers.user_manager.user_manager", manager):
+            bridge._record_semantic_topic_extraction(
+                {
+                    "status": "completed", "turn_id": "turn-other",
+                    "source_message_sha256": "not-the-message",
+                    "profile_claims_status": "grounded_candidates",
+                    "profile_claims": [claim],
+                },
+                "turn-opt-out", user_id=profile.id,
+                source_message=claim["evidence"], learn_profile=False,
+            )
+            bridge._record_semantic_topic_extraction(
+                {
+                    "status": "completed", "turn_id": "turn-other",
+                    "source_message_sha256": "not-the-message",
+                    "profile_claims_status": "grounded_candidates",
+                    "profile_claims": [claim],
+                },
+                "turn-opt-out", user_id=profile.id,
+                source_message=claim["evidence"], learn_profile=True,
+            )
+
+    assert missing_turn["status"] == "skipped_missing_source_provenance"
+    assert invalid["status"] == "no_grounded_profile_claim"
+    assert profile.interests == []
+    assert bridge._record_turn_stage.call_args_list[-1].args[:2] == (
+        "human_profile_learning", "source_provenance_mismatch",
+    )
+
+
+def test_semantic_extractor_future_resolves_to_profile_callback_receipt():
+    payload = {
+        "turn_kind": "topic",
+        "goal_signal": "none",
+        "concepts": [],
+        "relations": [],
+        "profile_claims": [],
+        "dominant_topic": "",
+        "cognitive_load": 0.1,
+    }
+    extractor = SemanticExtractor(
+        semantic_memory=Mock(), llm_fn=lambda _prompt: json.dumps(payload),
+    )
+    future = extractor.extract_async(
+        "A substantive question about memory.", "Answer.",
+        turn_id="turn-profile-future",
+        turn_kind_hint="topic",
+        completion_callback=lambda _receipt: {
+            "status": "no_grounded_profile_claim",
+            "persisted": False,
+        },
+    )
+
+    result = future.result(timeout=3)
+
+    assert result["status"] == "no_grounded_profile_claim"
+    assert result["persisted"] is False
+
+
+def test_semantic_worker_resolves_unexpected_failure_and_processes_next_turn():
+    extractor = SemanticExtractor(semantic_memory=Mock())
+    calls = 0
+
+    def fail_once_then_succeed(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("unexpected parser boundary failure")
+        return {
+            "type": "semantic_extraction_receipt",
+            "status": "completed",
+            "turn_id": str(args[5]),
+            "source_message_sha256": "ok",
+            "profile_claims": [],
+            "profile_claims_status": "no_grounded_claim",
+        }
+
+    extractor._extract = fail_once_then_succeed
+    failed = extractor.extract_async(
+        "first turn", "answer", turn_id="turn-worker-failure",
+    )
+    failure_receipt = failed.result(timeout=3)
+
+    recovered = extractor.extract_async(
+        "second turn", "answer", turn_id="turn-worker-recovery",
+    )
+    recovered_receipt = recovered.result(timeout=3)
+
+    assert failure_receipt["status"] == "failed"
+    assert failure_receipt["learning_status"] == "worker_exception"
+    assert failure_receipt["turn_id"] == "turn-worker-failure"
+    assert failure_receipt["profile_claims_status"] == "unavailable"
+    assert recovered_receipt["status"] == "completed"
+    assert recovered_receipt["turn_id"] == "turn-worker-recovery"
 
 
 def test_semantic_learning_marks_provider_contention_for_queue_retry():

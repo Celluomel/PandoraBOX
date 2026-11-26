@@ -123,15 +123,14 @@ def test_generated_goal_source_provenance_survives_persistence_reload(tmp_path):
     ]
 
 
-def test_weak_one_word_curiosity_record_is_not_executable_goal(tmp_path):
+def test_internal_curiosity_topic_cannot_authorize_a_persistent_goal(tmp_path):
     engine = _engine(tmp_path)
     legacy = Goal(
         id="legacy-rappelle", topic="rappelle", origin="goal_quality_filter",
         priority=0.82, energy=0.82, created_cycle=1, last_active=1,
-        tension_source="curiosity_drive", source_concept_kind="state_record",
-        source_concept_method="cognition.tension_topics.generate_curiosity_topic",
-        source_concept_ref="curiosity.json#/topics/rappelle",
-        source_concept_sha256="a" * 64,
+        tension_source="curiosity_drive", source_concept_kind="internal_curiosity_state",
+        source_concept_method="curiosity_engine.stimulate",
+        source_concept_ref="topic:rappelle;sources:internal_reflection",
     )
     engine._goals[legacy.id] = legacy
 
@@ -139,6 +138,25 @@ def test_weak_one_word_curiosity_record_is_not_executable_goal(tmp_path):
     assert legacy.status == "deferred"
     assert legacy.source_provenance_status == "unverified"
     assert legacy.source_provenance_reason == "source_receipt_incomplete_or_ineligible"
+
+
+def test_internal_curiosity_topic_is_suppressed_before_goal_candidate_creation(tmp_path):
+    engine = _engine(tmp_path)
+    topic = "rappelle"
+
+    candidates = engine.generate_candidates(
+        [Motivation(name="explore", strength=0.7, origin="internal")],
+        [topic],
+        limit=1,
+        topic_source_provenance={topic: {
+            "kind": "internal_curiosity_state",
+            "method": "curiosity_engine.stimulate",
+            "ref": "topic:rappelle;sources:internal_reflection",
+        }},
+    )
+
+    assert candidates == []
+    assert engine._last_candidate_generation_report["provenance_suppressed_count"] == 1
 
 
 def test_semantically_valid_one_word_topic_is_allowed_with_repeated_commitment(tmp_path):
