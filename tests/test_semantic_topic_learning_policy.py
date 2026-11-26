@@ -138,24 +138,36 @@ def test_semantic_profile_callback_persists_only_grounded_claim_with_turn_proven
         extractor = SemanticExtractor(
             semantic_memory=Mock(), llm_fn=lambda _prompt: json.dumps(payload),
         )
-        extraction_receipt = extractor._extract(
-            message, "The assistant text is not profile evidence.", None, None,
-            "user_topic", "turn-profile-1", None, "topic",
-        )
         bridge = PersonaBridge.__new__(PersonaBridge)
         bridge._record_turn_stage = Mock()
-        with patch("managers.user_manager.user_manager", manager):
-            bridge._record_semantic_topic_extraction(
-                extraction_receipt,
+        extraction_receipts = []
+
+        def persist_profile_claim(receipt):
+            extraction_receipts.append(receipt)
+            return bridge._record_semantic_topic_extraction(
+                receipt,
                 "turn-profile-1",
                 user_id=profile.id,
                 source_message=message,
                 learn_profile=True,
             )
+
+        with patch("managers.user_manager.user_manager", manager):
+            profile_future = extractor.extract_async(
+                message, "The assistant text is not profile evidence.",
+                observation_role="user_topic",
+                turn_id="turn-profile-1",
+                completion_callback=persist_profile_claim,
+                turn_kind_hint="topic",
+            )
+            profile_receipt = profile_future.result(timeout=3)
         reloaded = UserManager(Path(directory) / "users.json")
 
     persisted = reloaded.get(profile.id)
+    extraction_receipt = extraction_receipts[0]
     assert extraction_receipt["profile_claims_status"] == "grounded_candidates"
+    assert profile_receipt["status"] == "updated"
+    assert profile_receipt["persisted"] is True
     assert persisted.preferences == ["des réponses concises"]
     fact_key = next(iter(persisted.profile_fact_provenance["preference"]))
     assert persisted.profile_fact_provenance["preference"][fact_key][0]["turn_id"] == "turn-profile-1"
