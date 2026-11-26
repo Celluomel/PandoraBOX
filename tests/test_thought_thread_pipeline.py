@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 
 from cognition.cognitive_dissonance_engine import (
     CDEContext,
@@ -61,6 +62,28 @@ def test_tte_reads_admitted_active_goals_and_creates_one_provenance_linked_threa
     assert thread.current_state["success_criteria"] == "A trace links the decision to the outcome"
     assert thread.current_state["source_turn_id"] == "turn-41"
     assert goal_engine.calls == 1
+
+
+def test_data_access_batch_goal_save_uses_one_atomic_write_and_preserves_records(tmp_path):
+    dal = DataAccess(str(tmp_path))
+    assert dal.save_goal({"id": "old-goal", "name": "existing", "status": "active"})
+    original_save = dal._save
+    writes = []
+
+    def count_save(filename, data):
+        writes.append(filename)
+        return original_save(filename, data)
+
+    dal._save = count_save
+    assert dal.save_goals([
+        {"id": "new-a", "name": "first", "status": "active"},
+        {"id": "new-b", "name": "second", "status": "dormant"},
+    ])
+
+    assert writes == ["goals.json"]
+    persisted = {goal["id"]: goal for goal in dal.get_goals()}
+    assert set(persisted) == {"old-goal", "new-a", "new-b"}
+    assert persisted["new-b"]["status"] == "dormant"
 
 
 def test_goal_seed_upgrades_matching_unlinked_thread_without_confidence_inflation(tmp_path):
@@ -501,6 +524,30 @@ def test_narrative_writer_retries_terminal_thread_after_persistence_failure():
     assert "retryable" in writer._seen_thread_ids
     assert len(attempts) == 2
     assert all(item["scope"] == "global_internal" for item in attempts)
+
+
+def test_thought_thread_store_uses_compact_json_without_changing_records(tmp_path):
+    store = tmp_path / "thought_threads.json"
+    engine = ThoughtThreadEngine(str(store))
+    thread = engine.spawn_thread(TTEContext(), {
+        "topic": "causal audit",
+        "goal": "preserve complete thread history",
+        "source": "test",
+    })
+
+    raw = store.read_text(encoding="utf-8")
+    saved = json.loads(raw)
+    assert "\n" not in raw
+    assert saved[thread.id]["topic"] == "causal audit"
+    assert saved[thread.id]["goal"] == "preserve complete thread history"
+
+    dal = DataAccess(str(tmp_path))
+    thread_record = saved[thread.id]
+    thread_record["status"] = "retired"
+    assert dal.save_thread(thread_record)
+    raw_after_dal_save = store.read_text(encoding="utf-8")
+    assert "\n" not in raw_after_dal_save
+    assert dal.get_thread_by_id(thread.id)["status"] == "retired"
 
 
 def test_narrative_arc_uses_internal_chapters_written_by_its_own_events(tmp_path):

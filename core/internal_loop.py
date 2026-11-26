@@ -875,6 +875,8 @@ class InternalThoughtLoop:
                 "generation_blocked", "decision_fresh", "winner_age_cycles",
                 "cycle", "previous_scan_cycle", "drive_count",
                 "history_count",
+                "semantic_scoring_ms", "goal_scoring_ms",
+                "goal_persistence_ms", "semantic_scoring_batch_count",
             }
             numeric_summary = {
                 key: item for key, item in value.items()

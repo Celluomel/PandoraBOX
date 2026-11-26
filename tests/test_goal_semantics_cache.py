@@ -74,6 +74,22 @@ class GoalSemanticsCacheTests(unittest.TestCase):
         self.assertEqual(self.embedder.calls, [["same"]])
         np.testing.assert_array_equal(result[0], result[1])
 
+    def test_combined_goal_quality_scores_match_independent_scorers_in_one_batch(self):
+        names = ["cognitive capability development", "knowledge integration"]
+        tensions = {"curiosity_drive": 0.8, "identity_stress": 0.6}
+        expected_alignment = goal_semantics.batch_tension_alignment(names, tensions)
+        expected_quality = goal_semantics.batch_topic_quality(names)
+        self.assertEqual(len(self.embedder.calls), 2)
+
+        with goal_semantics._embedding_cache_lock:
+            goal_semantics._embedding_cache.clear()
+        self.embedder.calls.clear()
+        alignment, quality = goal_semantics.batch_goal_quality_scores(names, tensions)
+
+        self.assertEqual(alignment, expected_alignment)
+        self.assertEqual(quality, expected_quality)
+        self.assertEqual(len(self.embedder.calls), 1)
+
     def test_same_dimension_model_change_does_not_reuse_old_vectors(self):
         first_model = _FakeEmbedder(model_name="model-a", offset=0)
         second_model = _FakeEmbedder(model_name="model-b", offset=100)

@@ -722,7 +722,13 @@ class ThoughtThreadEngine:
             for tid, t in self._threads.items()
         }
         temporary_path = self._path.with_name(f"{self._path.name}.tmp")
-        temporary_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # This snapshot is rewritten on each slow cognitive cycle. Keeping
+        # retired threads is intentional for compatibility and audit history,
+        # but pretty-printing the entire store needlessly multiplies disk I/O.
+        temporary_path.write_text(
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
         os.replace(temporary_path, self._path)
 
     def _load(self) -> None:

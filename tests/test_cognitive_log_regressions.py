@@ -1041,6 +1041,44 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(report["summary"]["goal_write_failed"], 1)
         self.assertEqual(report["summary"]["goal_writes_succeeded"], 0)
 
+    def test_goal_quality_filter_scores_and_persists_all_goals_as_one_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            from core.data.access import DataAccess
+
+            dal = DataAccess(directory)
+            for goal_id, name in (("g-a", "cognitive capability"), ("g-b", "knowledge integration")):
+                self.assertTrue(dal.save_goal({
+                    "id": goal_id, "name": name, "status": "active", "priority": 0.5,
+                }))
+            original_save = DataAccess._save
+            writes = []
+
+            def counted_save(instance, filename, data):
+                writes.append(filename)
+                return original_save(instance, filename, data)
+
+            quality_filter = GoalQualityFilter(directory)
+            engine = SimpleNamespace(reload_from_disk=lambda: None)
+            with patch.object(DataAccess, "_save", counted_save), \
+                 patch.object(quality_filter, "_load_emotions", return_value={}), \
+                 patch.object(quality_filter, "_repair_legacy_semantic_hub_topics", return_value=0), \
+                 patch.object(quality_filter, "_score_goal", return_value=(
+                     0.5, ["test score"]
+                 )), \
+                 patch.object(quality_filter, "_generate_tension_goals", return_value=[]), \
+                 patch("cognition.goal_semantics.batch_goal_quality_scores", return_value=(
+                     {"cognitive capability": (0.2, "curiosity_drive"),
+                      "knowledge integration": (0.2, "curiosity_drive")},
+                     {"cognitive capability": (0.7, 0.2, True),
+                      "knowledge integration": (0.7, 0.2, True)},
+                 )):
+                report = quality_filter.run(goal_engine=engine)
+
+            self.assertEqual(writes, ["goals.json"])
+            self.assertEqual(report["goal_writes_succeeded"], 2)
+            self.assertEqual(report["semantic_scoring_batch_count"], 1)
+            self.assertEqual(len(dal.get_goals()), 2)
+
     def test_legacy_identity_topic_repair_reverts_when_persistence_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             goal = {

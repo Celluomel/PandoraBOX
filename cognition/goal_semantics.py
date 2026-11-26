@@ -382,3 +382,69 @@ def batch_topic_quality(
         ok = (good_sim - noise_sim) > MIN_GOOD_TOPIC_MARGIN and good_sim > 0.10
         out[t] = (float(good_sim), float(noise_sim), bool(ok))
     return out
+
+
+def batch_goal_quality_scores(
+    goal_names: Sequence[str],
+    tensions: Dict[str, float],
+    min_tension: float = 0.3,
+) -> Tuple[
+    Optional[Dict[str, Tuple[float, str]]],
+    Optional[Dict[str, Tuple[float, float, bool]]],
+]:
+    """Compute both GoalQualityFilter semantic scores in one embed batch.
+
+    GoalQualityFilter previously made separate provider batches for tension
+    alignment and topic quality. This combined path preserves both scoring
+    formulas while encoding every unique goal and anchor in one batch.
+    """
+    names = [str(goal) for goal in goal_names]
+    if not names:
+        return {}, {}
+
+    active = {
+        key: float(value)
+        for key, value in tensions.items()
+        if key in TENSION_CONCEPTS and float(value) >= min_tension
+    }
+    anchor_keys = list(active)
+    unique_texts = list(dict.fromkeys(
+        names
+        + [TENSION_CONCEPTS[key] for key in anchor_keys]
+        + GOOD_TOPIC_EXEMPLARS
+        + NOISE_TOPIC_EXEMPLARS
+    ))
+    vectors = embed(unique_texts)
+    if vectors is None:
+        return None, None
+    vector_by_text = {text: vectors[index] for index, text in enumerate(unique_texts)}
+
+    tension_alignment: Dict[str, Tuple[float, str]] = {}
+    for name in names:
+        best_alignment = 0.0
+        best_key = ""
+        for key in anchor_keys:
+            similarity = max(
+                0.0,
+                _cosine(vector_by_text[name], vector_by_text[TENSION_CONCEPTS[key]]),
+            )
+            alignment = active[key] * similarity * TENSION_ALIGN_SCALE
+            if alignment > best_alignment:
+                best_alignment = alignment
+                best_key = key
+        tension_alignment[name] = (best_alignment, best_key)
+
+    good_vectors = [vector_by_text[text] for text in GOOD_TOPIC_EXEMPLARS]
+    noise_vectors = [vector_by_text[text] for text in NOISE_TOPIC_EXEMPLARS]
+    topic_quality: Dict[str, Tuple[float, float, bool]] = {}
+    for name in names:
+        good_similarity = max_cosine(vector_by_text[name], good_vectors)
+        noise_similarity = max_cosine(vector_by_text[name], noise_vectors)
+        accepted = (
+            good_similarity - noise_similarity > MIN_GOOD_TOPIC_MARGIN
+            and good_similarity > 0.10
+        )
+        topic_quality[name] = (
+            float(good_similarity), float(noise_similarity), bool(accepted)
+        )
+    return tension_alignment, topic_quality

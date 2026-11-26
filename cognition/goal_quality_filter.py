@@ -12,6 +12,7 @@ Usage:
 """
 
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -81,42 +82,43 @@ class GoalQualityFilter:
             'completion_write_failed': [],
             'goal_write_failed': [],
             'goal_writes_succeeded': 0,
+            'semantic_scoring_ms': 0.0,
+            'goal_scoring_ms': 0.0,
+            'goal_persistence_ms': 0.0,
+            'semantic_scoring_batch_count': 0,
         }
 
         report['topics_repaired_by_provenance'] = self._repair_legacy_semantic_hub_topics(
             goals, dal
         )
 
-        # Precompute embedding-based tension alignment for ALL goals in a single
-        # batched embedding call (dimension-safe, one API round-trip). Returns
-        # None if no embedding tier is reachable -> _score_goal transparently
-        # falls back to the original static dictionary matching.
+        # Compute tension alignment and topic quality in one dimension-safe
+        # embedding batch, avoiding a second provider round trip.
         sem_align: Optional[Dict[str, Tuple[float, str]]] = None
-        try:
-            from cognition import goal_semantics as _gs
-            sem_align = _gs.batch_tension_alignment(
-                [goal.get("name", "") for goal in goals], tensions
-            )
-        except Exception as e:  # noqa: BLE001 - never break the quality pass
-            logger.warning(f"[GQF] semantic alignment failed ({e}); using dictionary fallback")
-            sem_align = None
-        if sem_align is not None:
-            logger.info(f"[GQF] using EMBEDDING-based tension alignment for {len(goals)} goal(s)")
-        else:
-            logger.info(f"[GQF] embeddings unavailable; using DICT fallback for tension alignment")
-
-        # Score topic meaningfulness in one batch for the whole pool. Calling
-        # the semantic endpoint once per goal would serialize network latency
-        # on every maintenance pass and recreate the review-path bottleneck.
         topic_quality_by_name = None
+        semantic_started = time.perf_counter()
         try:
             from cognition import goal_semantics as _gs
-            topic_quality_by_name = _gs.batch_topic_quality(
-                [goal.get("name", "") for goal in goals]
+            sem_align, topic_quality_by_name = _gs.batch_goal_quality_scores(
+                [goal.get("name", "") for goal in goals], tensions,
             )
-        except Exception as e:  # noqa: BLE001 - unknown quality is not a veto
-            logger.debug("[GQF] topic-quality scoring unavailable: %s", e)
+            report['semantic_scoring_batch_count'] = int(bool(goals))
+        except Exception as e:  # noqa: BLE001 - never break the quality pass
+            logger.warning(f"[GQF] semantic scoring failed ({e}); deferring semantic verdicts")
+            sem_align = None
+            topic_quality_by_name = None
+        report['semantic_scoring_ms'] = round(
+            (time.perf_counter() - semantic_started) * 1000.0, 3
+        )
+        if sem_align is not None and topic_quality_by_name is not None:
+            logger.info(f"[GQF] semantic scores batched for {len(goals)} goal(s)")
+        else:
+            logger.info(
+                "[GQF] semantic scoring unavailable; retaining established fallback behavior"
+            )
 
+        score_started = time.perf_counter()
+        pending_goal_writes = []
         for goal in goals:
             persisted_fields = {
                 key: goal.get(key)
@@ -174,31 +176,63 @@ class GoalQualityFilter:
                     logger.info(f"[GQF] Boosted: {goal.get('name','')} {old_pri:.2f}→{new_pri:.2f}")
 
             goal['quality_evaluated_at'] = _now()
-            if dal.save_goal(goal) is False:
-                goal_id = str(goal.get('id') or '')
-                report['goal_write_failed'].append(goal_id)
-                # Do not let an unpersisted quality decision influence later
-                # phases in this same pass as if it were durable.
-                for field in (
-                    'status', 'priority', 'low_quality_reason',
-                    'quality_score', 'quality_reasons', 'quality_evaluated_at',
-                ):
-                    if field in persisted_fields:
-                        goal[field] = persisted_fields[field]
-                    elif field in goal:
-                        goal.pop(field, None)
-                report['marked_noise'] = [
-                    value for value in report['marked_noise'] if value != goal_id
-                ]
-                report['boosted'] = [
-                    value for value in report['boosted']
-                    if value.get('id') != goal_id
-                ]
-                logger.warning(
-                    "[GQF] Goal quality update was not persisted: %s", goal_id,
-                )
+            pending_goal_writes.append((goal, persisted_fields))
+
+        report['goal_scoring_ms'] = round(
+            (time.perf_counter() - score_started) * 1000.0, 3
+        )
+        persistence_started = time.perf_counter()
+
+        def rollback_goal_quality(goal, persisted_fields):
+            goal_id = str(goal.get('id') or '')
+            # An unpersisted quality decision must not influence later phases
+            # in this pass as if it were durable.
+            for field in (
+                'status', 'priority', 'low_quality_reason',
+                'quality_score', 'quality_reasons', 'quality_evaluated_at',
+            ):
+                if field in persisted_fields:
+                    goal[field] = persisted_fields[field]
+                elif field in goal:
+                    goal.pop(field, None)
+            report['marked_noise'] = [
+                value for value in report['marked_noise'] if value != goal_id
+            ]
+            report['boosted'] = [
+                value for value in report['boosted']
+                if value.get('id') != goal_id
+            ]
+            report['goal_write_failed'].append(goal_id)
+            logger.warning("[GQF] Goal quality update was not persisted: %s", goal_id)
+
+        batch_saver = getattr(dal, 'save_goals', None)
+        if pending_goal_writes and callable(batch_saver):
+            try:
+                batch_saved = batch_saver([goal for goal, _ in pending_goal_writes]) is not False
+            except Exception as exc:  # noqa: BLE001 - persistence must not abort the loop
+                logger.warning("[GQF] Batch goal persistence failed: %s", exc)
+                batch_saved = False
+            if batch_saved:
+                report['goal_writes_succeeded'] = len(pending_goal_writes)
             else:
-                report['goal_writes_succeeded'] += 1
+                for goal, persisted_fields in pending_goal_writes:
+                    rollback_goal_quality(goal, persisted_fields)
+        else:
+            # Compatibility path for test doubles and older DataAccess
+            # implementations; retain per-goal failure attribution.
+            for goal, persisted_fields in pending_goal_writes:
+                try:
+                    saved = dal.save_goal(goal) is not False
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[GQF] Goal persistence failed: %s", exc)
+                    saved = False
+                if saved:
+                    report['goal_writes_succeeded'] += 1
+                else:
+                    rollback_goal_quality(goal, persisted_fields)
+        report['goal_persistence_ms'] = round(
+            (time.perf_counter() - persistence_started) * 1000.0, 3
+        )
 
         # Completion semantics (A): retroactive settlement.
         # A goal that has already done real work (B: took a world-facing

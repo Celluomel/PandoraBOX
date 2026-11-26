@@ -78,7 +78,13 @@ class DataAccess:
         tmp = p.with_suffix(".tmp")
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+                if filename == "thought_threads.json":
+                    # The TTE rewrites this accumulated history every slow
+                    # cycle; compact JSON reduces serialization and disk cost
+                    # while preserving the existing JSON object/schema.
+                    json.dump(data, f, separators=(",", ":"), ensure_ascii=False, default=str)
+                else:
+                    json.dump(data, f, indent=2, ensure_ascii=False, default=str)
             os.replace(tmp, p)
             return True
         except Exception as e:
@@ -149,6 +155,25 @@ class DataAccess:
             goal_n = normalize_goal(goal)
             goal_id = goal_n["id"]
             goals_raw[goal_id] = goal_n
+            raw["goals"] = goals_raw
+            raw["saved_at"] = now_iso()
+            return self._save("goals.json", raw)
+
+    def save_goals(self, goals: List[Dict]) -> bool:
+        """Create/update a batch of goals with one atomic file write."""
+        batch = [normalize_goal(goal) for goal in goals]
+        if not batch:
+            return True
+        with _LOCK:
+            raw = self._load_goals_raw()
+            goals_raw = raw.get("goals", {})
+            if isinstance(goals_raw, list):
+                goals_raw = {
+                    item.get("id", new_id("goal_")): normalize_goal(item)
+                    for item in goals_raw
+                }
+            for goal in batch:
+                goals_raw[goal["id"]] = goal
             raw["goals"] = goals_raw
             raw["saved_at"] = now_iso()
             return self._save("goals.json", raw)
