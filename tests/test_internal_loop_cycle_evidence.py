@@ -213,6 +213,24 @@ def test_goal_admission_receipt_preserves_rejection_counts_and_safe_reason_codes
     assert "private free-form explanation" not in repr(summary)
 
 
+def test_goal_quality_filter_performance_metrics_are_kept_in_cycle_receipt():
+    summary = InternalThoughtLoop._evidence_summary({
+        "semantic_scoring_ms": 12.5,
+        "goal_scoring_ms": 0.8,
+        "goal_persistence_ms": 3.1,
+        "semantic_scoring_batch_count": 1,
+        "provider_prompt": "must not be copied into evidence",
+    })
+
+    assert summary["numeric_metrics"] == {
+        "semantic_scoring_ms": 12.5,
+        "goal_scoring_ms": 0.8,
+        "goal_persistence_ms": 3.1,
+        "semantic_scoring_batch_count": 1,
+    }
+    assert "provider_prompt" not in summary
+
+
 def test_cycle_receipt_distinguishes_in_memory_commit_from_persistence_checkpoint():
     summary = InternalThoughtLoop._evidence_summary({
         "outcome_status": "committed",
