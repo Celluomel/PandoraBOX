@@ -133,6 +133,10 @@ class Goal:
     # primary source for compatibility; consolidation can retain additional
     # origins here without flattening them into an ambiguous label.
     source_provenance_records: List[Dict[str, object]] = field(default_factory=list)
+    # Admission status is explicit so an old, unprovenanced goal can be kept
+    # for audit/history without remaining eligible for autonomous execution.
+    source_provenance_status: str = "unverified"
+    source_provenance_reason: str = ""
     # Last autonomous action receipt, persisted with the goal so its counters
     # can be audited against the causal ledger instead of inferred from totals.
     last_action_execution_id: str = ""
@@ -274,6 +278,7 @@ class GoalEngine:
         self._retire_interaction_echo_goals()
         self._retire_external_task_goals()
         self._retire_invalid_active_goals()
+        self._defer_unverified_active_goals()
         
         logger.info(f"GoalEngine initialized with {len(self._goals)} persisted goals")
 
@@ -378,6 +383,97 @@ class GoalEngine:
         with self._lock:
             semantic_verdict = self._topic_quality_cache.get(normalized)
         return "low_quality_topic" if semantic_verdict is False else "quality_unavailable"
+
+    @staticmethod
+    def _goal_provenance_records(goal: Goal) -> List[Dict[str, object]]:
+        records = getattr(goal, "source_provenance_records", None)
+        if isinstance(records, list) and records:
+            return [record for record in records if isinstance(record, dict)]
+        kind = str(getattr(goal, "source_concept_kind", "") or "").strip()
+        if not kind:
+            return []
+        return [{
+            "kind": kind,
+            "method": str(getattr(goal, "source_concept_method", "") or "").strip(),
+            "ref": str(getattr(goal, "source_concept_ref", "") or "").strip(),
+            "sha256": str(getattr(goal, "source_concept_sha256", "") or "").strip(),
+            "source_turn_ids": list(getattr(goal, "source_evidence_turn_ids", []) or []),
+            "source_turn_id": str(getattr(goal, "source_turn_id", "") or "").strip(),
+            "source_thought_id": str(getattr(goal, "source_thought_id", "") or "").strip(),
+        }]
+
+    @classmethod
+    def goal_provenance_verdict(cls, goal: Goal) -> Tuple[bool, str]:
+        """Validate the causal receipt required before a persistent goal can run.
+
+        This checks typed source evidence, never topic wording, language, or
+        token count. A short topic is valid when its source is valid.
+        """
+        records = cls._goal_provenance_records(goal)
+        if not records:
+            return False, "missing_source_receipt"
+        for record in records:
+            kind = str(record.get("kind", "") or "").strip()
+            method = str(record.get("method", "") or "").strip()
+            ref = str(record.get("ref", "") or "").strip()
+            turns = record.get("source_turn_ids", [])
+            turn_ids = {str(value).strip() for value in turns if str(value).strip()} \
+                if isinstance(turns, (list, tuple, set)) else set()
+            singular_turn = str(record.get("source_turn_id", "") or "").strip()
+            if singular_turn:
+                turn_ids.add(singular_turn)
+            thought_id = str(record.get("source_thought_id", "") or "").strip()
+            if kind == "user_semantic_commitment":
+                if len(turn_ids) >= 2 and method == "semantic_memory.recent_user_topic_evidence" and ref.startswith("concept:"):
+                    return True, "verified_user_commitment"
+            elif kind == "user_explicit_goal":
+                explicit_turn = singular_turn or (next(iter(turn_ids)) if len(turn_ids) == 1 else "")
+                if explicit_turn and method == "GoalEngine.create_user_requested_goal" and ref == f"turn:{explicit_turn}":
+                    return True, "verified_explicit_user_goal"
+            elif kind == "selected_workspace_thought":
+                if thought_id and method and ref == f"thought:{thought_id}":
+                    return True, "verified_workspace_thought"
+            elif kind in {"autonomous_motivation", "internal_curiosity_state"}:
+                if method and ref:
+                    return True, f"verified_{kind}"
+            elif kind == "state_record":
+                # Curiosity records can contain self-generated questions. They
+                # are not durable goal authority without repeated user intent.
+                if (getattr(goal, "tension_source", None) == "curiosity_drive"
+                        and not any(
+                            str(item.get("kind", "")) == "user_semantic_commitment"
+                            and len({str(value).strip() for value in item.get("source_turn_ids", [])
+                                     if str(value).strip()}) >= 2
+                            for item in records
+                        )):
+                    continue
+                digest = str(record.get("sha256", "") or "").strip()
+                if method and ref and len(digest) == 64:
+                    return True, "verified_state_record"
+        return False, "source_receipt_incomplete_or_ineligible"
+
+    def _defer_unverified_active_goals(self) -> int:
+        """Quarantine legacy active goals whose source cannot authorize work."""
+        deferred = 0
+        for goal in self._goals.values():
+            if goal.status != "active":
+                continue
+            verified, reason = self.goal_provenance_verdict(goal)
+            if verified:
+                goal.source_provenance_status = "verified"
+                goal.source_provenance_reason = reason
+                continue
+            goal.status = "deferred"
+            goal.source_provenance_status = "unverified"
+            goal.source_provenance_reason = reason
+            deferred += 1
+        if deferred:
+            self._save_goals()
+            logger.warning(
+                "Goal provenance migration deferred %d active goal(s) without executable source evidence",
+                deferred,
+            )
+        return deferred
 
     def _retire_invalid_active_goals(self) -> int:
         """Migrate legacy goals that predate the strict topic-quality gate."""
@@ -856,6 +952,7 @@ class GoalEngine:
             "user_task_suppressed_count": 0,
             "semantic_rejected_count": 0,
             "semantic_unavailable_count": 0,
+            "provenance_suppressed_count": 0,
             "candidate_count": 0,
             "capacity_blocked": False,
         }
@@ -916,6 +1013,26 @@ class GoalEngine:
                 intent_kind, temporal_scope = _goal_intent(motive.name, topic)
                 provenance_key = " ".join(t_lower.split())
                 provenance = (topic_source_provenance or {}).get(provenance_key, {})
+                source_turn_ids = list((topic_source_turns or {}).get(topic, []))
+                source_record = {
+                    "kind": str(provenance.get("kind", "unverified"))[:80],
+                    "method": str(provenance.get("method", ""))[:120],
+                    "ref": str(provenance.get("ref", ""))[:240],
+                    "sha256": str(provenance.get("sha256", ""))[:64],
+                    "source_turn_ids": source_turn_ids[-20:],
+                    "source_thought_id": str(provenance.get("source_thought_id", ""))[:120],
+                }
+                source_kind = source_record["kind"]
+                if source_kind == "user_semantic_commitment" and len(set(source_turn_ids)) < 2:
+                    generation_report["provenance_suppressed_count"] += 1
+                    continue
+                if source_kind not in {
+                    "user_semantic_commitment", "user_explicit_goal",
+                    "selected_workspace_thought", "autonomous_motivation",
+                    "internal_curiosity_state", "state_record",
+                } or not source_record["method"] or not source_record["ref"]:
+                    generation_report["provenance_suppressed_count"] += 1
+                    continue
                 goal = Goal(
                     id            = str(uuid.uuid4())[:8],
                     topic         = topic,
@@ -940,17 +1057,14 @@ class GoalEngine:
                     source_concept_ref=str(
                         provenance.get("ref", f"topic:{t_lower}")
                     )[:240],
-                    source_provenance_records=[{
-                        "kind": str(provenance.get("kind", "unverified"))[:80],
-                        "method": str(provenance.get(
-                            "method", "goal_engine.generate_candidates"
-                        ))[:120],
-                        "ref": str(provenance.get("ref", f"topic:{t_lower}"))[:240],
-                        "source_turn_ids": list(
-                            (topic_source_turns or {}).get(topic, [])
-                        )[-20:],
-                    }],
+                    source_provenance_records=[source_record],
                 )
+                verified, reason = self.goal_provenance_verdict(goal)
+                if not verified:
+                    generation_report["provenance_suppressed_count"] += 1
+                    continue
+                goal.source_provenance_status = "verified"
+                goal.source_provenance_reason = reason
 
                 candidates.append(goal)
                 generation_report["candidate_count"] += 1
@@ -1126,6 +1240,18 @@ class GoalEngine:
             logger.info("GoalEngine: rejected low-quality topic %r", goal.topic)
             return False
 
+        verified, provenance_reason = self.goal_provenance_verdict(goal)
+        if not verified:
+            goal.source_provenance_status = "unverified"
+            goal.source_provenance_reason = provenance_reason
+            logger.info(
+                "GoalEngine: rejected goal without executable source evidence (%s)",
+                provenance_reason,
+            )
+            return False
+        goal.source_provenance_status = "verified"
+        goal.source_provenance_reason = provenance_reason
+
         # Topic cooldown: don't re-create a recently abandoned topic
         _last_abandoned = self._recently_abandoned.get(topic, 0.0)
         if time.time() - _last_abandoned < self.TOPIC_COOLDOWN_SECS:
@@ -1227,6 +1353,7 @@ class GoalEngine:
                 "method": "GoalEngine.create_user_requested_goal",
                 "ref": f"turn:{turn_id}"[:240],
                 "source_turn_ids": [turn_id],
+                "source_turn_id": turn_id,
             }],
         )
 
@@ -1550,12 +1677,29 @@ class GoalEngine:
         """
         threshold = min_activation or self.ACTIVATION_THRESHOLD
         
-        active = [
-            g for g in self._goals.values()
-            if g.status == "active"
-            and self._is_valid_goal_topic(g.topic)
-            and (g.priority * g.energy) >= threshold
-        ]
+        active = []
+        deferred = False
+        for goal in self._goals.values():
+            if goal.status != "active":
+                continue
+            verified, reason = self.goal_provenance_verdict(goal)
+            if not verified:
+                goal.status = "deferred"
+                goal.source_provenance_status = "unverified"
+                goal.source_provenance_reason = reason
+                deferred = True
+                logger.warning(
+                    "GoalEngine: quarantined active goal %s before execution (%s)",
+                    goal.id, reason,
+                )
+                continue
+            goal.source_provenance_status = "verified"
+            goal.source_provenance_reason = reason
+            if (self._is_valid_goal_topic(goal.topic)
+                    and (goal.priority * goal.energy) >= threshold):
+                active.append(goal)
+        if deferred:
+            self._save_goals()
         
         # Sort by activation strength
         active.sort(key=lambda g: g.priority * g.energy, reverse=True)
@@ -1770,6 +1914,7 @@ class GoalEngine:
             "user_task_suppressed_count": 0,
             "semantic_rejected_count": 0,
             "semantic_unavailable_count": 0,
+            "provenance_suppressed_count": 0,
             "candidate_count": 0,
             "capacity_blocked": False,
         }

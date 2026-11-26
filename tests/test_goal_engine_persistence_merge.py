@@ -6,11 +6,19 @@ from cognition.goal_engine import Goal, GoalEngine
 from cognition.goal_quality_filter import GoalQualityFilter
 
 
+def _trusted_source(kind="autonomous_motivation", method="goal_engine.derive_motivations", ref="autonomous_domain:test"):
+    return [{"kind": kind, "method": method, "ref": ref}]
+
+
 def test_goal_engine_write_preserves_dal_quality_and_archived_records(tmp_path):
     path = tmp_path / "goals.json"
     existing_live = Goal(
         id="live-1", topic="understand cognitive cycles", origin="manual",
         priority=0.6, energy=0.6, created_cycle=3, last_active=3,
+        source_concept_kind="autonomous_motivation",
+        source_concept_method="goal_engine.derive_motivations",
+        source_concept_ref="autonomous_domain:understand cognitive cycles",
+        source_provenance_records=_trusted_source(ref="autonomous_domain:understand cognitive cycles"),
     )
     archived = {
         "id": "archived-1", "name": "old noisy goal", "topic": "old noisy goal",
@@ -31,6 +39,8 @@ def test_goal_engine_write_preserves_dal_quality_and_archived_records(tmp_path):
     admitted = Goal(
         id="new-1", topic="investigate cognitive pipeline persistence",
         origin="test", priority=0.7, energy=0.7, created_cycle=4, last_active=4,
+        source_concept_kind="autonomous_motivation", source_concept_method="test",
+        source_concept_ref="domain:test", source_provenance_records=_trusted_source(method="test", ref="domain:test"),
     )
     assert engine.add_goal(admitted)
 
@@ -72,6 +82,8 @@ def test_goal_engine_explicit_recycle_removes_only_the_selected_record(tmp_path)
     candidate = Goal(
         id="new-1", topic="investigate cognitive pipeline persistence",
         origin="test", priority=0.7, energy=0.7, created_cycle=2, last_active=2,
+        source_concept_kind="autonomous_motivation", source_concept_method="test",
+        source_concept_ref="domain:test", source_provenance_records=_trusted_source(method="test", ref="domain:test"),
     )
     assert engine.add_goal(candidate)
 
@@ -107,6 +119,8 @@ def test_archived_and_merged_history_does_not_exhaust_live_goal_capacity(tmp_pat
     candidate = Goal(
         id="new-1", topic="investigate current cognitive pipeline",
         origin="test", priority=0.7, energy=0.7, created_cycle=2, last_active=2,
+        source_concept_kind="autonomous_motivation", source_concept_method="test",
+        source_concept_ref="domain:test", source_provenance_records=_trusted_source(method="test", ref="domain:test"),
     )
     assert engine.add_goal(candidate)
 
@@ -114,6 +128,32 @@ def test_archived_and_merged_history_does_not_exhaust_live_goal_capacity(tmp_pat
     assert persisted["archived-1"] == history["archived-1"]
     assert persisted["merged-1"] == history["merged-1"]
     assert "new-1" in persisted
+
+
+def test_legacy_active_goal_without_source_is_preserved_but_deferred(tmp_path):
+    path = tmp_path / "goals.json"
+    record = {
+        "id": "legacy-rappelle", "topic": "rappelle",
+        "origin": "goal_quality_filter", "priority": 0.82, "energy": 0.82,
+        "created_cycle": 5, "last_active": 5, "status": "active",
+        "tension_source": "curiosity_drive",
+        "source_concept_kind": "state_record",
+        "source_concept_method": "cognition.tension_topics.generate_curiosity_topic",
+        "source_concept_ref": "curiosity.json#/topics/rappelle",
+        "source_concept_sha256": "a" * 64,
+    }
+    path.write_text(json.dumps({"goals": {record["id"]: record}}), encoding="utf-8")
+
+    with patch("cognition.goal_semantics.batch_topic_quality", return_value={
+        "rappelle": (0.6, 0.3, True),
+    }):
+        engine = GoalEngine(None, persistence_file=str(path))
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))["goals"][record["id"]]
+    assert engine.get_goal_by_id(record["id"]).status == "deferred"
+    assert persisted["status"] == "deferred"
+    assert persisted["source_provenance_status"] == "unverified"
+    assert engine.get_active_goals() == []
 
 
 def test_tick_admits_persists_and_activates_goal_with_terminal_history_present(tmp_path):
@@ -194,9 +234,21 @@ def test_quality_filter_submits_new_tension_goal_through_goal_engine(tmp_path):
             raise AssertionError("new goal bypassed GoalEngine admission")
 
     filter_ = GoalQualityFilter(str(tmp_path))
+    user_evidence = [{
+        "topic": "memory consolidation", "concept_id": 17,
+        "turn_ids": ["turn-one", "turn-two"], "confidence": 0.9, "strength": 0.8,
+    }]
+    fake_engine = SimpleNamespace(
+        add_goal=lambda goal: submissions.append(goal) or True,
+        ai_system=SimpleNamespace(_organism=SimpleNamespace(
+            semantic_memory=SimpleNamespace(
+                recent_user_topic_evidence=lambda **_kwargs: user_evidence,
+            ),
+        )),
+    )
     generated = filter_._generate_tension_goals(
         {"curiosity_drive": 0.9}, [], _Dal(),
-        goal_engine=SimpleNamespace(add_goal=lambda goal: submissions.append(goal) or True),
+        goal_engine=fake_engine,
     )
 
     assert len(generated) == 1
@@ -204,11 +256,10 @@ def test_quality_filter_submits_new_tension_goal_through_goal_engine(tmp_path):
     assert isinstance(submissions[0], Goal)
     assert submissions[0].origin == "goal_quality_filter"
     assert submissions[0].tension_source == "curiosity_drive"
-    assert submissions[0].source_concept_method == (
-        "cognition.tension_topics.generate_curiosity_topic"
-    )
+    assert submissions[0].source_concept_method == "semantic_memory.recent_user_topic_evidence"
     assert generated[0]["source_concept_method"] == submissions[0].source_concept_method
-    assert submissions[0].source_concept_kind == "state_record"
+    assert submissions[0].source_concept_kind == "user_semantic_commitment"
+    assert submissions[0].source_evidence_turn_ids == ["turn-one", "turn-two"]
     assert generated[0]["source_concept_kind"] == submissions[0].source_concept_kind
 
 
@@ -247,18 +298,24 @@ def test_tension_source_receipt_survives_goal_engine_persistence(tmp_path):
         id="provenance-1", topic="How does memory consolidation work?",
         origin="goal_quality_filter", priority=0.7, energy=0.7,
         created_cycle=3, last_active=3, tension_source="curiosity_drive",
-        source_concept_method="cognition.tension_topics.generate_curiosity_topic",
-        source_concept_kind="state_record",
-        source_concept_ref="curiosity.json#/topics/memory consolidation",
-        source_concept_sha256="a" * 64,
+        source_concept_method="semantic_memory.recent_user_topic_evidence",
+        source_concept_kind="user_semantic_commitment",
+        source_concept_ref="concept:17",
+        source_evidence_turn_ids=["turn-one", "turn-two"],
+        source_provenance_records=[{
+            "kind": "user_semantic_commitment",
+            "method": "semantic_memory.recent_user_topic_evidence",
+            "ref": "concept:17",
+            "source_turn_ids": ["turn-one", "turn-two"],
+        }],
     )
 
     assert engine.add_goal(goal)
     saved = json.loads(path.read_text(encoding="utf-8"))["goals"][goal.id]
     restored = GoalEngine(None, persistence_file=str(path)).get_goal_by_id(goal.id)
 
-    assert saved["source_concept_kind"] == "state_record"
-    assert saved["source_concept_ref"] == "curiosity.json#/topics/memory consolidation"
-    assert saved["source_concept_sha256"] == "a" * 64
+    assert saved["source_concept_kind"] == "user_semantic_commitment"
+    assert saved["source_concept_ref"] == "concept:17"
+    assert saved["source_evidence_turn_ids"] == ["turn-one", "turn-two"]
     assert restored.source_concept_ref == goal.source_concept_ref
     assert restored.source_concept_sha256 == goal.source_concept_sha256

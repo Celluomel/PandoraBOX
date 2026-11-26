@@ -667,6 +667,11 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                 [Motivation("explore", 0.7, "test")],
                 ["camera calibration"],
                 topic_source_turns={"camera calibration": ["turn-a", "turn-b"]},
+                topic_source_provenance={"camera calibration": {
+                    "kind": "user_semantic_commitment",
+                    "method": "semantic_memory.recent_user_topic_evidence",
+                    "ref": "concept:camera-calibration",
+                }},
             )
         self.assertEqual(len(goals), 1)
         self.assertEqual(goals[0].source_turn_id, "turn-b")

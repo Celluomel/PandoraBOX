@@ -516,6 +516,20 @@ class GoalActionExecutor:
             self._record_tick_skip("all_eligible_goals_on_cooldown")
             return None
 
+        provenance_check = getattr(goal_engine, "goal_provenance_verdict", None)
+        if callable(provenance_check):
+            verified, reason = provenance_check(goal)
+            if not verified:
+                logger.warning(
+                    "[GoalActionExecutor] Refusing goal %s without verified source provenance (%s)",
+                    getattr(goal, "id", "unknown"), reason,
+                )
+                self._record_tick_skip(
+                    "goal_source_provenance_unverified",
+                    goal_id=str(getattr(goal, "id", "")),
+                )
+                return None
+
         # Prefer the persistent intention plan. Rotation is a fallback only
         # when no active plan step exists; it must not bypass an unavailable
         # or unsupported operation and then pretend to follow that plan.

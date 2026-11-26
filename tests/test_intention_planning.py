@@ -2043,6 +2043,11 @@ class IntentionPlanningTests(unittest.TestCase):
                 candidates = engine.generate_candidates(
                     [Motivation("explore", 0.8, "test")],
                     ["voiture", "what's actual", "architecture cognitive"],
+                    topic_source_provenance={"architecture cognitive": {
+                        "kind": "autonomous_motivation",
+                        "method": "goal_engine.derive_motivations",
+                        "ref": "autonomous_domain:architecture cognitive",
+                    }},
                 )
             self.assertEqual(
                 [candidate.topic for candidate in candidates],

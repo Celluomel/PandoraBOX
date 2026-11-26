@@ -47,3 +47,8 @@ New GoalEngine candidates persist a source kind, method, and reference for user 
 ### Consolidation and planner provenance follow-through — 26 November 2026
 
 GoalConsolidator now unions structured source records and evidence turn IDs into the retained goal while preserving archived source goals. The planner snapshot and factual self-report expose these records. The 14-suite local run passes **287 tests and 4 subtests**; live post-load validation remains open. The three legacy goals with missing provenance remain unmodified. Body being configured active while stopped is tracked as source unavailability, not a Brain failure. Global audit remains **3/10 closed tracks**.
+
+
+### Guard against curiosity self-authorizing a weak Goal — 26 November 2026
+
+The internal-loop row now has a locally verified fix: a persisted Goal requires a typed causal source; legacy active Goals without one are retained as `deferred`; and the action executor checks provenance again before dispatch. Curiosity-derived Goals now require repeated user commitment receipts from semantic memory, not encounter counts or a curiosity state record. Local coverage: **301 tests, 4 subtests across 15 related suites**. The live pre-fix cycle 14733 proves `rappelle` reached `bisociative_hypothesis`; no post-fix live receipt exists because Lumina remained in use. **Still open:** reload the patch at the next planned restart and verify the legacy Goal is deferred, a source-less curiosity node creates no Goal/action, and a grounded topic remains eligible. Global closure remains **3/10**.

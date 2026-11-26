@@ -284,6 +284,10 @@ NOISE_TOPIC_EXEMPLARS = [
     "je veux discuter de ce qui s’est passé aujourd’hui",
     "quelles sont tes pensées",
     "répète ce que tu viens de dire",
+    # Semantic examples of underspecified subjects, not a token-count or
+    # language filter: an isolated ambiguous fragment is not a durable goal.
+    "an isolated ambiguous word without context or an intended outcome",
+    "un mot isolé ambigu sans contexte ni résultat visé",
 ]
 
 

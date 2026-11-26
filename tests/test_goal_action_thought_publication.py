@@ -8,6 +8,32 @@ from cognition.thought_stream import ThoughtStream
 
 
 class GoalActionThoughtPublicationTests(unittest.TestCase):
+    def test_unverified_active_goal_is_refused_before_action_dispatch(self):
+        goal = SimpleNamespace(
+            id="legacy-rappelle", topic="rappelle", priority=0.9, energy=0.9,
+        )
+        engine = SimpleNamespace(
+            get_active_goals=lambda **_kwargs: [goal],
+            goal_provenance_verdict=lambda _goal: (
+                False, "source_receipt_incomplete_or_ineligible",
+            ),
+        )
+        executor = GoalActionExecutor(SimpleNamespace(
+            ai_system=SimpleNamespace(goal_engine=engine),
+        ))
+
+        result = executor.run_tick(
+            preferred_goal_id=goal.id,
+            selection_is_authoritative=True,
+            cycle_id=42,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            executor._last_tick_outcome["reason_code"],
+            "goal_source_provenance_unverified",
+        )
+
     def test_external_thought_is_visible_and_survives_stream_persistence(self):
         with tempfile.TemporaryDirectory() as folder:
             stream = ThoughtStream(SimpleNamespace(_data_dir=folder))

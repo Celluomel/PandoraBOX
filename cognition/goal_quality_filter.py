@@ -514,11 +514,56 @@ class GoalQualityFilter:
             # completing, and a topic frozen only at creation would still
             # repeat verbatim for the goal's whole lifetime otherwise).
             topic_receipt = generate_topic_with_provenance(tension_key, self.persona_dir)
-            if tension_key == "curiosity_drive" and topic_receipt.get("source_kind") != "state_record":
-                logger.info(
-                    "[GQF] Deferred curiosity goal: no grounded user-topic source record"
+            if tension_key == "curiosity_drive":
+                # curiosity.json is a derived state store: its source_turn_ids
+                # can be inherited from a single mention or legacy generated
+                # question. Only the semantic memory commitment query is an
+                # authority for promoting this into persistent work.
+                ai_system = getattr(goal_engine, "ai_system", None)
+                organism = getattr(ai_system, "_organism", None) if ai_system else None
+                semantic_memory = getattr(organism, "semantic_memory", None) if organism else None
+                evidence_reader = getattr(semantic_memory, "recent_user_topic_evidence", None)
+                if not callable(evidence_reader):
+                    logger.info(
+                        "[GQF] Deferred curiosity goal: semantic commitment evidence unavailable"
+                    )
+                    continue
+                try:
+                    evidence = evidence_reader(limit=15, min_strength=0.5, min_observations=2)
+                except Exception:
+                    evidence = []
+                valid_evidence = [
+                    item for item in evidence
+                    if isinstance(item, dict)
+                    and str(item.get("topic", "")).strip()
+                    and len({str(turn).strip() for turn in item.get("turn_ids", [])
+                             if str(turn).strip()}) >= 2
+                ]
+                if not valid_evidence:
+                    logger.info(
+                        "[GQF] Deferred curiosity goal: no repeated user commitment evidence"
+                    )
+                    continue
+                selected = max(
+                    valid_evidence,
+                    key=lambda item: (
+                        float(item.get("confidence", 0.0) or 0.0),
+                        float(item.get("strength", 0.0) or 0.0),
+                    ),
                 )
-                continue
+                topic = str(selected["topic"]).strip()
+                turn_ids = list(dict.fromkeys(
+                    str(turn).strip() for turn in selected.get("turn_ids", [])
+                    if str(turn).strip()
+                ))
+                topic_receipt = {
+                    "topic": topic,
+                    "generator": "semantic_memory.recent_user_topic_evidence",
+                    "source_kind": "user_semantic_commitment",
+                    "source_ref": f"concept:{selected.get('concept_id', topic)}",
+                    "source_sha256": "",
+                    "source_turn_ids": turn_ids,
+                }
             topic = topic_receipt.get("topic") or template["topic"]
             topic_source = topic_receipt.get("generator") or "cognition.tension_topics.TENSION_GOALS"
 
@@ -562,6 +607,15 @@ class GoalQualityFilter:
                 source_concept_kind=new_goal["source_concept_kind"],
                 source_concept_ref=new_goal["source_concept_ref"],
                 source_concept_sha256=new_goal["source_concept_sha256"],
+                source_turn_id=(topic_receipt.get("source_turn_ids") or [""])[-1],
+                source_evidence_turn_ids=list(topic_receipt.get("source_turn_ids") or []),
+                source_provenance_records=[{
+                    "kind": new_goal["source_concept_kind"],
+                    "method": topic_source,
+                    "ref": new_goal["source_concept_ref"],
+                    "sha256": new_goal["source_concept_sha256"],
+                    "source_turn_ids": list(topic_receipt.get("source_turn_ids") or []),
+                }],
             ))
             if not admitted:
                 logger.info(

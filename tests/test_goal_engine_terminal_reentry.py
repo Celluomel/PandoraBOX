@@ -12,6 +12,14 @@ def _engine(tmp_path):
     return engine
 
 
+def _autonomous_source(topic):
+    return {topic: {
+        "kind": "autonomous_motivation",
+        "method": "goal_engine.derive_motivations",
+        "ref": f"autonomous_domain:{topic}",
+    }}
+
+
 def test_terminal_goal_does_not_permanently_block_topic_after_cooldown(tmp_path):
     engine = _engine(tmp_path)
     topic = "understand grounded memory retrieval"
@@ -30,6 +38,7 @@ def test_terminal_goal_does_not_permanently_block_topic_after_cooldown(tmp_path)
         [Motivation(name="explore", strength=0.7, origin="test")],
         [topic],
         limit=1,
+        topic_source_provenance=_autonomous_source(topic),
     )
 
     assert len(candidates) == 1
@@ -49,6 +58,7 @@ def test_legacy_terminal_record_without_cooldown_can_reenter(tmp_path):
         [Motivation(name="explore", strength=0.7, origin="test")],
         [topic],
         limit=1,
+        topic_source_provenance=_autonomous_source(topic),
     )
 
     assert len(candidates) == 1
@@ -67,6 +77,7 @@ def test_live_goal_and_unexpired_cooldown_still_suppress_reentry(tmp_path):
         [Motivation(name="explore", strength=0.7, origin="test")],
         [topic],
         limit=1,
+        topic_source_provenance=_autonomous_source(topic),
     ) == []
 
     active.status = "abandoned"
@@ -110,3 +121,39 @@ def test_generated_goal_source_provenance_survives_persistence_reload(tmp_path):
     assert restored.source_provenance_records[0]["source_turn_ids"] == [
         "turn-21", "turn-22",
     ]
+
+
+def test_weak_one_word_curiosity_record_is_not_executable_goal(tmp_path):
+    engine = _engine(tmp_path)
+    legacy = Goal(
+        id="legacy-rappelle", topic="rappelle", origin="goal_quality_filter",
+        priority=0.82, energy=0.82, created_cycle=1, last_active=1,
+        tension_source="curiosity_drive", source_concept_kind="state_record",
+        source_concept_method="cognition.tension_topics.generate_curiosity_topic",
+        source_concept_ref="curiosity.json#/topics/rappelle",
+        source_concept_sha256="a" * 64,
+    )
+    engine._goals[legacy.id] = legacy
+
+    assert engine.get_active_goals() == []
+    assert legacy.status == "deferred"
+    assert legacy.source_provenance_status == "unverified"
+    assert legacy.source_provenance_reason == "source_receipt_incomplete_or_ineligible"
+
+
+def test_semantically_valid_one_word_topic_is_allowed_with_repeated_commitment(tmp_path):
+    engine = _engine(tmp_path)
+    topic = "photosynthesis"
+    candidates = engine.generate_candidates(
+        [Motivation(name="explore", strength=0.7, origin="test")],
+        [topic], limit=1,
+        topic_source_turns={topic: ["turn-a", "turn-b"]},
+        topic_source_provenance={topic: {
+            "kind": "user_semantic_commitment",
+            "method": "semantic_memory.recent_user_topic_evidence",
+            "ref": "concept:photosynthesis",
+        }},
+    )
+    assert len(candidates) == 1
+    assert candidates[0].topic == topic
+    assert engine.add_goal(candidates[0])

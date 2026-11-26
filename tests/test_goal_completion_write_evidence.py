@@ -79,6 +79,14 @@ def test_goal_engine_does_not_skip_lifecycle_when_completion_write_fails(tmp_pat
         origin="autonomous", priority=0.8, energy=0.10,
         created_cycle=1, last_active=1, persistence=10,
         actions_taken=3, non_introspective_actions=1,
+        source_concept_kind="autonomous_motivation",
+        source_concept_method="goal_engine.derive_motivations",
+        source_concept_ref="autonomous_domain:investigate cognitive lifecycle",
+        source_provenance_records=[{
+            "kind": "autonomous_motivation",
+            "method": "goal_engine.derive_motivations",
+            "ref": "autonomous_domain:investigate cognitive lifecycle",
+        }],
     )
     assert engine.add_goal(goal)
 
