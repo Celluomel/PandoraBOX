@@ -109,7 +109,10 @@ class LongHorizonPlanner:
         self._organism = organism
         self._ai       = ai_system
         self._path     = self._resolve_path(path)
-        self._lock     = threading.Lock()
+        # Plan transitions and their persisted receipts must be serialized.
+        # RLock is required because transition helpers call current_step() and
+        # _save(), which share this same state lock.
+        self._lock     = threading.RLock()
         # Background planning can call the LLM and take longer than one slow
         # cycle. Keep an explicit reservation so the loop cannot enqueue the
         # same work on every tick while the first worker is still running.
@@ -320,12 +323,13 @@ class LongHorizonPlanner:
 
     def current_step(self, aspiration_domain: str) -> Optional[PlanStep]:
         """Return the next planned step for a given aspiration."""
-        plan = self._plans.get(aspiration_domain)
-        if not plan: return None
-        idx = plan.steps_completed
-        if idx < len(plan.steps):
-            return plan.steps[idx]
-        return None
+        with self._lock:
+            plan = self._plans.get(aspiration_domain)
+            if not plan: return None
+            idx = plan.steps_completed
+            if idx < len(plan.steps):
+                return plan.steps[idx]
+            return None
 
     def ensure_goal_plan(self, goal: Any) -> Optional[Plan]:
         """Create or return the persistent intention plan for a live goal."""
@@ -427,6 +431,17 @@ class LongHorizonPlanner:
             return True
 
     def record_goal_action_outcome(
+        self, goal_id: str, action_type: str, success: bool, result: str = "",
+        *, execution_id: str = "", cycle_id: Optional[int] = None,
+    ) -> None:
+        """Serialize receipt validation, plan mutation, and persistence."""
+        with self._lock:
+            self._record_goal_action_outcome_locked(
+                goal_id, action_type, success, result,
+                execution_id=execution_id, cycle_id=cycle_id,
+            )
+
+    def _record_goal_action_outcome_locked(
         self, goal_id: str, action_type: str, success: bool, result: str = "",
         *, execution_id: str = "", cycle_id: Optional[int] = None,
     ) -> None:
@@ -687,13 +702,41 @@ class LongHorizonPlanner:
         result: str = "",
         execution_id: str = "",
         cycle_id: Optional[int] = None,
+        expected_operation: Optional[str] = None,
+        expected_step_index: Optional[int] = None,
+    ) -> None:
+        """Serialize and bind an aspiration outcome to the step it dispatched."""
+        with self._lock:
+            self._record_step_outcome_locked(
+                aspiration_domain,
+                actual_cost=actual_cost,
+                actual_gain=actual_gain,
+                result=result,
+                execution_id=execution_id,
+                cycle_id=cycle_id,
+                expected_operation=expected_operation,
+                expected_step_index=expected_step_index,
+            )
+
+    def _record_step_outcome_locked(
+        self,
+        aspiration_domain: str,
+        actual_cost: Optional[float] = None,
+        actual_gain: Optional[float] = None,
+        *,
+        result: str = "",
+        execution_id: str = "",
+        cycle_id: Optional[int] = None,
+        expected_operation: Optional[str] = None,
+        expected_step_index: Optional[int] = None,
     ) -> None:
         """Complete a step only when its execution and result are attributable.
 
         A missing execution ID or empty result remains explicit as missing
         evidence and cannot advance progress. Results are never reconstructed
         from the plan's previous global ``last_outcome``. Measured effects are
-        recorded only when both cost and gain are given.
+        recorded only when both cost and gain are given. The caller must also
+        bind the receipt to the operation and step index captured at dispatch.
         """
         plan = self._plans.get(aspiration_domain)
         if not plan: return
@@ -703,7 +746,20 @@ class LongHorizonPlanner:
         observed_at = time.time()
         result_text = str(result or "").strip()[:240]
         execution_ref = str(execution_id or "").strip()
-        if not execution_ref or not result_text:
+        binding_matches = (
+            expected_step_index == idx
+            and bool(expected_operation)
+            and step.operation == expected_operation
+        )
+        duplicate_execution = bool(execution_ref) and any(
+            item.execution_id == execution_ref for item in plan.steps
+        )
+        if duplicate_execution:
+            logger.warning(
+                "[LongHorizonPlanner] Ignored duplicate aspiration execution receipt"
+            )
+            return
+        if not execution_ref or not result_text or not binding_matches:
             step.attempts += 1
             step.status = "unverified"
             step.result = result_text
@@ -728,9 +784,11 @@ class LongHorizonPlanner:
                     ) if not present
                 ],
             }
+            if not binding_matches:
+                plan.last_outcome["missing_evidence"].append("dispatched_step_binding")
             plan.current_decision = (
-                f"{step.operation} was not advanced: execution receipt and non-empty "
-                "result are required; this attempt remains unverified."
+                f"{step.operation} was not advanced: execution receipt, non-empty result, "
+                "and a matching dispatched-step binding are required; this attempt remains unverified."
             )
             plan.decision_updated_at = observed_at
             self._save()
@@ -822,6 +880,30 @@ class LongHorizonPlanner:
         aspiration_domain: Optional[str] = None,
         execution_id: str = "",
         cycle_id: Optional[int] = None,
+        expected_step_index: Optional[int] = None,
+    ) -> None:
+        """Serialize an autonomous action outcome against its current step."""
+        with self._lock:
+            self._record_autonomous_action_outcome_locked(
+                operation,
+                success,
+                result,
+                aspiration_domain=aspiration_domain,
+                execution_id=execution_id,
+                cycle_id=cycle_id,
+                expected_step_index=expected_step_index,
+            )
+
+    def _record_autonomous_action_outcome_locked(
+        self,
+        operation: str,
+        success: bool,
+        result: str = "",
+        *,
+        aspiration_domain: Optional[str] = None,
+        execution_id: str = "",
+        cycle_id: Optional[int] = None,
+        expected_step_index: Optional[int] = None,
     ) -> None:
         """Resolve the current aspiration step from a completed autonomous action.
 
@@ -838,14 +920,49 @@ class LongHorizonPlanner:
         step = self.current_step(aspiration_domain)
         if step is None or (step.operation != operation and step.action_type != operation):
             return
+        execution_ref = str(execution_id or "").strip()
+        previous = plan.last_outcome if isinstance(plan.last_outcome, dict) else {}
+        if execution_ref and previous.get("execution_id") == execution_ref:
+            logger.warning(
+                "[LongHorizonPlanner] Ignored replayed autonomous action receipt"
+            )
+            return
+        if expected_step_index is None:
+            plan.last_outcome = {
+                "operation": operation,
+                "success": None,
+                "status": "unverified",
+                "result": str(result or "")[:240],
+                "result_provided": bool(str(result or "").strip()),
+                "effect_measured": False,
+                "execution_id": execution_ref or None,
+                "cycle_id": cycle_id,
+                "missing_evidence": ["dispatched_step_index"],
+                "observed_at": time.time(),
+            }
+            plan.current_decision = (
+                f"{operation} was not advanced: no step index from dispatch was "
+                "provided, so the receipt cannot be bound to this plan step."
+            )
+            plan.decision_updated_at = plan.last_outcome["observed_at"]
+            self._save()
+            return
+        if expected_step_index != plan.steps_completed:
+            logger.warning(
+                "[LongHorizonPlanner] Ignored stale aspiration receipt for step index %s",
+                expected_step_index,
+            )
+            return
         if success:
             # Only a completed operation can advance the plan. The former
             # failure path advanced it too, despite having no success evidence.
             self.record_step_outcome(
                 aspiration_domain,
                 result=result,
-                execution_id=execution_id,
+                execution_id=execution_ref,
                 cycle_id=cycle_id,
+                expected_operation=step.operation,
+                expected_step_index=expected_step_index,
             )
         else:
             # A failed operation is an attempt, not completed progress.
@@ -861,7 +978,7 @@ class LongHorizonPlanner:
                 "result_provided": bool(str(result or "").strip()),
                 "effect_measured": False,
                 "observed_at": plan.last_revised,
-                "execution_id": str(execution_id or "") or None,
+                "execution_id": execution_ref or None,
                 "cycle_id": cycle_id,
             }
             plan.current_decision = (

@@ -449,7 +449,7 @@ class IntentionPlanningTests(unittest.TestCase):
 
             planner.record_autonomous_action_outcome(
                 "memory_recall", False, "no usable evidence",
-                aspiration_domain="epistemic",
+                aspiration_domain="epistemic", expected_step_index=0,
             )
 
             self.assertEqual(plan.steps_completed, 0)
@@ -502,6 +502,7 @@ class IntentionPlanningTests(unittest.TestCase):
             planner.record_autonomous_action_outcome(
                 "memory_recall", True, "recalled one relevant user-authored record",
                 aspiration_domain="epistemic", execution_id="turn-abc", cycle_id=42,
+                expected_step_index=0,
             )
 
             self.assertEqual(plan.steps_completed, 1)
@@ -520,6 +521,101 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(persisted["steps"][0]["result"], plan.last_outcome["result"])
             self.assertEqual(persisted["steps"][0]["execution_id"], "turn-abc")
             self.assertEqual(persisted["last_outcome"]["execution_id"], "turn-abc")
+
+    def test_stale_aspiration_receipt_cannot_advance_a_repeated_next_operation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[
+                    PlanStep(0, "analytical", 0.05, 0.05, operation="memory_recall"),
+                    PlanStep(1, "analytical", 0.05, 0.05, operation="memory_recall"),
+                ],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=2,
+                source="aspiration",
+                status="active",
+            )
+            planner._plans["epistemic"] = plan
+
+            planner.record_autonomous_action_outcome(
+                "memory_recall", True, "first dispatched retrieval completed",
+                aspiration_domain="epistemic", execution_id="exec-first",
+                cycle_id=10, expected_step_index=0,
+            )
+            planner.record_autonomous_action_outcome(
+                "memory_recall", True, "late callback from the first step",
+                aspiration_domain="epistemic", execution_id="exec-late",
+                cycle_id=10, expected_step_index=0,
+            )
+
+            self.assertEqual(plan.steps_completed, 1)
+            self.assertEqual(plan.steps[0].execution_id, "exec-first")
+            self.assertEqual(plan.steps[1].status, "pending")
+            self.assertEqual(plan.last_outcome["execution_id"], "exec-first")
+
+    def test_goal_action_receipt_keeps_plan_transition_locked_through_effect_recording(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="goal:atomic",
+                steps=[
+                    PlanStep(0, "analytical", 0.05, 0.05, operation="memory_recall"),
+                    PlanStep(1, "deep_reasoning", 0.06, 0.05, operation="self_question"),
+                ],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=2,
+                source="goal",
+                source_id="atomic",
+                reasoning_episode_id="episode-atomic",
+                status="active",
+            )
+            planner._plans[plan.aspiration_domain] = plan
+            entered_effect = threading.Event()
+            release_effect = threading.Event()
+            reservation_result = {}
+
+            class BlockingReasoner:
+                def record_outcome(self, *_args, **_kwargs):
+                    entered_effect.set()
+                    if not release_effect.wait(timeout=3):
+                        raise TimeoutError("test did not release effect recording")
+                    return None
+
+            planner._get_reasoner = lambda: BlockingReasoner()
+            self.assertTrue(planner.reserve_goal_action_execution(
+                "atomic", "memory_recall", "exec-atomic-1", 50,
+            ))
+
+            finalize = threading.Thread(target=lambda: planner.record_goal_action_outcome(
+                "atomic", "memory_recall", True, "retrieval published",
+                execution_id="exec-atomic-1", cycle_id=50,
+            ))
+            finalize.start()
+            self.assertTrue(entered_effect.wait(timeout=2))
+
+            def reserve_next_step():
+                reservation_result["reserved"] = planner.reserve_goal_action_execution(
+                    "atomic", "self_question", "exec-atomic-2", 51,
+                )
+
+            reserve = threading.Thread(target=reserve_next_step)
+            reserve.start()
+            reserve.join(timeout=0.1)
+            was_blocked_until_finalize = reserve.is_alive()
+            release_effect.set()
+            finalize.join(timeout=3)
+            reserve.join(timeout=3)
+
+            self.assertFalse(finalize.is_alive())
+            self.assertFalse(reserve.is_alive())
+            self.assertTrue(was_blocked_until_finalize)
+            self.assertTrue(reservation_result["reserved"])
+            self.assertEqual(plan.steps_completed, 1)
+            self.assertEqual(plan.steps[0].execution_id, "exec-atomic-1")
+            self.assertEqual(plan.steps[1].pending_execution_id, "exec-atomic-2")
 
     def test_plan_snapshot_distinguishes_legacy_progress_from_execution_evidence(self):
         with tempfile.TemporaryDirectory() as folder:
