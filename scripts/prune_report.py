@@ -341,8 +341,9 @@ def main():
             ("RESCUED", "false orphan — goal decomposition, reached via wired core.phase1_integration"),
         "cognition.liberty_integration":
             ("OBSOLETE", "redundant wrapper — its purpose (integrating the 5 liberty components) is "
-             "already done inline by ai_system.py, which instantiates all 5 directly (liberty_self_mod / "
-             "choice / contradiction / reflection / goals, all BRAIN+GUI)"),
+             "mostly done inline by ai_system.py. Four components have downstream consumers; "
+             "GenuineUncertaintyChoice is only instantiated, has no call sites, and remains a stub, "
+             "so it is not an active BRAIN+GUI capability"),
         "cognition.idle_data_bootstrapper":
             ("OBSOLETE", "purpose already satisfied — it existed to push CausalMechanismModel past "
              "MIN_RECORDS=20, but causal_mechanisms already holds 61-121 records/domain and "

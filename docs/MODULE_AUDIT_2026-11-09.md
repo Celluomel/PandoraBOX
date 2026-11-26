@@ -175,7 +175,7 @@
 | `cognition/experiential_learning.py` | 1 | statically referenced; runtime activation still conditional |
 | `cognition/flux_mind_model.py` | 2 | statically referenced; runtime activation still conditional |
 | `cognition/generative_aspiration_engine.py` | 4 | statically referenced; runtime activation still conditional |
-| `cognition/genuine_choice.py` | 1 | statically referenced; runtime activation still conditional |
+| `cognition/genuine_choice.py` | 1 | instantiated as `liberty_choice`, but no call site exists outside its own implementation; `generate_alternatives()` returns only the base response and `force_choice()` still has a TODO for real choice. Dormant prototype, not a functioning cognitive capability. |
 | `cognition/global_workspace.py` | 3 | statically referenced; runtime activation still conditional |
 | `cognition/goal_action_executor.py` | 2 | statically referenced; runtime activation still conditional |
 | `cognition/goal_completion.py` | 3 | statically referenced; runtime activation still conditional |
