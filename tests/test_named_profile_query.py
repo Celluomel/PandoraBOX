@@ -1,4 +1,9 @@
 from cognition.profile_flow import (
+    _GENERAL_MEMORY_PROFILE_EXAMPLES,
+    _HISTORY_RECALL_EXAMPLES,
+    _PROFILE_FACT_SCOPE_EXAMPLES,
+    _PROFILE_LOOKUP_EXAMPLES,
+    classify_profile_fact_scope,
     classify_memory_profile_intent,
     is_explicit_named_profile_query,
     render_explicit_profile_facts,
@@ -37,6 +42,38 @@ class _ProfileIntentEmbedder:
                 rows.append([0.6, 0.6])
             else:
                 rows.append([0.8, 0.2])
+        return rows, self.embedding_space_id
+
+
+class _ProfileScopeEmbedder:
+    embedding_space_id = "test:profile-scope:text-embedding-nomic-embed-text-v1.5"
+
+    def encode_interactive_with_metadata(self, texts):
+        import numpy as np
+        category_vectors = {
+            category: np.eye(4)[index]
+            for index, category in enumerate(_PROFILE_FACT_SCOPE_EXAMPLES)
+        }
+        category_examples = {
+            example: category_vectors[category]
+            for category, examples in _PROFILE_FACT_SCOPE_EXAMPLES.items()
+            for example in examples
+        }
+        rows = []
+        for text in texts:
+            if text in category_examples:
+                row = category_examples[text]
+            elif text in _PROFILE_LOOKUP_EXAMPLES:
+                row = np.array([1.0, 0.0, 0.0, 0.0])
+            elif text in _HISTORY_RECALL_EXAMPLES:
+                row = np.array([0.0, 1.0, 0.0, 0.0])
+            elif text in _GENERAL_MEMORY_PROFILE_EXAMPLES:
+                row = np.array([0.0, 0.0, 1.0, 0.0])
+            elif "preference scope" in text.casefold():
+                row = category_vectors["preference"]
+            else:
+                row = np.array([0.5, 0.5, 0.5, 0.5])
+            rows.append(row.tolist())
         return rows, self.embedding_space_id
 
 
@@ -90,7 +127,8 @@ def test_profile_answer_uses_only_supplied_provenance_backed_facts():
             {"category": "preference", "value": "concise updates in French"},
             {"category": "interest", "value": "robotics"},
         ],
-        "Quelle préférence est enregistrée dans mon profil ?",
+        "Profile scope query",
+        requested_categories=["preference"],
     )
 
     assert rendered["status"] == "rendered_from_provenance_backed_profile"
@@ -98,6 +136,34 @@ def test_profile_answer_uses_only_supplied_provenance_backed_facts():
     assert rendered["categories"] == ["preference"]
     assert "concise updates in French" in rendered["answer"]
     assert "robotics" not in rendered["answer"]
+
+
+def test_profile_fact_scope_is_semantic_and_uncertainty_includes_all():
+    selected = classify_profile_fact_scope(
+        "Preference scope query", embedder=_ProfileScopeEmbedder(),
+    )
+    uncertain = classify_profile_fact_scope(
+        "Uncertain scope query", embedder=_ProfileScopeEmbedder(),
+    )
+
+    assert selected["scope"] == "preference"
+    assert selected["status"] == "classified"
+    assert uncertain["scope"] == "all"
+    assert uncertain["status"] == "uncertain_includes_all"
+
+
+def test_profile_renderer_includes_all_categories_when_scope_is_uncertain():
+    rendered = render_explicit_profile_facts(
+        [
+            {"category": "preference", "value": "short answers"},
+            {"category": "interest", "value": "robotics"},
+        ],
+        "Uncertain profile query",
+    )
+
+    assert rendered["fact_count"] == 2
+    assert rendered["categories"] == ["interest", "preference"]
+    assert "robotics" in rendered["answer"]
 
 
 def test_empty_profile_answer_does_not_fall_back_to_behavioral_inference():

@@ -62,8 +62,38 @@ _GENERAL_MEMORY_PROFILE_EXAMPLES = (
     "Ich mache mir Sorgen, ob das System meine Aussagen richtig erinnert und mein Profil aus unseren Gesprächen aufbaut.",
     "Erkläre allgemein, wie das Gesprächsgedächtnis funktioniert.",
 )
+_PROFILE_FACT_SCOPE_EXAMPLES = {
+    "preference": (
+        "Which preferences are explicitly recorded in the user's profile?",
+        "What does the user prefer according to the saved profile?",
+        "Quelles préférences sont explicitement enregistrées dans le profil ?",
+        "¿Qué preferencias están registradas explícitamente en el perfil?",
+        "Welche Vorlieben sind ausdrücklich im Profil gespeichert?",
+    ),
+    "dislike": (
+        "Which dislikes or aversions are explicitly recorded in the user's profile?",
+        "What does the user dislike according to the saved profile?",
+        "Quelles aversions sont explicitement enregistrées dans le profil ?",
+        "¿Qué cosas le disgustan al usuario según su perfil?",
+        "Welche Abneigungen sind ausdrücklich im Profil gespeichert?",
+    ),
+    "interest": (
+        "Which interests are explicitly recorded in the user's profile?",
+        "What topics is the user interested in according to the saved profile?",
+        "Quels centres d'intérêt sont explicitement enregistrés dans le profil ?",
+        "¿Qué intereses están registrados explícitamente en el perfil?",
+        "Welche Interessen sind ausdrücklich im Profil gespeichert?",
+    ),
+    "characteristic": (
+        "Which user characteristics are explicitly recorded in the profile?",
+        "What personal characteristics are recorded in the saved profile?",
+        "Quelles caractéristiques de l'utilisateur sont explicitement enregistrées dans le profil ?",
+        "¿Qué características personales están registradas en el perfil?",
+        "Welche Eigenschaften der Person sind ausdrücklich im Profil gespeichert?",
+    ),
+}
 _MEMORY_PROFILE_ROUTER_LOCK = threading.Lock()
-_MEMORY_PROFILE_ROUTER_CENTROIDS: dict[str, tuple[Any, Any, Any]] = {}
+_MEMORY_PROFILE_ROUTER_CENTROIDS: dict[str, tuple[Any, ...]] = {}
 
 
 def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[str, Any]]:
@@ -97,6 +127,11 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             vectors, space_id = encoder([
                 *_PROFILE_LOOKUP_EXAMPLES, *_HISTORY_RECALL_EXAMPLES,
                 *_GENERAL_MEMORY_PROFILE_EXAMPLES,
+                *(
+                    example
+                    for category_examples in _PROFILE_FACT_SCOPE_EXAMPLES.values()
+                    for example in category_examples
+                ),
                 *(texts[index] for index in active_indices),
             ])
             import numpy as np
@@ -105,8 +140,12 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 len(_PROFILE_LOOKUP_EXAMPLES) + len(_HISTORY_RECALL_EXAMPLES)
                 + len(_GENERAL_MEMORY_PROFILE_EXAMPLES)
             )
+            category_example_count = sum(
+                len(category_examples)
+                for category_examples in _PROFILE_FACT_SCOPE_EXAMPLES.values()
+            )
             expected_rows = (
-                prototype_count + len(active_indices)
+                prototype_count + category_example_count + len(active_indices)
             )
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("memory/profile router received invalid embeddings")
@@ -122,14 +161,24 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             profile /= max(float(np.linalg.norm(profile)), 1e-12)
             history /= max(float(np.linalg.norm(history)), 1e-12)
             general /= max(float(np.linalg.norm(general)), 1e-12)
+            category_centroids = {}
+            category_offset = general_end
+            for category, category_examples in _PROFILE_FACT_SCOPE_EXAMPLES.items():
+                category_end = category_offset + len(category_examples)
+                center = normalized[category_offset:category_end].mean(axis=0)
+                center /= max(float(np.linalg.norm(center)), 1e-12)
+                category_centroids[category] = center
+                category_offset = category_end
             actual_space = str(space_id)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("memory/profile thresholds require Nomic v1.5")
             with _MEMORY_PROFILE_ROUTER_LOCK:
-                _MEMORY_PROFILE_ROUTER_CENTROIDS[actual_space] = (profile, history, general)
-            queries = normalized[prototype_count:]
+                _MEMORY_PROFILE_ROUTER_CENTROIDS[actual_space] = (
+                    profile, history, general, category_centroids,
+                )
+            queries = normalized[prototype_count + category_example_count:]
         else:
-            profile, history, general = cached
+            profile, history, general, category_centroids = cached
             vectors, actual_space = encoder([texts[index] for index in active_indices])
             import numpy as np
             queries = np.asarray(vectors, dtype="float64")
@@ -148,6 +197,19 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 status, intent = "history_recall", "history_recall"
             else:
                 status, intent = "intent_uncertain", "uncertain"
+            category_scores = {
+                category: float(query @ center)
+                for category, center in category_centroids.items()
+            }
+            ranked_categories = sorted(
+                category_scores.items(), key=lambda item: item[1], reverse=True,
+            )
+            category_margin = ranked_categories[0][1] - ranked_categories[1][1]
+            category_scope = (
+                ranked_categories[0][0]
+                if ranked_categories[0][1] >= 0.64 and category_margin >= 0.025
+                else "all"
+            )
             results[index] = {
                 "status": status,
                 "intent": intent,
@@ -158,6 +220,18 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
                 "embedding_space": actual_space,
                 "reason_code": "cross_lingual_semantic_centroid_margin",
+                "profile_fact_scope": {
+                    "scope": category_scope,
+                    "status": "classified" if category_scope != "all" else "uncertain_includes_all",
+                    "top_similarity": round(ranked_categories[0][1], 4),
+                    "margin": round(category_margin, 4),
+                    "scores": {
+                        key: round(value, 4)
+                        for key, value in category_scores.items()
+                    },
+                    "embedding_space": actual_space,
+                    "score_semantics": "uncalibrated Nomic v1.5 cosine similarity; not a probability",
+                },
             }
     except Exception as exc:
         for index in active_indices:
@@ -183,8 +257,27 @@ def is_explicit_named_profile_query(
     return result.get("intent") == "profile_lookup"
 
 
+def classify_profile_fact_scope(user_text: str, *, embedder=None) -> dict[str, Any]:
+    """Semantically select a requested profile category; uncertainty includes all.
+
+    The scope affects which provenance-backed facts are displayed, never which
+    facts are considered true. An uncertain or unavailable classifier returns
+    ``all`` so it cannot silently hide relevant categories.
+    """
+    result = classify_memory_profile_intent(user_text, embedder=embedder)
+    scope = result.get("profile_fact_scope")
+    if isinstance(scope, dict):
+        return scope
+    return {
+        "scope": "all",
+        "status": "router_unavailable_includes_all",
+        "reason_code": str(result.get("reason_code") or result.get("status") or "unavailable"),
+        "score_semantics": "unavailable; include all provenance-backed categories",
+    }
+
+
 def render_explicit_profile_facts(
-    facts: list[dict], user_text: str,
+    facts: list[dict], user_text: str, *, requested_categories=None,
 ) -> dict[str, object]:
     """Render a direct answer from provenance-backed profile values only."""
     text = str(user_text or "").casefold()
@@ -192,13 +285,16 @@ def render_explicit_profile_facts(
         re.search(r"\b(?:mon|ma|notre|votre|quelle|quelles|selon|enregistr[eé])\b", text)
         or re.search(r"[àâçéèêëîïôùûüÿœ]", text)
     )
-    wants_preferences = bool(re.search(r"\b(?:preference|preferences|pr[eé]f[eé]rence|pr[eé]f[eé]rences)\b", text))
+    selected_categories = (
+        {str(value) for value in requested_categories}
+        if requested_categories is not None else None
+    )
     eligible = [
         item for item in facts
         if isinstance(item, dict)
         and isinstance(item.get("value"), str)
         and item.get("category") in {"preference", "dislike", "interest", "characteristic"}
-        and (not wants_preferences or item.get("category") == "preference")
+        and (selected_categories is None or item.get("category") in selected_categories)
     ]
     if not eligible:
         answer = (

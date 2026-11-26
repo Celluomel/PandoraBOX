@@ -3180,6 +3180,15 @@ class PersonaBridge:
             and not _explicit_memory_recall
             and not bool(peer_name)
         )
+        _profile_fact_scope = (
+            _memory_profile_intent.get("profile_fact_scope")
+            if _explicit_named_profile_query
+            else {"scope": "all", "status": "not_applicable"}
+        )
+        if not isinstance(_profile_fact_scope, dict):
+            _profile_fact_scope = {
+                "scope": "all", "status": "router_unavailable_includes_all",
+            }
         _prompt_source_provenance_query = False
         _api_route_query = False
         _architecture_context_query = False
@@ -3298,6 +3307,10 @@ class PersonaBridge:
                     "memory_profile_intent_reason": str(
                         _memory_profile_intent.get("reason_code") or "router_unavailable"
                     ),
+                    "profile_fact_scope": str(_profile_fact_scope.get("scope") or "all"),
+                    "profile_fact_scope_status": str(_profile_fact_scope.get("status") or "unavailable"),
+                    "profile_fact_scope_similarity": _profile_fact_scope.get("top_similarity"),
+                    "profile_fact_scope_margin": _profile_fact_scope.get("margin"),
                 },
                 consumes=("turn_input",),
                 turn_id=_audit_turn_id,
@@ -4355,8 +4368,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             try:
                 from managers.user_manager import user_manager
                 _named_profile_facts = user_manager.provenanced_profile_facts_for(user_id)
+                _requested_profile_categories = (
+                    [str(_profile_fact_scope.get("scope"))]
+                    if _profile_fact_scope.get("scope") in {
+                        "preference", "dislike", "interest", "characteristic",
+                    }
+                    else None
+                )
                 _profile_answer = render_explicit_profile_facts(
                     _named_profile_facts, effective_input,
+                    requested_categories=_requested_profile_categories,
                 )
                 _deterministic_response = str(_profile_answer.get("answer") or "")
                 _profile_fact_refs = sorted({
@@ -4364,8 +4385,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     for item in _named_profile_facts
                     if isinstance(item, dict) and item.get("source_sha256")
                     and (
-                        not re.search(r"\b(?:preference|preferences|pr[eé]f[eé]rence|pr[eé]f[eé]rences)\b", effective_input, re.I)
-                        or item.get("category") == "preference"
+                        _requested_profile_categories is None
+                        or item.get("category") in _requested_profile_categories
                     )
                 })
                 self._record_turn_stage(
@@ -4376,6 +4397,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "source": "named_user_manager_profile",
                         "fact_count": int(_profile_answer.get("fact_count") or 0),
                         "categories": _profile_answer.get("categories") or [],
+                        "scope": str(_profile_fact_scope.get("scope") or "all"),
+                        "scope_status": str(_profile_fact_scope.get("status") or "unavailable"),
+                        "scope_scores": _profile_fact_scope.get("scores") or {},
                         "fact_refs": _profile_fact_refs,
                         "profile_provenance_summary": user_manager.profile_provenance_summary_for(user_id),
                     },
