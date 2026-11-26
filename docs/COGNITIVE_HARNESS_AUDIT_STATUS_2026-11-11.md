@@ -1,5 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
+**Méthode permanente :** suivre [`COGNITIVE_HARNESS_AUDIT_METHOD.md`](COGNITIVE_HARNESS_AUDIT_METHOD.md) et les instructions racine [`AGENTS.md`](../AGENTS.md) à chaque reprise. La méthode exige des preuves liées par identifiants de tour/cycle, des effets aval relus indépendamment, des scénarios représentatifs et des redémarrages groupés PID-sûrs. La dernière vérification `-CheckOnly` (26 novembre 2026) n’a trouvé aucune instance Lumina sur les ports configurés; cela décrit l’état observé, sans lancer ni arrêter de processus.
+
 **Date de mise à jour :** 25 novembre 2026
 **Statut :** audit global du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. La Phase 0 a identifié le veto du réviseur comme cause principale des refus et de la latence. La Phase 1 a déplacé cette revue après livraison et l’a rendue consultative pour les réponses ordinaires, sans supprimer les modules cognitifs ni les contrôles de sécurité. Le rejeu live final a terminé 23/23 tours, avec 0 réponse remplacée par le réviseur et 28 appels provider; sur les 19 cas comparables, la médiane est passée de 38,48 s à 11,78 s. Le flux progressif est maintenant implémenté localement avec vérification de préfixe et vérification finale; son chargement live et l’audit général des modules restent ouverts.
 
