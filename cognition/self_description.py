@@ -30,6 +30,40 @@ from typing import Any, Dict
 logger = logging.getLogger(__name__)
 
 
+# Semantic examples define an intent boundary, not trigger phrases. Nomic's
+# cross-lingual vectors are compared as class centroids so this decision does
+# not depend on the language of the user's message.
+_RUNTIME_API_ROUTE_POSITIVE = (
+    "Which exact HTTP API endpoint and method are registered by this running software service for a given operation?",
+    "Find the live REST route in the server registry that handles the user's request.",
+    "What URL or API endpoint does this application expose for submitting a message?",
+    "Quel endpoint HTTP ou quelle route REST enregistrée ce service expose-t-il pour recevoir une requête ?",
+    "¿Qué endpoint HTTP o ruta REST registra este servicio para recibir una solicitud?",
+    "Welchen HTTP-Endpunkt oder welche REST-Route stellt dieser Dienst für eine Anfrage bereit?",
+    "Qual endpoint HTTP ou rota REST este serviço registra para receber uma solicitação?",
+    "このサービスがリクエストを受け取るために登録しているHTTP APIエンドポイントは何ですか？",
+    "ما نقطة نهاية HTTP أو مسار REST المسجل الذي يستخدمه هذا البرنامج لاستقبال الطلبات؟",
+    "Qual è l'URL o endpoint HTTP registrato da questo servizio per ricevere una richiesta?",
+    "此应用程序提供哪个 HTTP API 端点来发送消息？",
+)
+_RUNTIME_API_ROUTE_NEGATIVE = (
+    "What direction should I take in life? This is a personal or philosophical question, not about software.",
+    "What is your personal path, way of being, or purpose?",
+    "Which physical road should I take to reach my destination?",
+    "Quel est ton chemin de vie, ta direction personnelle ou ta manière d'être ?",
+    "¿Cuál es tu camino personal en la vida y qué dirección sigues?",
+    "Was ist dein persönlicher Lebensweg und welche Richtung schlägst du ein?",
+    "Qual é o seu caminho pessoal na vida, sem relação com software?",
+    "あなたの生き方や人生の方向性は何ですか？",
+    "ما هو مسارك الشخصي في الحياة والاتجاه الذي تتبعه؟",
+    "Qual è il tuo percorso personale nella vita?",
+    "What route should I take to get to the station?",
+    "¿Qué camino debo tomar para llegar a casa?",
+)
+_RUNTIME_API_ROUTE_CENTROIDS: dict[str, tuple[Any, Any]] = {}
+_RUNTIME_API_ROUTE_CENTROIDS_LOCK = Lock()
+
+
 def runtime_api_surface_context(api_app: Any = None) -> tuple[str, dict[str, Any]]:
     """Describe the HTTP routes actually registered on this Brain process.
 
@@ -45,6 +79,8 @@ def runtime_api_surface_context(api_app: Any = None) -> tuple[str, dict[str, Any
             "LIVE REGISTERED HTTP ROUTES (introspected from this process's FastAPI route table):",
             "These method/path pairs are the authoritative registered API surface. "
             "For questions about an exact route, quote a matching pair; do not invent a URL. "
+            "Use this section only when the user's intent is semantically about this service's HTTP interface; "
+            "ignore it for personal, philosophical, or physical-path questions. "
             "If no matching route is listed, say the route is not established by this evidence.",
         ]
         lines.extend(
@@ -108,28 +144,105 @@ def _runtime_api_routes(api_app: Any = None) -> list[tuple[str, str, str]]:
     return sorted(rows)
 
 
-def is_runtime_api_route_question(user_input: str) -> bool:
-    """Recognize a question asking for a registered HTTP route or URL.
+def is_runtime_api_route_question(user_input: str, *, embedder: Any = None) -> bool:
+    """Return whether a multilingual semantic router confirms API-route intent."""
+    return classify_runtime_api_route_intent(user_input, embedder=embedder).get("route") is True
 
-    This classifies the requested evidence type only; route values always come
-    from the running app's route table, never from a phrase-to-answer map.
+
+def classify_runtime_api_route_intent(user_input: str, *, embedder: Any = None) -> dict[str, Any]:
+    """Classify technical API-route intent by cross-lingual semantic similarity.
+
+    A confident technical intent may use the live route resolver. Clear
+    non-technical questions remain on the ordinary conversation path. Borderline
+    or unavailable classification must not veto generation; callers may supply
+    the live route table as conditional context so the primary model can decide.
+    The similarity values are uncalibrated routing scores, never probabilities.
     """
-    text = " ".join(str(user_input or "").casefold().split())
-    asks_for_location = bool(re.search(
-        r"\b(?:what|which|where|quel|quelle|quels|quelles|où)\b", text,
-    ))
-    asks_for_registered_route = bool(re.search(
-        r"\b(?:api|http|rest|endpoint|path|url|chemin|adresse)\b", text,
-    )) or bool(
-        re.search(r"\broute\b", text)
-        and re.search(r"\b(?:api|brain|chat|request|message|service|server)\b", text)
-    )
-    return asks_for_location and asks_for_registered_route
+    value = " ".join(str(user_input or "").split()).strip()
+    if not value:
+        return {"status": "empty_input", "route": False, "reason_code": "empty_input"}
+    try:
+        if embedder is None:
+            from utils.shared_embedder import get_quality_embedder
+            embedder = get_quality_embedder()
+        encoder = getattr(embedder, "encode_interactive_with_metadata", None)
+        if not callable(encoder):
+            raise RuntimeError("interactive quality embedding unavailable")
+
+        space_hint = str(
+            getattr(embedder, "embedding_space_id", "")
+            or getattr(embedder, "model_name", "")
+        )
+        with _RUNTIME_API_ROUTE_CENTROIDS_LOCK:
+            cached = _RUNTIME_API_ROUTE_CENTROIDS.get(space_hint)
+        if cached is None:
+            vectors, space_id = encoder([
+                *_RUNTIME_API_ROUTE_POSITIVE,
+                *_RUNTIME_API_ROUTE_NEGATIVE,
+                value,
+            ])
+            import numpy as np
+            matrix = np.asarray(vectors, dtype="float64")
+            expected_rows = (
+                len(_RUNTIME_API_ROUTE_POSITIVE)
+                + len(_RUNTIME_API_ROUTE_NEGATIVE) + 1
+            )
+            if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
+                raise ValueError("semantic route router received invalid embeddings")
+            normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
+            split = len(_RUNTIME_API_ROUTE_POSITIVE)
+            positive = normalized[:split].mean(axis=0)
+            negative = normalized[split:split + len(_RUNTIME_API_ROUTE_NEGATIVE)].mean(axis=0)
+            positive /= max(float(np.linalg.norm(positive)), 1e-12)
+            negative /= max(float(np.linalg.norm(negative)), 1e-12)
+            actual_space = str(space_id)
+            # Thresholds are calibrated against the Nomic v1.5 cross-lingual
+            # probe set. Never reuse them on an incompatible fallback space.
+            if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
+                raise RuntimeError("semantic route thresholds require Nomic v1.5")
+            with _RUNTIME_API_ROUTE_CENTROIDS_LOCK:
+                _RUNTIME_API_ROUTE_CENTROIDS[actual_space] = (positive, negative)
+            query = normalized[-1]
+        else:
+            positive, negative = cached
+            vectors, actual_space = encoder(value)
+            import numpy as np
+            query = np.asarray(vectors, dtype="float64").reshape(-1)
+            if query.size != positive.size or not np.isfinite(query).all():
+                raise ValueError("semantic route query vector is incompatible")
+            query /= max(float(np.linalg.norm(query)), 1e-12)
+
+        positive_score = float(query @ positive)
+        negative_score = float(query @ negative)
+        margin = positive_score - negative_score
+        if positive_score >= 0.63 and margin >= 0.035:
+            status, route = "api_route_intent", True
+        elif positive_score < 0.58 or margin < 0.0:
+            status, route = "non_api_route_intent", False
+        else:
+            status, route = "intent_uncertain", False
+        return {
+            "status": status,
+            "route": route,
+            "positive_similarity": round(positive_score, 4),
+            "negative_similarity": round(negative_score, 4),
+            "margin": round(margin, 4),
+            "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
+            "embedding_space": actual_space,
+            "reason_code": "cross_lingual_semantic_centroid_margin",
+        }
+    except Exception as exc:
+        return {
+            "status": "router_unavailable",
+            "route": False,
+            "reason_code": type(exc).__name__,
+            "score_semantics": "unavailable; do not intercept the user's response",
+        }
 
 
 def resolve_runtime_api_route_question(
     user_input: str, api_app: Any = None,
-    conversation_history: Any = None,
+    conversation_history: Any = None, *, route_intent: bool | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
     """Answer a route question from live routes, using only verified route follow-ups.
 
@@ -138,7 +251,9 @@ def resolve_runtime_api_route_question(
     as "which method does that route use?" without treating prior model text as
     authoritative evidence.
     """
-    if not is_runtime_api_route_question(user_input):
+    if route_intent is not True and (
+        route_intent is False or not is_runtime_api_route_question(user_input)
+    ):
         return None, {"status": "not_applicable", "source": "brain.api.routes"}
 
     rows = _runtime_api_routes(api_app)
@@ -247,7 +362,7 @@ def resolve_runtime_api_route_question(
     }
 
 
-def is_architecture_query(user_input: str) -> bool:
+def is_architecture_query(user_input: str, *, api_route_intent: bool | None = None) -> bool:
     """Identify requests about Lumina's implementation, for evidence routing only.
 
     This does not answer the request or assign module facts; it only enables the
@@ -256,7 +371,7 @@ def is_architecture_query(user_input: str) -> bool:
     text = " ".join(str(user_input or "").casefold().split())
     if is_runtime_execution_evidence_query(text):
         return True
-    if is_runtime_api_route_question(text):
+    if api_route_intent is True:
         return True
     if re.search(r"\b(?:architecture|harness|harnais)\b", text):
         return True

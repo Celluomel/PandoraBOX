@@ -21,6 +21,7 @@ from cognition.self_description import (
     is_self_affect_query,
     is_social_status_greeting,
     is_structured_affect_status_query,
+    classify_runtime_api_route_intent,
     render_affect_self_report,
     render_affect_change_analysis,
     render_detailed_affect_status,
@@ -33,6 +34,37 @@ from cognition.self_description import (
 
 
 class SelfDescriptionPromptTests(unittest.TestCase):
+    class _SemanticIntentEmbedder:
+        model_name = "text-embedding-nomic-embed-text-v1.5"
+        embedding_space_id = "test:text-embedding-nomic-embed-text-v1.5"
+
+        def __init__(self, *, semantic_api=False):
+            self.semantic_api = semantic_api
+
+        def encode_interactive_with_metadata(self, texts):
+            import numpy as np
+            from cognition.self_description import (
+                _RUNTIME_API_ROUTE_POSITIVE, _RUNTIME_API_ROUTE_NEGATIVE,
+            )
+
+            values = [texts] if isinstance(texts, str) else list(texts)
+            if len(values) == 1:
+                # The fake represents semantic output, independent of the
+                # query's language or vocabulary.
+                vector = [0.9, 0.4, 0.0] if self.semantic_api else [0.5, 0.8, 0.0]
+                return np.asarray(vector, dtype="float32"), self.embedding_space_id
+            vectors = []
+            for value in values[:-1]:
+                if value in _RUNTIME_API_ROUTE_POSITIVE:
+                    vectors.append([1.0, 0.0, 0.0])
+                elif value in _RUNTIME_API_ROUTE_NEGATIVE:
+                    vectors.append([0.0, 1.0, 0.0])
+                else:
+                    vectors.append([0.0, 0.0, 1.0])
+            query = [0.9, 0.4, 0.0] if self.semantic_api else [0.5, 0.8, 0.0]
+            vectors.append(query)
+            return np.asarray(vectors, dtype="float32"), self.embedding_space_id
+
     def test_runtime_api_surface_comes_from_registered_routes(self):
         from types import SimpleNamespace
 
@@ -70,9 +102,14 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         ])
         question = "What exact local REST path receives Lumina Brain chat requests?"
 
-        self.assertTrue(is_runtime_api_route_question(question))
-        self.assertTrue(is_architecture_query(question))
-        answer, receipt = resolve_runtime_api_route_question(question, api_app)
+        decision = classify_runtime_api_route_intent(
+            "the route exposed by this API", embedder=self._SemanticIntentEmbedder(semantic_api=True),
+        )
+        self.assertTrue(decision["route"])
+        self.assertEqual(decision["status"], "api_route_intent")
+        self.assertTrue(is_runtime_api_route_question(question, embedder=self._SemanticIntentEmbedder(semantic_api=True)))
+        self.assertTrue(is_architecture_query(question, api_route_intent=True))
+        answer, receipt = resolve_runtime_api_route_question(question, api_app, route_intent=True)
 
         self.assertEqual(receipt["status"], "matched_registered_route")
         self.assertEqual(receipt["selected_route"]["method"], "POST")
@@ -85,8 +122,13 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "Which instruction have I repeatedly given you about using a dictionary "
             "to route or answer questions?"
         )
-        self.assertFalse(is_runtime_api_route_question(question))
-        self.assertFalse(is_architecture_query(question))
+        decision = classify_runtime_api_route_intent(
+            "Quel est ton chemin ?", embedder=self._SemanticIntentEmbedder(),
+        )
+        self.assertFalse(decision["route"])
+        self.assertEqual(decision["status"], "non_api_route_intent")
+        self.assertFalse(is_runtime_api_route_question(question, embedder=self._SemanticIntentEmbedder()))
+        self.assertFalse(is_architecture_query(question, api_route_intent=False))
 
     def test_api_route_question_abstains_when_route_match_is_ambiguous(self):
         from types import SimpleNamespace
@@ -96,7 +138,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             SimpleNamespace(path="/chat", methods={"GET"}, name="chat", summary="Chat"),
         ])
         answer, receipt = resolve_runtime_api_route_question(
-            "What exact API path receives chat requests?", api_app,
+            "What exact API path receives chat requests?", api_app, route_intent=True,
         )
 
         self.assertEqual(receipt["status"], "no_unique_registered_route")
@@ -121,7 +163,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         )
         answer, receipt = resolve_runtime_api_route_question(
             "And which HTTP method does that route use?", api_app,
-            conversation_history=manager.history,
+            conversation_history=manager.history, route_intent=True,
         )
 
         self.assertEqual(len(checkpoints), 1)
@@ -140,7 +182,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         history = [{"role": "assistant", "content": "The route is `POST /old-chat`."}]
         answer, receipt = resolve_runtime_api_route_question(
             "Which HTTP method does that route use?", api_app,
-            conversation_history=history,
+            conversation_history=history, route_intent=True,
         )
 
         self.assertEqual(receipt["status"], "unresolved_route_followup")

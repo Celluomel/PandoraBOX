@@ -3107,6 +3107,7 @@ class PersonaBridge:
         )
         _prompt_source_provenance_query = False
         _api_route_query = False
+        _api_route_intent: dict[str, Any] = {"status": "not_checked", "route": False}
         # This flag is consumed later inside the streaming worker below. It
         # must live in this method's scope; the prompt builder runs in a
         # separate worker thread and its local variables are not shared.
@@ -3117,18 +3118,23 @@ class PersonaBridge:
                 is_internal_cognitive_query, is_cognitive_audit_status_query,
                 is_closed_world_cognitive_report_query,
                 is_prompt_source_provenance_query,
-                is_runtime_api_route_question,
+                classify_runtime_api_route_intent,
             )
             from cognition.long_horizon_planner import LongHorizonPlanner
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
             _cognitive_audit_status_query = is_cognitive_audit_status_query(effective_input)
-            _architecture_context_query = is_architecture_query(effective_input)
-            _prompt_source_provenance_query = is_prompt_source_provenance_query(effective_input)
+            _api_route_intent = await asyncio.to_thread(
+                classify_runtime_api_route_intent, effective_input,
+            )
             _api_route_query = (
-                is_runtime_api_route_question(effective_input)
+                _api_route_intent.get("route") is True
                 and not _explicit_memory_recall
             )
+            _architecture_context_query = is_architecture_query(
+                effective_input, api_route_intent=_api_route_query,
+            )
+            _prompt_source_provenance_query = is_prompt_source_provenance_query(effective_input)
             # Explicit requests to recall conversation history must stay on
             # the source-backed memory route even when their subject contains
             # goal/planning language ("Rappelle-moi l'objectif principal...").
@@ -3177,6 +3183,9 @@ class PersonaBridge:
                     "explicit_memory_recall": bool(_explicit_memory_recall),
                     "prompt_source_provenance_query": bool(_prompt_source_provenance_query),
                     "api_route_query": bool(_api_route_query),
+                    "api_route_intent_status": str(_api_route_intent.get("status") or "unavailable"),
+                    "api_route_intent_margin": _api_route_intent.get("margin"),
+                    "api_route_intent_space": _api_route_intent.get("embedding_space"),
                     "explicit_named_profile_query": bool(_explicit_named_profile_query),
                 },
                 consumes=("turn_input",),
@@ -4132,6 +4141,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _deterministic_response, _api_route_answer_receipt = resolve_runtime_api_route_question(
                 effective_input,
                 conversation_history=_history_for_anchor,
+                route_intent=True,
             )
             self._record_turn_stage(
                 "api_route_answer",
@@ -6687,32 +6697,36 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # configuration, but until now it was never available to the
             # conversational model. Keep this explicitly partial so the LLM
             # cannot turn a registry into an invented complete architecture.
-            _architecture_query = False
-            _api_route_query = False
             try:
                 from cognition.self_description import (
-                    get_self_description, is_architecture_query,
+                    get_self_description,
                     is_internal_cognitive_query,
                     is_cognitive_trace_query,
                     is_self_affect_query,
-                    is_runtime_api_route_question,
                     runtime_api_surface_context,
                 )
-                _api_surface_block, _api_surface_receipt = runtime_api_surface_context()
+                if (
+                    _api_route_intent.get("status") != "non_api_route_intent"
+                    and not _explicit_recall_query
+                ):
+                    _api_surface_block, _api_surface_receipt = runtime_api_surface_context()
+                    _runtime_api_surface_status = _api_surface_receipt.get("status", "unavailable")
+                else:
+                    _api_surface_block = ""
+                    _runtime_api_surface_status = "skipped_non_api_intent"
                 self._record_turn_stage(
                     "runtime_api_surface",
-                    _api_surface_receipt.get("status", "unavailable"),
-                    output=_api_surface_receipt,
+                    _runtime_api_surface_status,
+                    output=(_api_surface_receipt if _api_surface_block else {
+                        "status": _runtime_api_surface_status,
+                        "intent_status": _api_route_intent.get("status"),
+                    }),
                     turn_id=audit_turn_id,
                 )
                 _trace_only_query = is_cognitive_trace_query(user_input)
                 _explicit_recall_query = is_explicit_memory_recall_query(user_input)
-                _api_route_query = (
-                    is_runtime_api_route_question(user_input)
-                    and not _explicit_recall_query
-                )
-                _architecture_query = (
-                    (is_architecture_query(user_input) or _trace_only_query or _api_route_query)
+                _architecture_query = bool(
+                    (_architecture_context_query or _trace_only_query or _api_route_query)
                     and not _explicit_recall_query
                 )
                 _internal_cognitive_query = (
