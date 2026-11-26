@@ -43,6 +43,24 @@ def test_semantic_extractor_prefers_external_history_free_llm():
     assert _resolve_semantic_extractor_llm_fn(SimpleNamespace(), None) is None
 
 
+def test_semantic_learning_prompt_contains_user_input_but_not_assistant_response():
+    prompts = []
+    extractor = SemanticExtractor(
+        semantic_memory=Mock(),
+        llm_fn=lambda prompt: prompts.append(prompt) or '{"turn_kind":"topic"}',
+    )
+
+    extractor._parse(
+        "Explain the cognitive memory architecture.",
+        "ASSISTANT_ONLY_SECRET: Lumina claims Fred prefers topic X.",
+    )
+
+    assert len(prompts) == 1
+    assert "Explain the cognitive memory architecture." in prompts[0]
+    assert "ASSISTANT_ONLY_SECRET" not in prompts[0]
+    assert "Lumina claims Fred prefers topic X" not in prompts[0]
+
+
 def test_semantic_learning_marks_provider_contention_for_queue_retry():
     class Manager:
         def __init__(self):

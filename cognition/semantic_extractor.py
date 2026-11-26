@@ -4,14 +4,14 @@ semantic_extractor.py — Real-time Semantic Extraction (Global Workspace hook)
 
 Called after every interaction from cognitive_organism.py post-response hook.
 Uses a FAST, lightweight prompt — no full LLM conversation, just a structured
-JSON extraction of concepts + relations from the exchange.
+JSON extraction of concepts + relations from the user-authored message.
 
 Design constraints
 ------------------
   - Must complete in < 1s  (non-blocking, runs in background thread)
   - LLM call is optional; lexical fallback is unclassified and not persisted
   - Durable concepts and relations are grounded in the incoming message
-  - Assistant response text is context, never evidence for its own claims
+  - Assistant response text is never sent to the extractor
 """
 
 import json
@@ -86,7 +86,6 @@ _EXTRACTION_PROMPT = """Extract concepts and relations stated or requested in th
 Return ONLY valid JSON, no preamble, no markdown.
 
 Incoming message: {user_input}
-Assistant response (context only; never use it as evidence): {response_summary}
 
 Return exactly this structure:
 {{
@@ -501,7 +500,6 @@ class SemanticExtractor:
         try:
             prompt = _EXTRACTION_PROMPT.format(
                 user_input=user_input[:1200],
-                response_summary=response[:1600],
             )
             raw = self._llm(prompt)
             # Strip markdown fences
