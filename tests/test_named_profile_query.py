@@ -18,6 +18,7 @@ class _ProfileIntentEmbedder:
             if "explicitly stored in the named user profile" in normalized or \
                     "facts explicitly recorded in the user profile" in normalized or \
                     "profile facts that were explicitly saved" in normalized or \
+                    "named user profile" in normalized or \
                     "explicitement enregistrées dans le profil utilisateur" in normalized or \
                     "faits sauvegardés dans mon profil" in normalized:
                 rows.append([1.0, 0.0])

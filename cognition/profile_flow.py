@@ -28,6 +28,10 @@ _PROFILE_LOOKUP_EXAMPLES = (
     "Retrieve a provenance-backed fact from the person's persistent profile.",
     "Quelles préférences et caractéristiques sont explicitement enregistrées dans le profil utilisateur ?",
     "D'après les faits sauvegardés dans mon profil, quelles préférences sont enregistrées ?",
+    "¿Qué hechos y preferencias están guardados explícitamente en el perfil de usuario?",
+    "Welche Fakten und Präferenzen sind ausdrücklich im Benutzerprofil gespeichert?",
+    "Welche Angaben über mich sind in meinem dauerhaften Nutzerprofil festgehalten?",
+    "Nenne die Fakten, die ausdrücklich in meinem gespeicherten Benutzerprofil stehen.",
 )
 _HISTORY_RECALL_EXAMPLES = (
     "Recall a concern or fact that the user stated in an earlier conversation or chat.",
@@ -40,26 +44,41 @@ _HISTORY_RECALL_EXAMPLES = (
     "Recall my earlier statement about memory recall and how the user profile is built.",
     "Quelle préoccupation avais-je exprimée lors de conversations antérieures concernant la mémoire et la construction du profil utilisateur ?",
     "Rappelle-moi ce que j'avais dit précédemment sur le rappel de mémoire et la façon dont mon profil utilisateur est construit.",
+    "¿Qué preocupación expresé en conversaciones anteriores sobre la recuperación de memoria?",
+    "¿Qué dije anteriormente sobre cómo se recuerda nuestra conversación?",
+    "Welche Sorge habe ich in früheren Gesprächen über den Speicherabruf geäußert?",
+    "Was habe ich zuvor über das Erinnern an unsere Gespräche gesagt?",
+    "Rufe meine Aussage aus einem früheren Gespräch über das Gedächtnis ab.",
+    "Was habe ich in unseren früheren Unterhaltungen zur Erinnerung gesagt? Suche meine damalige Aussage.",
 )
 _GENERAL_MEMORY_PROFILE_EXAMPLES = (
     "Explain conceptually how a user profile can be built from conversation exchanges.",
     "Describe the general process by which a system learns a user profile from dialogue.",
     "Comment un profil utilisateur peut-il se construire à partir des échanges, en général ?",
+    "I have a concern about whether memory recall works and how my user profile is built from exchanges.",
+    "I am concerned about whether memory retrieval and profile learning reflect what I say in conversation.",
+    "Je m'inquiète du fonctionnement du rappel de mémoire et de la façon dont mon profil se construit à partir de nos échanges.",
+    "Me preocupa si el sistema recuerda bien lo que digo y cómo construye mi perfil a partir de nuestras conversaciones.",
+    "Ich mache mir Sorgen, ob das System meine Aussagen richtig erinnert und mein Profil aus unseren Gesprächen aufbaut.",
+    "Erkläre allgemein, wie das Gesprächsgedächtnis funktioniert.",
 )
 _MEMORY_PROFILE_ROUTER_LOCK = threading.Lock()
 _MEMORY_PROFILE_ROUTER_CENTROIDS: dict[str, tuple[Any, Any, Any]] = {}
 
 
-def classify_memory_profile_intent(user_text: str, *, embedder=None) -> dict[str, Any]:
-    """Distinguish prior-dialogue recall from a named-profile fact lookup.
-
-    This semantic router is language-independent at the decision boundary. It
-    uses Nomic v1.5 cross-lingual vectors and returns an uncalibrated margin;
-    uncertain or unavailable results leave the normal conversation path open.
-    """
-    text = " ".join(str(user_text or "").split())
-    if not text:
-        return {"status": "empty_input", "intent": "uncertain", "reason_code": "empty_input"}
+def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[str, Any]]:
+    """Batch-classify dialogue recall, profile lookup, and general questions."""
+    texts = [" ".join(str(value or "").split()) for value in user_texts]
+    if not texts:
+        return []
+    results: list[dict[str, Any] | None] = [
+        ({"status": "empty_input", "intent": "uncertain", "reason_code": "empty_input"}
+         if not text else None)
+        for text in texts
+    ]
+    active_indices = [index for index, text in enumerate(texts) if text]
+    if not active_indices:
+        return [item for item in results if item is not None]
     try:
         if embedder is None:
             from utils.shared_embedder import get_quality_embedder
@@ -77,13 +96,17 @@ def classify_memory_profile_intent(user_text: str, *, embedder=None) -> dict[str
         if cached is None:
             vectors, space_id = encoder([
                 *_PROFILE_LOOKUP_EXAMPLES, *_HISTORY_RECALL_EXAMPLES,
-                *_GENERAL_MEMORY_PROFILE_EXAMPLES, text,
+                *_GENERAL_MEMORY_PROFILE_EXAMPLES,
+                *(texts[index] for index in active_indices),
             ])
             import numpy as np
             matrix = np.asarray(vectors, dtype="float64")
-            expected_rows = (
+            prototype_count = (
                 len(_PROFILE_LOOKUP_EXAMPLES) + len(_HISTORY_RECALL_EXAMPLES)
-                + len(_GENERAL_MEMORY_PROFILE_EXAMPLES) + 1
+                + len(_GENERAL_MEMORY_PROFILE_EXAMPLES)
+            )
+            expected_rows = (
+                prototype_count + len(active_indices)
             )
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("memory/profile router received invalid embeddings")
@@ -104,44 +127,52 @@ def classify_memory_profile_intent(user_text: str, *, embedder=None) -> dict[str
                 raise RuntimeError("memory/profile thresholds require Nomic v1.5")
             with _MEMORY_PROFILE_ROUTER_LOCK:
                 _MEMORY_PROFILE_ROUTER_CENTROIDS[actual_space] = (profile, history, general)
-            query = normalized[-1]
+            queries = normalized[prototype_count:]
         else:
             profile, history, general = cached
-            vectors, actual_space = encoder(text)
+            vectors, actual_space = encoder([texts[index] for index in active_indices])
             import numpy as np
-            query = np.asarray(vectors, dtype="float64").reshape(-1)
-            if query.size != profile.size or not np.isfinite(query).all():
+            queries = np.asarray(vectors, dtype="float64")
+            if queries.ndim != 2 or queries.shape != (len(active_indices), profile.size) or not np.isfinite(queries).all():
                 raise ValueError("memory/profile query vector is incompatible")
-            query /= max(float(np.linalg.norm(query)), 1e-12)
+            queries /= np.maximum(np.linalg.norm(queries, axis=1, keepdims=True), 1e-12)
 
-        profile_score = float(query @ profile)
-        history_score = float(query @ history)
-        general_score = float(query @ general)
-        margin = profile_score - history_score
-        if profile_score >= 0.63 and margin >= 0.04 and profile_score - general_score >= 0.04:
-            status, intent = "profile_lookup", "profile_lookup"
-        elif history_score >= 0.63 and margin <= -0.04 and history_score - general_score >= 0.04:
-            status, intent = "history_recall", "history_recall"
-        else:
-            status, intent = "intent_uncertain", "uncertain"
-        return {
-            "status": status,
-            "intent": intent,
-            "profile_similarity": round(profile_score, 4),
-            "history_similarity": round(history_score, 4),
-            "general_similarity": round(general_score, 4),
-            "margin": round(margin, 4),
-            "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
-            "embedding_space": actual_space,
-            "reason_code": "cross_lingual_semantic_centroid_margin",
-        }
+        for index, query in zip(active_indices, queries):
+            profile_score = float(query @ profile)
+            history_score = float(query @ history)
+            general_score = float(query @ general)
+            margin = profile_score - history_score
+            if profile_score >= 0.63 and margin >= 0.04 and profile_score - general_score >= 0.04:
+                status, intent = "profile_lookup", "profile_lookup"
+            elif history_score >= 0.63 and margin <= -0.04 and history_score - general_score >= 0.02:
+                status, intent = "history_recall", "history_recall"
+            else:
+                status, intent = "intent_uncertain", "uncertain"
+            results[index] = {
+                "status": status,
+                "intent": intent,
+                "profile_similarity": round(profile_score, 4),
+                "history_similarity": round(history_score, 4),
+                "general_similarity": round(general_score, 4),
+                "margin": round(margin, 4),
+                "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
+                "embedding_space": actual_space,
+                "reason_code": "cross_lingual_semantic_centroid_margin",
+            }
     except Exception as exc:
-        return {
-            "status": "router_unavailable",
-            "intent": "uncertain",
-            "reason_code": type(exc).__name__,
-            "score_semantics": "unavailable; do not intercept the user's response",
-        }
+        for index in active_indices:
+            results[index] = {
+                "status": "router_unavailable",
+                "intent": "uncertain",
+                "reason_code": type(exc).__name__,
+                "score_semantics": "unavailable; do not intercept the user's response",
+            }
+    return [item for item in results if item is not None]
+
+
+def classify_memory_profile_intent(user_text: str, *, embedder=None) -> dict[str, Any]:
+    """Classify one input through the batched, cross-lingual semantic router."""
+    return classify_memory_profile_intents([user_text], embedder=embedder)[0]
 
 
 def is_explicit_named_profile_query(

@@ -38,14 +38,12 @@ from cognition.memory_retrieval import (
     explicit_recall_source_result,
     explicit_recall_archive_source_result,
     explicit_recall_abstention_result,
-    extract_explicit_recall_topic,
     is_exact_value_recall_query,
     recent_dialogue_recall_source_result,
     recent_dialogue_message_source_result,
     semantic_user_recall_candidates,
     filter_recall_query_records,
     filter_memories_by_modality,
-    is_explicit_memory_recall_query,
     is_visual_memory_query,
     merge_user_authored_memories,
     should_defer_explicit_recall_to_archive,
@@ -3172,10 +3170,10 @@ class PersonaBridge:
         _memory_profile_intent = await asyncio.to_thread(
             classify_memory_profile_intent, effective_input,
         )
-        _explicit_memory_recall = (
-            is_explicit_memory_recall_query(effective_input)
-            or _memory_profile_intent.get("intent") == "history_recall"
-        )
+        # Keep routing language-independent: the cross-lingual semantic
+        # classifier is the authority. A lexical fallback silently makes
+        # unsupported languages behave differently and can misroute topics.
+        _explicit_memory_recall = _memory_profile_intent.get("intent") == "history_recall"
         _explicit_profile_opt_out = has_explicit_profile_learning_opt_out(effective_input)
         _explicit_named_profile_query = (
             _memory_profile_intent.get("intent") == "profile_lookup"
@@ -6549,15 +6547,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             # ── Detect explicit memory/recall requests ─────────────────
             # When user asks "do you remember X?", extract X and search directly.
-            _is_recall_request = (
-                _semantic_explicit_memory_recall
-                or is_explicit_memory_recall_query(user_input)
-            )
+            _is_recall_request = _semantic_explicit_memory_recall
             if _is_recall_request:
-                # Search for the requested remembered topic, not the request's
-                # current-turn framing (which otherwise self-matches on retries).
-                _stripped = extract_explicit_recall_topic(user_input)
-                _recall_query = f"Conversation {_stripped}"
+                # Keep the original user utterance intact. The semantic router
+                # established intent; a language-specific topic extractor must
+                # not rewrite the retrieval query or drop its identifying detail.
+                _recall_query = user_input
                 _recall_query_source = "explicit_recall"
             elif self._organism is not None:
                 try:
@@ -6990,10 +6985,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     turn_id=audit_turn_id,
                 )
                 _trace_only_query = is_cognitive_trace_query(user_input)
-                _explicit_recall_query = (
-                    _semantic_explicit_memory_recall
-                    or is_explicit_memory_recall_query(user_input)
-                )
+                _explicit_recall_query = _semantic_explicit_memory_recall
                 _architecture_query = bool(
                     (_architecture_context_query or _trace_only_query or _api_route_query)
                     and not _explicit_recall_query

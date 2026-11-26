@@ -11,6 +11,7 @@ sys.modules.setdefault("cognition", package)
 from cognition.memory_retrieval import (
     exact_filename_recall_result,
     explicit_recall_abstention_result,
+    explicit_recall_source_result,
     explicit_recall_search_term_groups,
     explicit_recall_source_result,
     faiss_l2_relevance,
@@ -19,6 +20,44 @@ from cognition.memory_retrieval import (
     semantic_user_recall_candidates,
     tokenize,
 )
+from cognition.profile_flow import classify_memory_profile_intents
+
+
+class _MemoryProfileRouterEmbedder:
+    """Deterministic semantic-router fixture; production uses Nomic vectors."""
+
+    model_name = "test-memory-profile-router"
+    embedding_space_id = "test-memory-profile-router:text-embedding-nomic-embed-text-v1.5"
+
+    def encode_interactive_with_metadata(self, texts):
+        from cognition.profile_flow import (
+            _GENERAL_MEMORY_PROFILE_EXAMPLES,
+            _HISTORY_RECALL_EXAMPLES,
+            _PROFILE_LOOKUP_EXAMPLES,
+        )
+
+        if isinstance(texts, str):
+            texts = [texts]
+        prototype_count = (
+            len(_PROFILE_LOOKUP_EXAMPLES)
+            + len(_HISTORY_RECALL_EXAMPLES)
+            + len(_GENERAL_MEMORY_PROFILE_EXAMPLES)
+        )
+        vectors = []
+        for index, text in enumerate(texts):
+            if index < len(_PROFILE_LOOKUP_EXAMPLES):
+                vectors.append([1.0, 0.0, 0.0])
+            elif index < len(_PROFILE_LOOKUP_EXAMPLES) + len(_HISTORY_RECALL_EXAMPLES):
+                vectors.append([0.0, 1.0, 0.0])
+            elif index < prototype_count:
+                vectors.append([0.0, 0.0, 1.0])
+            elif "previous conversations" in text.casefold():
+                vectors.append([0.0, 1.0, 0.0])
+            elif "explicitly stored" in text.casefold():
+                vectors.append([1.0, 0.0, 0.0])
+            else:
+                vectors.append([0.0, 0.0, 1.0])
+        return vectors, self.embedding_space_id
 
 
 class MemoryRetrievalQualityTests(unittest.TestCase):
@@ -100,16 +139,42 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
 
     def test_semantic_recall_candidates_preserve_faiss_rank_and_user_provenance(self):
         query = "From earlier conversations, what concern did I raise about memory recall and my profile?"
+        def classify_fixture_sources(texts):
+            return [
+                {"intent": "history_recall", "status": "history_recall"}
+                if "From earlier conversations" in text else
+                {"intent": "uncertain", "status": "intent_uncertain"}
+                for text in texts
+            ]
+
         candidates = semantic_user_recall_candidates([
             {"id": "assistant", "memory_type": "assistant_message", "relevance": 0.99,
              "text": "An assistant answer about memory."},
+            {"id": "prior-recall", "memory_type": "user_message", "relevance": 0.99,
+             "text": "User message: From earlier conversations, what concern did I raise about memory recall?"},
             {"id": "source", "memory_type": "user_message", "relevance": 0.91,
              "text": "User message: I worry about whether memory recall works and how my profile learns from exchanges."},
             {"id": "current", "memory_type": "user_message", "relevance": 1.0,
              "text": f"User message: {query}"},
-        ], query)
+        ], query, intent_classifier=classify_fixture_sources)
 
         self.assertEqual([item["id"] for item in candidates], ["source"])
+        answer = explicit_recall_source_result(query, candidates, explicit_intent=True)
+        self.assertEqual(answer["status"], "supported_verbatim_source")
+        self.assertEqual(answer["source_type"], "user_message")
+        self.assertIn("I worry about whether memory recall works", answer["answer"])
+
+    def test_semantic_memory_profile_router_batches_source_questions(self):
+        results = classify_memory_profile_intents([
+            "From our previous conversations, what concern did I raise about your memory recall and how my user profile is built? Answer only from accessible conversation or memory evidence; if no supporting history is available, say so.",
+            "I have a concern about whether memory recall works and how my user profile is built from exchanges.",
+            "What facts are explicitly stored in my profile?",
+        ], embedder=_MemoryProfileRouterEmbedder())
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0]["intent"], "history_recall")
+        self.assertEqual(results[1]["intent"], "uncertain")
+        self.assertEqual(results[2]["intent"], "profile_lookup")
 
     def test_semantic_historical_intent_abstains_without_a_clear_retrieved_source(self):
         query = "From earlier conversations, what concern did I raise about memory recall?"

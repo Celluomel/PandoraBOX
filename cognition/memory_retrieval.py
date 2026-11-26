@@ -612,7 +612,7 @@ def filter_recall_query_records(
 
 
 def semantic_user_recall_candidates(
-    memories: Sequence[dict], query: str,
+    memories: Sequence[dict], query: str, *, intent_classifier=None,
 ) -> List[dict]:
     """Preserve ranked user-authored sources after semantic recall routing.
 
@@ -635,9 +635,34 @@ def semantic_user_recall_candidates(
             continue
         seen.add(normalized_source)
         candidates.append(memory)
-    candidates.sort(
-        key=lambda item: float(item.get("relevance", 0.0) or 0.0), reverse=True,
-    )
+    if not candidates:
+        return []
+    try:
+        if intent_classifier is None:
+            from cognition.profile_flow import classify_memory_profile_intents
+            intent_classifier = classify_memory_profile_intents
+        classifications = intent_classifier([
+            extract_user_authored_text(item) for item in candidates
+        ])
+        if len(classifications) != len(candidates):
+            return []
+        # A source which is itself a history-recall or profile-lookup request
+        # is another question, not evidence for the historical fact asked.
+        # Keep only semantically non-interrogative/general statements as source.
+        candidates = [
+            item for item, result in zip(candidates, classifications)
+            if isinstance(result, dict) and result.get("intent") == "uncertain"
+            and result.get("status") != "router_unavailable"
+        ]
+    except Exception:
+        return []
+    def relevance(item: dict) -> float:
+        try:
+            value = float(item.get("relevance", 0.0) or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        return value if math.isfinite(value) else 0.0
+    candidates.sort(key=relevance, reverse=True)
     return candidates
 
 
