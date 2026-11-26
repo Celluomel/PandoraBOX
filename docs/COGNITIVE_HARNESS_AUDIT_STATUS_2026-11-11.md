@@ -5947,6 +5947,16 @@ Ces scénarios démontrent que le même tour utilise un chemin mémoire récent,
 
 **Progression principale :** toujours **3/10 pistes closes**. Les défauts de provenance, d’intention persistante et de bypass Curiosity sont corrigés localement; la précision sémantique réelle et les effets GoalEngine attendent un processus chargé et des scénarios live.
 
+### Chaîne profil utilisateur — vérification de l’écriture et de la lecture — 26 novembre 2026
+
+**Chemin confirmé dans le code :** les questions de rappel historique, de lecture du profil et les questions générales passent par un routeur Nomic sémantique avant assemblage du prompt. Seuls les faits explicitement enregistrés avec provenance `source_turn_id` sont rendus comme profil; les valeurs héritées sans source sont exclues. Après le tour visible, les faits utilisateur sont appris dans une tâche locale en arrière-plan, sans modifier la réponse déjà livrée. Les questions de lecture de profil et les tours FLUX/peer sont explicitement exclus de l’écriture.
+
+**Validation locale :** `test_presence_identity_language.py` passe **20/20**, avec assertions directes, préférences négatives, citations, discours rapporté, hypothèses, états momentanés et persistance. Les **14 scénarios** de `test_brain_default_user_resolution.py` passent par invocation directe; ils vérifient notamment le lien du fait au tour source, l’exclusion des entrées héritées et le rollback en cas d’échec d’écriture.
+
+**Limite identifiée, sans échec démontré pour les langues actuellement testées :** le routeur de lecture comprend des exemples en français, anglais, espagnol et allemand, mais `UserManager.learn_from_message()` écrit les faits via des formes de phrases explicites codées en anglais et français. Un fait utilisateur direct exprimé dans une autre langue peut donc être ignoré alors que la lecture du profil, elle, est sémantique. Ce n’est pas un faux fait démontré; c’est une lacune de couverture linguistique. Une extension propre devrait réutiliser une extraction sémantique post-réponse existante avec preuve textuelle exacte et `turn_id`, plutôt qu’ajouter des motifs lexicaux langue par langue ou un nouvel appel LLM.
+
+**État live et piste :** aucun Brain n’est actif; la qualité du routeur Nomic, la livraison du résultat de lecture au bon tour, et l’écriture effective d’un nouveau fait ne sont pas validées sur un processus courant. La sous-piste profil reste ouverte jusqu’à un scénario live de lecture, un scénario live d’écriture avec reçu et relecture persistée, et au moins un cas multilingue. Progression globale inchangée : **3/10**.
+
 ### Classification d’un prototype de choix non intégré — 26 novembre 2026
 
 **Preuve statique :** `GenuineUncertaintyChoice` est instancié dans `EnhancedAI`, mais une recherche de toutes les références Python ne trouve aucun appel à `generate_alternatives`, `force_choice` ou `record_choice` en dehors de la définition du module. Le module ne fait d’ailleurs pas ce que son contrat annonce : `generate_alternatives()` retourne une seule alternative (la réponse de base), et `force_choice()` contient encore un TODO. Le texte de l’audit précédent le classait à tort comme un composant actif parce que l’import/instanciation comptait comme une référence.
