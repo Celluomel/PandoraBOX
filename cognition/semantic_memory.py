@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS concept_observations (
     source TEXT NOT NULL,
     role TEXT NOT NULL,
     confidence REAL DEFAULT 0.5,
-    observed_at REAL NOT NULL
+    observed_at REAL NOT NULL,
+    turn_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_observation_role ON concept_observations(role, observed_at);
 """
@@ -147,6 +148,17 @@ class SemanticMemory:
                 conn.execute(
                     "ALTER TABLE capabilities ADD COLUMN validated_sample_count INTEGER DEFAULT 0"
                 )
+            observation_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(concept_observations)")
+            }
+            if "turn_id" not in observation_columns:
+                conn.execute(
+                    "ALTER TABLE concept_observations ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''"
+                )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_observation_turn_concept "
+                "ON concept_observations(concept_id, role, turn_id) WHERE turn_id <> ''"
+            )
             # Seed capabilities if empty
             cur = conn.execute("SELECT COUNT(*) FROM capabilities")
             if cur.fetchone()[0] == 0:
@@ -176,7 +188,8 @@ class SemanticMemory:
             return row[0] if row else -1
 
     def record_observation(self, name: str, source: str = "unknown",
-                           role: str = "context", confidence: float = 0.5) -> bool:
+                           role: str = "context", confidence: float = 0.5,
+                           turn_id: str = "") -> bool:
         """Persist provenance separately from the shared concept graph.
 
         True is returned only after the observation transaction commits.
@@ -190,11 +203,55 @@ class SemanticMemory:
             confidence = 0.5
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO concept_observations "
-                "(concept_id, source, role, confidence, observed_at) VALUES (?,?,?,?,?)",
-                (concept_id, str(source)[:80], str(role)[:40], confidence, time.time()),
+                """INSERT INTO concept_observations
+                   (concept_id, source, role, confidence, observed_at, turn_id)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(concept_id, role, turn_id) WHERE turn_id <> ''
+                   DO UPDATE SET confidence=MAX(confidence, excluded.confidence),
+                                 observed_at=MAX(observed_at, excluded.observed_at),
+                                 source=excluded.source""",
+                (concept_id, str(source)[:80], str(role)[:40], confidence,
+                 time.time(), str(turn_id or "").strip()[:160]),
             )
         return True
+
+    def recent_user_topic_evidence(self, limit: int = 15, min_strength: float = 0.5,
+                                   min_observations: int = 2) -> List[Dict[str, object]]:
+        """Return repeated user concepts with distinct, attributable source turns.
+
+        Legacy observations without turn IDs remain in storage but cannot count
+        as independent evidence for autonomous goal admission.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT c.id AS concept_id, c.name, MAX(o.observed_at) AS observed_at,
+                          MAX(o.confidence) AS confidence, c.strength,
+                          COUNT(DISTINCT o.turn_id) AS turn_count
+                   FROM concept_observations o JOIN concepts c ON c.id = o.concept_id
+                   WHERE o.role = 'user_topic' AND c.strength >= ? AND o.turn_id <> ''
+                   GROUP BY c.id
+                   HAVING COUNT(DISTINCT o.turn_id) >= ?
+                   ORDER BY MAX(o.confidence) DESC, MAX(o.observed_at) DESC, c.strength DESC
+                   LIMIT ?""", (min_strength, max(1, int(min_observations)), limit)
+            ).fetchall()
+        evidence = []
+        for row in rows:
+            with self._conn() as conn:
+                turns = conn.execute(
+                    """SELECT turn_id FROM concept_observations
+                       WHERE concept_id=? AND role='user_topic' AND turn_id <> ''
+                       GROUP BY turn_id ORDER BY MAX(observed_at), MIN(id)""",
+                    (row["concept_id"],),
+                ).fetchall()
+            evidence.append({
+                "topic": row["name"],
+                "observed_at": float(row["observed_at"] or 0),
+                "confidence": float(row["confidence"] or 0),
+                "strength": float(row["strength"] or 0),
+                "turn_count": int(row["turn_count"] or 0),
+                "turn_ids": [item["turn_id"] for item in turns],
+            })
+        return evidence
 
     def recent_user_topics(self, limit: int = 15, min_strength: float = 0.5,
                            min_observations: int = 2) -> List[str]:
@@ -203,17 +260,10 @@ class SemanticMemory:
         A one-off utterance can guide an immediate response, but is insufficient
         evidence for promoting a persistent autonomous goal.
         """
-        with self._conn() as conn:
-            rows = conn.execute(
-                """SELECT c.name, MAX(o.observed_at), MAX(o.confidence), c.strength
-                   FROM concept_observations o JOIN concepts c ON c.id = o.concept_id
-                   WHERE o.role = 'user_topic' AND c.strength >= ?
-                   GROUP BY c.id
-                   HAVING COUNT(*) >= ?
-                   ORDER BY MAX(o.confidence) DESC, MAX(o.observed_at) DESC, c.strength DESC
-                   LIMIT ?""", (min_strength, max(1, int(min_observations)), limit)
-            ).fetchall()
-        return [row[0] for row in rows]
+        return [item["topic"] for item in self.recent_user_topic_evidence(
+            limit=limit, min_strength=min_strength,
+            min_observations=min_observations,
+        )]
 
     def upsert_relation(self, source: str, target: str, rel_type: str,
                         weight_boost: float = 0.05) -> bool:

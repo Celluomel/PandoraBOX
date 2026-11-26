@@ -26,7 +26,7 @@ for package_name, package_path in (
         package.__path__ = [str(package_path)]
         sys.modules[package_name] = package
 
-from cognition.goal_engine import GoalEngine
+from cognition.goal_engine import GoalEngine, Motivation
 from cognition.goal_quality_filter import GoalQualityFilter
 from cognition.profile_flow import update_behavioral_user_profile
 from cognition.belief_bootstrapper import BeliefBootstrapper
@@ -448,10 +448,79 @@ class CognitiveLogRegressionTests(unittest.TestCase):
     def test_autonomous_user_topics_need_repeated_observations(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
-            memory.record_observation("visual odometry", "conversation", "user_topic", 0.8)
+            memory.record_observation(
+                "visual odometry", "conversation", "user_topic", 0.8,
+                turn_id="odometry-turn-1",
+            )
             self.assertNotIn("visual odometry", memory.recent_user_topics())
-            memory.record_observation("visual odometry", "conversation", "user_topic", 0.8)
+            memory.record_observation(
+                "visual odometry", "conversation", "user_topic", 0.8,
+                turn_id="odometry-turn-2",
+            )
             self.assertIn("visual odometry", memory.recent_user_topics())
+
+    def test_repeated_extraction_of_one_turn_is_not_independent_goal_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
+            for _ in range(4):
+                memory.record_observation(
+                    "camera calibration", "conversation", "user_topic", 0.8,
+                    turn_id="same-turn",
+                )
+            self.assertNotIn("camera calibration", memory.recent_user_topics())
+
+            memory.record_observation(
+                "camera calibration", "conversation", "user_topic", 0.8,
+                turn_id="second-turn",
+            )
+            evidence = memory.recent_user_topic_evidence()
+            self.assertEqual(len(evidence), 1)
+            self.assertEqual(evidence[0]["turn_count"], 2)
+            self.assertEqual(set(evidence[0]["turn_ids"]), {"same-turn", "second-turn"})
+
+    def test_legacy_observations_without_turn_ids_do_not_count_as_repeated_user_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
+            memory.record_observation("camera calibration", "conversation", "user_topic", 0.8)
+            memory.record_observation("camera calibration", "conversation", "user_topic", 0.8)
+            self.assertNotIn("camera calibration", memory.recent_user_topics())
+
+    def test_semantic_extractor_persists_the_originating_turn_on_observations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
+            extractor = SemanticExtractor(memory)
+            extractor._parse = lambda *_args: (
+                ["camera calibration"], [], "camera calibration", 0.2, "topic",
+            )
+            receipt = extractor._extract(
+                "camera calibration is the current topic", "bounded answer",
+                None, None, turn_id="camera-turn-42",
+            )
+            self.assertEqual(receipt["status"], "completed")
+            with memory._conn() as conn:
+                rows = conn.execute(
+                    "SELECT turn_id FROM concept_observations WHERE role='user_topic'"
+                ).fetchall()
+            self.assertEqual([row["turn_id"] for row in rows], ["camera-turn-42"])
+
+    def test_goal_created_from_user_topic_keeps_all_evidence_turn_ids(self):
+        engine = GoalEngine.__new__(GoalEngine)
+        engine._goals = {}
+        engine._cycle_counter = 1
+        engine._recently_abandoned = {}
+        engine.MAX_ACTIVE_GOALS = 10
+        engine._external_tasks = []
+        engine._topic_quality_cache = {}
+        engine._lock = threading.RLock()
+        with patch.object(engine, "_is_valid_goal_topic", return_value=True):
+            goals = engine.generate_candidates(
+                [Motivation("explore", 0.7, "test")],
+                ["camera calibration"],
+                topic_source_turns={"camera calibration": ["turn-a", "turn-b"]},
+            )
+        self.assertEqual(len(goals), 1)
+        self.assertEqual(goals[0].source_turn_id, "turn-b")
+        self.assertEqual(goals[0].source_evidence_turn_ids, ["turn-a", "turn-b"])
 
     def test_goal_admission_uses_semantic_verdict_not_token_dictionary(self):
         engine = GoalEngine.__new__(GoalEngine)

@@ -107,8 +107,10 @@ class Goal:
     success_criteria: str = ""
     subject: str = ""
     # Link an explicitly user-requested goal to the exact chat turn that
-    # caused the write; autonomous goals leave this empty.
+    # caused the write. Topic-derived autonomous goals also retain the source
+    # turns that independently established the topic.
     source_turn_id: str = ""
+    source_evidence_turn_ids: List[str] = field(default_factory=list)
     # Autonomous thought-evaluator proposals retain their originating thought
     # across persistence so a committed goal can be traced to its evidence.
     source_thought_id: str = ""
@@ -819,7 +821,8 @@ class GoalEngine:
         self,
         motivations: List[Motivation],
         topics: List[str],
-        limit: int = 5
+        limit: int = 5,
+        topic_source_turns: Optional[Dict[str, List[str]]] = None,
     ) -> List[Goal]:
         """
         Generate goal candidates by pairing motivations with topics.
@@ -908,6 +911,13 @@ class GoalEngine:
                     last_active   = self._cycle_counter,
                     intent_kind   = intent_kind,
                     temporal_scope= temporal_scope,
+                    source_turn_id=(
+                        (topic_source_turns or {}).get(topic, [""])[-1]
+                        if (topic_source_turns or {}).get(topic) else ""
+                    ),
+                    source_evidence_turn_ids=list(
+                        (topic_source_turns or {}).get(topic, [])
+                    ),
                 )
 
                 candidates.append(goal)
@@ -1687,6 +1697,7 @@ class GoalEngine:
         self._recently_abandoned = getattr(self, "_recently_abandoned", {})
         metrics = {}
         filtered_topics = []
+        topic_source_turns = {}
         motivations = []
         candidates = []
         accepted = 0
@@ -1787,9 +1798,20 @@ class GoalEngine:
                 if sem:
                     # Query provenance, not the whole concept graph. Assistant
                     # confirmations must never become autonomous goals.
-                    raw_topics = sem.recent_user_topics(
-                        limit=15, min_strength=0.5, min_observations=2
-                    )
+                    evidence_reader = getattr(sem, "recent_user_topic_evidence", None)
+                    if callable(evidence_reader):
+                        evidence = evidence_reader(
+                            limit=15, min_strength=0.5, min_observations=2
+                        )
+                        raw_topics = [item.get("topic", "") for item in evidence]
+                        topic_source_turns = {
+                            str(item.get("topic", "")): list(item.get("turn_ids", []))
+                            for item in evidence if item.get("topic")
+                        }
+                    else:
+                        raw_topics = sem.recent_user_topics(
+                            limit=15, min_strength=0.5, min_observations=2
+                        )
                     topics = _admit_semantic_topics(raw_topics, "semantic_memory")
             except Exception as e:
                 logger.debug(f"[GoalEngine] semantic topics: {e}")
@@ -1896,7 +1918,10 @@ class GoalEngine:
             # the only valid fallback.
             use_topics = filtered_topics if filtered_topics else autonomous_topics
             if motivations and use_topics and not _generation_blocked:
-                candidates = self.generate_candidates(motivations, use_topics, limit=3)
+                candidates = self.generate_candidates(
+                    motivations, use_topics, limit=3,
+                    topic_source_turns=topic_source_turns,
+                )
                 candidate_generation_metrics.update(
                     getattr(self, "_last_candidate_generation_report", {})
                 )

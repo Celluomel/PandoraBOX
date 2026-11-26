@@ -375,6 +375,7 @@ class SemanticExtractor:
                     source="peer_dialogue" if is_peer else "conversation",
                     role=observation_role,
                     confidence=0.8,
+                    turn_id=turn_id,
                 )
                 receipt["observation_calls_returned"] += 1
                 if observation_persisted is True:

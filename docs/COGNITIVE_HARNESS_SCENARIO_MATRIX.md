@@ -34,6 +34,6 @@ This matrix is the working coverage map for the audit. It describes the modules 
 
 ## Current audit disposition
 
-The currently available local machine has no listener on Lumina/LM Studio ports 8080, 8765, 8767, 8786, or 1234. The Body service is configured active in Brain but stopped, so its observation source is unavailable and yields no new data. Neither state is evidence of a cognitive module failure by itself. The FAISS reconciliation and internal-loop fixes require a grouped restart before they can be confirmed in live receipts.
+The currently available local machine has no listener on Lumina/LM Studio ports 8080, 8765, 8767, 8786, or 1234. Brain configuration has Body enabled, but the Body runtime is stopped; telemetry absence is therefore classified as `source_unavailable: body_runtime_stopped`, not a Brain interpretation defect. Neither state is evidence of a cognitive module failure by itself. FAISS reconciliation and internal-loop/goal-provenance fixes require a grouped restart before they can be confirmed in live receipts.
 
 Global progress remains **3/10 closed tracks** under the existing criteria. This matrix does not increase the score: several tracks have only historical live evidence, others have local tests only, and research, current affect, action effects, and post-fix internal-loop outcomes remain open.
