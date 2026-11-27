@@ -3445,6 +3445,7 @@ class PersonaBridge:
             "global_workspace_state_status": "not_checked",
             "global_workspace_state_route": False,
         }
+        _affect_self_integration_query = False
         _api_route_query = False
         _architecture_context_query = False
         _api_route_intent: dict[str, Any] = {"status": "not_checked", "route": False}
@@ -3484,6 +3485,10 @@ class PersonaBridge:
             _global_workspace_state_intent = _prompt_source_provenance_intent
             _global_workspace_state_query = bool(
                 _global_workspace_state_intent.get("global_workspace_state_route") is True
+            )
+            _affect_self_integration_query = bool(
+                _prompt_source_provenance_intent.get("affect_self_integration_route") is True
+                and not peer_name
             )
             _architecture_context_query = (
                 is_architecture_query(effective_input, api_route_intent=_api_route_query)
@@ -3529,6 +3534,7 @@ class PersonaBridge:
                 or _api_route_query
                 or _software_architecture_query
                 or _global_workspace_state_query
+                or _affect_self_integration_query
             )
             self._record_turn_stage(
                 "turn_evidence_routing", "classified",
@@ -3584,6 +3590,22 @@ class PersonaBridge:
                     ),
                     "global_workspace_state_reason": str(
                         _global_workspace_state_intent.get("global_workspace_state_reason_code") or "unavailable"
+                    ),
+                    "affect_self_integration_query": _affect_self_integration_query,
+                    "affect_self_integration_intent_status": str(
+                        _prompt_source_provenance_intent.get("affect_self_integration_status") or "unavailable"
+                    ),
+                    "affect_self_integration_positive_similarity": _prompt_source_provenance_intent.get(
+                        "affect_self_integration_positive_similarity"
+                    ),
+                    "affect_self_integration_negative_similarity": _prompt_source_provenance_intent.get(
+                        "affect_self_integration_negative_similarity"
+                    ),
+                    "affect_self_integration_margin": _prompt_source_provenance_intent.get(
+                        "affect_self_integration_margin"
+                    ),
+                    "affect_self_integration_reason": str(
+                        _prompt_source_provenance_intent.get("affect_self_integration_reason_code") or "unavailable"
                     ),
                     "api_route_query": bool(_api_route_query),
                     "api_route_intent_status": str(_api_route_intent.get("status") or "unavailable"),
@@ -3668,6 +3690,7 @@ class PersonaBridge:
             _prompt_source_provenance_query = False
             _software_architecture_query = False
             _global_workspace_state_query = False
+            _affect_self_integration_query = False
             _software_architecture_intent = {
                 "software_architecture_status": "router_unavailable",
                 "software_architecture_route": False,
@@ -3682,6 +3705,11 @@ class PersonaBridge:
                 "global_workspace_state_route": False,
                 "global_workspace_state_reason_code": type(_architecture_query_error).__name__,
             }
+            _prompt_source_provenance_intent.update({
+                "affect_self_integration_status": "router_unavailable",
+                "affect_self_integration_route": False,
+                "affect_self_integration_reason_code": type(_architecture_query_error).__name__,
+            })
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
             self._record_turn_stage(
                 "turn_evidence_routing", "failed",
@@ -4065,6 +4093,7 @@ class PersonaBridge:
             effective_input,
             debug_introspection=debug_introspection,
             peer_dialogue=bool(peer_name),
+            self_integration_query=_affect_self_integration_query,
         )
         _structured_affect_status = _affect_report_mode == "detailed"
         _affect_self_report_query = _affect_report_mode != "none"
@@ -5506,18 +5535,30 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 except Exception:
                     _prompt_ctx_limit = 4096
                 _protected_prompt_tail = ""
+                _protected_prompt_sections = []
+                _protected_affect_prompt = ""
                 if _architecture_context_query:
                     try:
                         from cognition.self_description import ARCHITECTURE_ANSWER_CONTRACT
-                        _protected_prompt_tail = (
+                        _protected_prompt_sections.append(
                             "FINAL ARCHITECTURE EVIDENCE CONTRACT\n"
                             + ARCHITECTURE_ANSWER_CONTRACT
                         )
                     except Exception:
-                        _protected_prompt_tail = (
+                        _protected_prompt_sections.append(
                             "FINAL ARCHITECTURE EVIDENCE CONTRACT: distinguish implemented facts "
                             "from inference; do not claim universal module access or collapse sources."
                         )
+                if _affect_self_integration_query:
+                    _affect_match = re.search(
+                        r"━━ AFFECT SELF-REPORT EVIDENCE ━━.*?(?=\n━━ |\Z)",
+                        system_prompt,
+                        flags=re.DOTALL,
+                    )
+                    if _affect_match:
+                        _protected_affect_prompt = _affect_match.group(0).strip()
+                        _protected_prompt_sections.append(_protected_affect_prompt)
+                _protected_prompt_tail = "\n\n".join(_protected_prompt_sections)
                 from cognition.prompt_context_budget import fit_system_prompt_to_context
                 system_prompt, _prompt_budget_receipt = fit_system_prompt_to_context(
                     system_prompt,
@@ -5543,6 +5584,28 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     ),
                     turn_id=_audit_turn_id,
                 )
+                if _affect_self_integration_query:
+                    _affect_prompt_retained = bool(
+                        _protected_affect_prompt
+                        and _protected_affect_prompt in system_prompt
+                        and _prompt_budget_receipt.get("protected_tail_preserved") is True
+                    )
+                    self._record_turn_stage(
+                        "affect_self_integration_prompt_delivery",
+                        "retained_in_final_prompt" if _affect_prompt_retained else "omitted_by_prompt_budget",
+                        "Checks whether the affect/self integration evidence survived the final context budget sent to inference.",
+                        output={
+                            "marker_retained": _affect_prompt_retained,
+                            "full_affect_block_retained": _affect_prompt_retained,
+                            "protected_tail_requested": bool(_protected_prompt_tail),
+                            "protected_tail_preserved": bool(
+                                _prompt_budget_receipt.get("protected_tail_preserved")
+                            ),
+                            "final_prompt_chars": len(system_prompt),
+                        },
+                        consumes=("affect_self_integration_context", "prompt_context_budget", "prompt_assembly"),
+                        turn_id=_audit_turn_id,
+                    )
                 self._record_turn_stage(
                     "generation_request", "prepared",
                     "Final budgeted prompt delivered to provider route.",
@@ -7568,7 +7631,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     or _explicit_recall_query
                     or _api_route_query
                 )
-                _affect_self_report = bool(not peer_name and debug_introspection)
+                _affect_self_report = bool(
+                    not peer_name and (debug_introspection or _affect_self_integration_query)
+                )
                 if _affect_self_report:
                     from cognition.self_description import sanitize_affect_event_receipts
                     _recent_affect_events = s.emotional_state.get_recent_affect_events(5)
@@ -7603,6 +7668,19 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         consumes=("turn_input",),
                         turn_id=audit_turn_id,
                     )
+                    if _affect_self_integration_query:
+                        self._record_turn_stage(
+                            "affect_self_integration_profile", "captured",
+                            "Current affect channels and turn-linked appraisal receipts captured for self-integration reasoning.",
+                            output={
+                                "source": "EmotionalStateManager plus persistent SelfModelMoment in cognitive prompt",
+                                "channel_count": len(_affect_profile) if isinstance(_affect_profile, dict) else 0,
+                                "recent_event_count": len(_safe_affect_events),
+                                "self_model_moment_in_prompt": True,
+                            },
+                            consumes=("turn_evidence_routing", "affective_state"),
+                            turn_id=audit_turn_id,
+                        )
                 _module_tick_snapshot = None
                 _module_entries = []
                 if (
@@ -8439,12 +8517,30 @@ Memory honesty — two distinct cases:
                     )
             if _affect_self_report:
                 from cognition.self_description import affect_self_report_context
-                system_prompt += "\n\n" + affect_self_report_context(
+                _affect_prompt_context = affect_self_report_context(
                     _affect_profile,
                     mods.get("state_description", ""),
                     _latest_affect,
                     _recent_affect_events,
+                    integration_mode=_affect_self_integration_query,
                 )
+                system_prompt += "\n\n" + _affect_prompt_context
+                if _affect_self_integration_query:
+                    self._record_turn_stage(
+                        "affect_self_integration_context", "injected",
+                        "Affect profile and event provenance appended to the prompt for a multidimensional self-model synthesis.",
+                        output={
+                            "source": "affective_state plus cognitive_prompt_context",
+                            "channel_count": len(_affect_profile) if isinstance(_affect_profile, dict) else 0,
+                            "recent_event_count": len(_recent_affect_events),
+                            "context_chars": len(_affect_prompt_context),
+                            "context_sha256": hashlib.sha256(
+                                _affect_prompt_context.encode("utf-8", errors="replace")
+                            ).hexdigest(),
+                        },
+                        consumes=("affective_state", "cognitive_prompt_context", "turn_input"),
+                        turn_id=audit_turn_id,
+                    )
 
             return (
                 system_prompt, emo_dict, cond_dict, arb_temperature,

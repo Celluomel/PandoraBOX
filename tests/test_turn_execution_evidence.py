@@ -1002,6 +1002,31 @@ def test_memory_profile_intent_receipt_preserves_scores_and_drops_untrusted_text
     assert "private_query" not in repr(receipt)
 
 
+def test_affect_self_integration_route_is_preserved_as_safe_turn_receipt():
+    receipt = audit_safe_turn_summary({
+        "type": "turn_evidence_routing_receipt",
+        "factual_plan_query": False,
+        "closed_world_report": False,
+        "architecture_query": False,
+        "cognitive_trace_query": False,
+        "runtime_execution_query": False,
+        "explicit_memory_recall": False,
+        "affect_self_integration_query": True,
+        "affect_self_integration_intent_status": "affect_self_integration_intent",
+        "affect_self_integration_positive_similarity": 0.8612,
+        "affect_self_integration_negative_similarity": 0.7011,
+        "affect_self_integration_margin": 0.1601,
+        "affect_self_integration_reason": "cross_lingual_semantic_centroid_margin",
+        "private_query": "must not be copied",
+    })
+
+    assert receipt["affect_self_integration_query"] is True
+    assert receipt["affect_self_integration_intent_status"] == "affect_self_integration_intent"
+    assert receipt["affect_self_integration_margin"] == 0.1601
+    assert receipt["affect_self_integration_reason"] == "cross_lingual_semantic_centroid_margin"
+    assert "private_query" not in repr(receipt)
+
+
 def test_runtime_execution_route_uses_originating_turn_trace_snapshot():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))

@@ -8,7 +8,7 @@ The Problem
 -----------
 Every other module in PandoraBOX produces a signal:
   - GlobalWorkspace      → broadcast items
-  - EmotionalState       → 6 float values
+  - EmotionalState       → 11 baseline-relative channels, slow mood, and causal receipts
   - AttentionSystem      → 4 channel weights
   - PredictiveMind       → error + surprise score
   - PressureSystem       → drive landscape
@@ -101,17 +101,6 @@ _QUALIA_MAP: Dict[Tuple[int, int], str] = {
     ( 1, 2): "an intense, expansive aliveness — ideas and feeling moving fast",
 }
 
-# Emotion → (valence contribution, arousal contribution)
-_EMOTION_VALENCE_AROUSAL: Dict[str, Tuple[float, float]] = {
-    "curiosity":    ( 0.6,  0.7),
-    "warmth":       ( 0.8,  0.3),
-    "anxiety":      (-0.7,  0.8),
-    "satisfaction": ( 0.7,  0.2),
-    "frustration":  (-0.5,  0.7),
-    "enthusiasm":   ( 0.7,  0.9),
-}
-
-
 # ── Data structures ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -127,6 +116,7 @@ class ExperientialMoment:
     phi_proxy:        float  = 0.0         # integration score 0–1
     valence:          float  = 0.0         # -1 (negative) to +1 (positive)
     arousal:          float  = 0.0         # 0 (calm) to 1 (activated)
+    affect_profile:   Dict[str, Any] = field(default_factory=dict)
 
     # Attentional structure
     foreground:       str    = ""          # spotlight content
@@ -176,6 +166,35 @@ class ExperientialMoment:
             parts.append(f"temporal={_short(self.temporal_arrow, 64)}")
         if self.embodiment_note:
             parts.append(f"embodiment={_short(self.embodiment_note, 64)}")
+        channels = self.affect_profile.get("channels", {}) if isinstance(self.affect_profile, dict) else {}
+        if isinstance(channels, dict):
+            deviations = []
+            for name, item in channels.items():
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    delta = float(item.get("deviation", 0.0))
+                    value = float(item.get("value", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(delta) and math.isfinite(value) and abs(delta) >= 0.015:
+                    deviations.append((abs(delta), str(name), value, delta))
+            deviations.sort(reverse=True)
+            if deviations:
+                profile_text = ", ".join(
+                    f"{name}={value:.2f} ({delta:+.2f} vs baseline)"
+                    for _, name, value, delta in deviations[:4]
+                )
+                parts.append(f"affect_mix={profile_text}")
+            causes = self.affect_profile.get("recent_causes", [])
+            if isinstance(causes, list):
+                cause_labels = [
+                    str(event.get("event_type") or "")
+                    for event in causes[-2:]
+                    if isinstance(event, dict) and event.get("event_type")
+                ]
+                if cause_labels:
+                    parts.append(f"affect_causes={', '.join(cause_labels)}")
         return "[Experiential state derived from active signals: " + "; ".join(parts) + "]"
 
     def to_dict(self) -> Dict:
@@ -185,6 +204,7 @@ class ExperientialMoment:
             "phi_proxy":        round(self.phi_proxy, 3),
             "valence":          round(self.valence, 3),
             "arousal":          round(self.arousal, 3),
+            "affect_profile":   self.affect_profile,
             "foreground":       self.foreground[:120],
             "interrupt_signal": self.interrupt_signal,
             "interrupt_reason": self.interrupt_reason,
@@ -334,6 +354,7 @@ class PhenomenalBinder:
             interrupt_reason = interrupt_reason,
             embodiment_note  = embodiment_note,
             coherence_trend  = coherence_trend,
+            affect_profile   = signals.get("affect_profile", {}) if isinstance(signals.get("affect_profile"), dict) else {},
         )
 
         # 11. Archive, store as last, and broadcast
@@ -364,6 +385,13 @@ class PhenomenalBinder:
             signals["emotions"] = organism._get_emotion_values()
         except Exception:
             signals["emotions"] = {}
+        try:
+            affect = getattr(getattr(organism, "ai_system", None), "emotional_state", None)
+            snapshot = getattr(affect, "get_self_model_snapshot", None)
+            profile = snapshot(event_limit=4) if callable(snapshot) else {}
+            signals["affect_profile"] = profile if isinstance(profile, dict) else {}
+        except Exception:
+            signals["affect_profile"] = {}
 
         # Attention weights
         try:
@@ -464,25 +492,27 @@ class PhenomenalBinder:
         Compute overall emotional valence (-1 to +1) and arousal (0 to 1)
         from the emotion vector, modulated by pressure and energy.
         """
-        emotions = signals.get("emotions", {})
-        valence_sum = 0.0
-        arousal_sum = 0.0
-        weight_total = 0.0
-
-        for emo_name, emo_val in emotions.items():
-            if emo_val < 0.01:
-                continue
-            v_contrib, a_contrib = _EMOTION_VALENCE_AROUSAL.get(emo_name, (0.0, 0.5))
-            valence_sum += v_contrib * emo_val
-            arousal_sum += a_contrib * emo_val
-            weight_total += emo_val
-
-        if weight_total > 0:
-            valence = valence_sum / weight_total
-            arousal = arousal_sum / weight_total
-        else:
-            valence = 0.0
-            arousal = 0.4
+        profile = signals.get("affect_profile", {})
+        channels = profile.get("channels", {}) if isinstance(profile, dict) else {}
+        try:
+            from cognition.emotional_state import EmotionalStateManager
+            if isinstance(channels, dict) and channels:
+                values = {
+                    name: item.get("value") for name, item in channels.items()
+                    if isinstance(item, dict)
+                }
+                baselines = {
+                    name: item.get("baseline") for name, item in channels.items()
+                    if isinstance(item, dict)
+                }
+            else:
+                values = signals.get("emotions", {})
+                baselines = None
+            valence, arousal = EmotionalStateManager.calculate_valence_arousal(
+                values if isinstance(values, dict) else {}, baselines,
+            )
+        except Exception:
+            valence, arousal = 0.0, 0.4
 
         # Modulate arousal by energy (low energy dampens arousal)
         energy = signals.get("energy", 0.7)

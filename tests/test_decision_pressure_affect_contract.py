@@ -28,6 +28,18 @@ class DecisionPressureAffectContractTests(unittest.TestCase):
         )
         self.assertLess(negative_valence, 0.0)
 
+    def test_frustration_and_relief_have_consistent_valence_signs(self):
+        frustrated = dict(EMOTION_DEFAULT_BASELINES)
+        frustrated["frustration"] += 0.2
+        frustration_valence, _ = EmotionalStateManager.calculate_valence_arousal(frustrated)
+
+        relieved = dict(EMOTION_DEFAULT_BASELINES)
+        relieved["relief"] += 0.2
+        relief_valence, _ = EmotionalStateManager.calculate_valence_arousal(relieved)
+
+        self.assertLess(frustration_valence, 0.0)
+        self.assertGreater(relief_valence, 0.0)
+
     def test_pressure_uses_canonical_valence_and_arousal_but_keeps_pressure_separate(self):
         values = {
             "satisfaction": 0.72,

@@ -58,6 +58,18 @@ EMOTION_DEFAULT_BASELINES = {
     "disappointment": 0.20, "anticipation": 0.24,
 }
 
+# Channel semantics shared by the affect manager and the phenomenal binder.
+# Valence and arousal are continuous projections of baseline-relative changes;
+# surprise and anticipation carry activation but have no assumed valence.
+AFFECT_CHANNEL_DIMENSIONS: Dict[str, Tuple[float, float]] = {
+    "curiosity": (0.55, 0.60), "warmth": (0.75, 0.25),
+    "anxiety": (-0.75, 0.85), "satisfaction": (0.70, 0.20),
+    "frustration": (-0.65, 0.70), "enthusiasm": (0.70, 0.85),
+    "surprise": (0.0, 0.95), "sadness": (-0.80, 0.20),
+    "relief": (0.65, 0.15), "disappointment": (-0.75, 0.40),
+    "anticipation": (0.0, 0.70),
+}
+
 # Affective responses to internal cognitive events. These are small, decaying
 # appraisals, not fixed moods: each event scales the channels by its measured
 # salience and the resulting state persists and blends with later events.
@@ -382,6 +394,7 @@ class EmotionalStateManager:
         intensity: float = 0.5,
         source: str = "cognitive_event",
         context: Optional[Dict[str, Any]] = None,
+        turn_id: str = "",
     ) -> Dict[str, Any]:
         """Apply a persistent, intensity-scaled affective response to an
         internal event and retain its causal trace for introspection.
@@ -439,7 +452,7 @@ class EmotionalStateManager:
             self._record_snapshot()
             receipt = self._append_affect_event(
                 event_name, source or "cognitive_event", scale, changes,
-                cause_context, timestamp=now,
+                cause_context, timestamp=now, turn_id=turn_id,
             )
             self._save()
             return {"status": "applied", **receipt}
@@ -674,26 +687,22 @@ class EmotionalStateManager:
     ) -> Tuple[float, float]:
         """Canonical, side-effect-free valence/arousal calculation for consumers."""
         baselines = baselines or EMOTION_DEFAULT_BASELINES
-        valence = (
-            (values.get("satisfaction", baselines.get("satisfaction", 0.3)) - baselines.get("satisfaction", 0.3)) * 0.35 +
-            (values.get("warmth",       baselines.get("warmth", 0.3)) - baselines.get("warmth", 0.3)) * 0.30 +
-            (values.get("enthusiasm",   baselines.get("enthusiasm", 0.3)) - baselines.get("enthusiasm", 0.3)) * 0.20 -
-            (values.get("relief",       baselines.get("relief", 0.24)) - baselines.get("relief", 0.24)) * 0.20 +
-            (values.get("frustration",  baselines.get("frustration", 0.3)) - baselines.get("frustration", 0.3)) * 0.30 -
-            (values.get("anxiety",      baselines.get("anxiety", 0.3)) - baselines.get("anxiety", 0.3)) * 0.25 -
-            (values.get("sadness",      baselines.get("sadness", 0.2)) - baselines.get("sadness", 0.2)) * 0.28 -
-            (values.get("disappointment", baselines.get("disappointment", 0.2)) - baselines.get("disappointment", 0.2)) * 0.26
-        )
-        valence = max(-1.0, min(1.0, valence * 3))
+        valence_delta = 0.0
+        arousal_delta = 0.0
+        for name, (valence_loading, arousal_loading) in AFFECT_CHANNEL_DIMENSIONS.items():
+            try:
+                value = float(values.get(name, baselines.get(name, EMOTION_DEFAULT_BASELINES.get(name, 0.3))))
+                baseline = float(baselines.get(name, EMOTION_DEFAULT_BASELINES.get(name, 0.3)))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(value) or not math.isfinite(baseline):
+                continue
+            deviation = value - baseline
+            valence_delta += valence_loading * deviation
+            arousal_delta += arousal_loading * deviation
 
-        arousal = (
-            values.get("enthusiasm",   0.3) * 0.40 +
-            values.get("curiosity",    0.3) * 0.30 +
-            values.get("anxiety",      0.2) * 0.20 +
-            values.get("frustration",  0.1) * 0.10 +
-            values.get("surprise",     0.20) * 0.25 +
-            values.get("anticipation", 0.24) * 0.12
-        )
+        valence = max(-1.0, min(1.0, valence_delta * 2.5))
+        arousal = 0.4 + arousal_delta * 0.45
         arousal = max(0.0, min(1.0, arousal))
         return round(valence, 3), round(arousal, 3)
 

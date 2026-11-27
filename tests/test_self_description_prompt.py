@@ -335,25 +335,30 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                     _PROMPT_PROVENANCE_POSITIVE, _PROMPT_PROVENANCE_NEGATIVE,
                     _SOFTWARE_ARCHITECTURE_POSITIVE, _SOFTWARE_ARCHITECTURE_NEGATIVE,
                     _GLOBAL_WORKSPACE_STATE_POSITIVE, _GLOBAL_WORKSPACE_STATE_NEGATIVE,
+                    _AFFECT_SELF_INTEGRATION_POSITIVE, _AFFECT_SELF_INTEGRATION_NEGATIVE,
                 )
                 if isinstance(texts, str) or len(texts) == 1:
                     return np.asarray([self.query_vector], dtype="float64"), self.embedding_space_id
                 vectors = []
                 for value in texts[:-1]:
                     if value in _PROMPT_PROVENANCE_POSITIVE:
-                        vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                        vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                     elif value in _PROMPT_PROVENANCE_NEGATIVE:
-                        vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+                        vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                     elif value in _SOFTWARE_ARCHITECTURE_POSITIVE:
-                        vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+                        vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                     elif value in _SOFTWARE_ARCHITECTURE_NEGATIVE:
-                        vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+                        vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
                     elif value in _GLOBAL_WORKSPACE_STATE_POSITIVE:
-                        vectors.append([0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                        vectors.append([0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
                     elif value in _GLOBAL_WORKSPACE_STATE_NEGATIVE:
-                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+                    elif value in _AFFECT_SELF_INTEGRATION_POSITIVE:
+                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                    elif value in _AFFECT_SELF_INTEGRATION_NEGATIVE:
+                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
                     else:
-                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                 vectors.append(self.query_vector)
                 vectors = (
                     vectors
@@ -362,22 +367,30 @@ class SelfDescriptionPromptTests(unittest.TestCase):
 
         prompt_delivery = classify_prompt_source_provenance_intent(
             "Tell me which retrieved memory and profile evidence entered the prompt for that answer.",
-            embedder=FakeEmbedder([0.98, 0.02, 0.0, 0.0, 0.0, 0.0]),
+            embedder=FakeEmbedder([0.98, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         )
         workspace_state = classify_prompt_source_provenance_intent(
             "N'est-ce pas le rôle du Global Workspace de consolider toutes ces sources?",
-            embedder=FakeEmbedder([0.02, 0.98, 0.0, 0.0, 0.0, 0.0]),
+            embedder=FakeEmbedder([0.02, 0.98, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         )
         workspace_architecture = classify_prompt_source_provenance_intent(
             "N’est-ce pas le rôle du Global Workspace de consolider toutes ces sources ?",
-            embedder=FakeEmbedder([0.0, 0.0, 0.98, 0.02, 0.0, 0.0]),
+            embedder=FakeEmbedder([0.0, 0.0, 0.98, 0.02, 0.0, 0.0, 0.0, 0.0]),
         )
         current_workspace = classify_prompt_source_provenance_intent(
             "What do you currently see in your global workspace?",
-            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.98, 0.02]),
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.98, 0.02, 0.0, 0.0]),
         )
         unavailable = classify_prompt_source_provenance_intent(
             "Which records remain open?", embedder=object(),
+        )
+        affect_integration = classify_prompt_source_provenance_intent(
+            "Comment les émotions et sentiments modélisés contribuent-ils à la richesse de ton self ?",
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.98, 0.02]),
+        )
+        direct_affect_report = classify_prompt_source_provenance_intent(
+            "What emotions are active in you now? Give their current measured values and latest appraisal.",
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.98]),
         )
 
         self.assertTrue(prompt_delivery["route"])
@@ -400,6 +413,16 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         )
         self.assertFalse(unavailable["software_architecture_route"])
         self.assertFalse(unavailable["global_workspace_state_route"])
+        self.assertTrue(affect_integration["affect_self_integration_route"])
+        self.assertEqual(
+            affect_integration["affect_self_integration_status"],
+            "affect_self_integration_intent",
+        )
+        self.assertFalse(direct_affect_report["affect_self_integration_route"])
+        self.assertEqual(
+            direct_affect_report["affect_self_integration_status"],
+            "not_affect_self_integration_intent",
+        )
 
     def test_global_workspace_registry_describes_real_merge_and_provenance_limits(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -616,6 +639,23 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "How are you doing?", peer_dialogue=True,
         ), "none")
         self.assertEqual(affect_report_mode("How is the audit going?"), "none")
+        self.assertEqual(affect_report_mode(
+            "How do your affective signals shape your self-model?",
+            debug_introspection=True, self_integration_query=True,
+        ), "none")
+
+    def test_affect_self_integration_context_requests_grounded_multidimensional_synthesis(self):
+        context = affect_self_report_context(
+            {"curiosity": 0.8, "relief": 0.6},
+            "modeled state",
+            {"event_type": "tension_released", "source": "internal_loop"},
+            [], integration_mode=True,
+        )
+        self.assertIn("not a channel dump", context)
+        self.assertIn("deviations to baseline", context)
+        self.assertIn("slow mood", context)
+        self.assertIn("do not collapse the self", context)
+        self.assertIn("tension_released from internal_loop", context)
 
     def test_social_status_answer_is_a_deterministic_projection_of_modeled_channels(self):
         evidence = (

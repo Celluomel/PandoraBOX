@@ -726,6 +726,8 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             receipt["software_architecture_query"] = value["software_architecture_query"]
         if isinstance(value.get("global_workspace_state_query"), bool):
             receipt["global_workspace_state_query"] = value["global_workspace_state_query"]
+        if isinstance(value.get("affect_self_integration_query"), bool):
+            receipt["affect_self_integration_query"] = value["affect_self_integration_query"]
         workspace_state_status = str(value.get("global_workspace_state_intent_status") or "")
         if workspace_state_status in {
             "global_workspace_state_intent", "not_global_workspace_state_intent",
@@ -748,6 +750,28 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input",
         }:
             receipt["global_workspace_state_reason"] = workspace_state_reason
+        affect_status = str(value.get("affect_self_integration_intent_status") or "")
+        if affect_status in {
+            "affect_self_integration_intent", "not_affect_self_integration_intent",
+            "affect_self_integration_intent_uncertain", "router_unavailable",
+            "empty_input", "not_checked",
+        }:
+            receipt["affect_self_integration_intent_status"] = affect_status
+        for key in (
+            "affect_self_integration_positive_similarity",
+            "affect_self_integration_negative_similarity",
+            "affect_self_integration_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        affect_reason = str(value.get("affect_self_integration_reason") or "")
+        if affect_reason in {
+            "cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input",
+        }:
+            receipt["affect_self_integration_reason"] = affect_reason
         provenance_status = str(
             value.get("prompt_source_provenance_intent_status") or ""
         )

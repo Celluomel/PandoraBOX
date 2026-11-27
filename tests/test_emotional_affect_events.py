@@ -219,9 +219,16 @@ class EmotionalAffectEventTests(unittest.TestCase):
             bus = CognitiveEventBus()
             wire_cognitive_bus(organism, bus)
 
-            bus.emit(CONTRADICTION_DETECTED, {"pressure": 0.8}, source="test")
+            bus.emit(
+                CONTRADICTION_DETECTED,
+                {"pressure": 0.8, "turn_id": "turn-affect-42"},
+                source="test",
+            )
             self.assertEqual(
                 bus.recent(1)[0].payload["affect_outcome"]["status"], "applied"
+            )
+            self.assertEqual(
+                state.get_recent_affect_events(1)[0]["turn_id"], "turn-affect-42"
             )
             payload = {"drive": "social", "amount": 0.1}
             bus.emit(DRIVE_SATISFIED, payload, source="pressure_system")

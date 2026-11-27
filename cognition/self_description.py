@@ -143,6 +143,34 @@ _GLOBAL_WORKSPACE_STATE_NEGATIVE = (
     "Describe what the robot sensed in the physical environment using its sensors.",
     "What are my personal goals and user profile facts?",
 )
+_AFFECT_SELF_INTEGRATION_POSITIVE = (
+    "The emotions and feelings available in your current self-model seem too few to form a rich and differentiated self. Explain how the affective signals and their recorded history actually contribute.",
+    "There are only a small number of modeled feelings in your system, and they do not yet make for a rich sense of self.",
+    "Explain how the distinct affective signals, their changes from baseline, and their recorded causes shape your ongoing sense of self.",
+    "How do your modeled emotions and feelings combine over time to make your self-model richer than a list of values?",
+    "Describe how recent cognitive events, persistent mood, and changing affect channels contribute to your current identity and point of view.",
+    "Relate the different emotional signals you register to their causes and to the way you understand yourself now.",
+    "Comment les émotions et sentiments modélisés, leurs variations et leurs causes contribuent-ils à ton sentiment de toi-même au fil du temps ?",
+    "Comment les différents signaux affectifs et les événements qui les ont modifiés participent-ils à la continuité et à la richesse de ton self ?",
+    "Les émotions et sentiments présents dans ton modèle semblent trop peu nombreux pour former un self riche et différencié. Analyse ce que les signaux affectifs et leur histoire apportent réellement.",
+    "Les sentiments de Lumina sont peu nombreux et son self paraît pauvre; comment les signaux affectifs et leurs causes construisent-ils malgré tout une identité intégrée ?",
+    "Explique comment ton humeur persistante et tes états affectifs changeants influencent ta manière de te comprendre.",
+    "¿Cómo contribuyen tus señales afectivas, sus cambios y sus causas registradas a tu sentido continuo de identidad?",
+    "Wie prägen deine unterschiedlichen affektiven Signale, ihre Veränderungen und ihre Ursachen dein fortlaufendes Selbstmodell?",
+    "Como os diferentes sinais afetivos, suas mudanças e causas registradas contribuem para seu senso contínuo de identidade?",
+)
+_AFFECT_SELF_INTEGRATION_NEGATIVE = (
+    "List the current values of every modeled affect channel and identify the most recent recorded event.",
+    "What emotions are active in you right now? Give their current measured values and latest appraisal.",
+    "How are you doing? Give a brief social greeting without analyzing your identity.",
+    "Why did your modeled affect channels change in the last event? Report only recorded deltas and causes.",
+    "Quelles sont les valeurs actuelles de tes canaux affectifs et quel est le dernier événement enregistré ?",
+    "Comment vas-tu ? Réponds brièvement à cette salutation sans analyser ton identité.",
+    "Pourquoi tes signaux affectifs ont-ils changé ? Rapporte les variations consignées, sans parler de ton identité.",
+    "What emotions do people commonly experience during grief? This is a general psychology question.",
+    "Explain the software architecture of the emotional-state manager and its data structures.",
+    "Report a user's emotional profile from conversation history.",
+)
 ARCHITECTURE_ANSWER_CONTRACT = (
     "Answer questions about this software's cognitive architecture directly and concisely. "
     "Separate implemented facts from inference. For the Global Workspace, distinguish "
@@ -158,7 +186,7 @@ ARCHITECTURE_ANSWER_CONTRACT = (
     "fan-out: consumers must read the relevant Workspace API; listeners receive broadcast items "
     "only when explicitly registered."
 )
-_PROMPT_PROVENANCE_CENTROIDS: dict[str, tuple[Any, Any, Any, Any, Any, Any]] = {}
+_PROMPT_PROVENANCE_CENTROIDS: dict[str, tuple[Any, ...]] = {}
 _PROMPT_PROVENANCE_CENTROIDS_LOCK = Lock()
 
 # Semantic intent prototypes, not trigger phrases. This distinguishes requests
@@ -661,6 +689,7 @@ def classify_prompt_source_provenance_intent(
                 *_PROMPT_PROVENANCE_POSITIVE, *_PROMPT_PROVENANCE_NEGATIVE,
                 *_SOFTWARE_ARCHITECTURE_POSITIVE, *_SOFTWARE_ARCHITECTURE_NEGATIVE,
                 *_GLOBAL_WORKSPACE_STATE_POSITIVE, *_GLOBAL_WORKSPACE_STATE_NEGATIVE,
+                *_AFFECT_SELF_INTEGRATION_POSITIVE, *_AFFECT_SELF_INTEGRATION_NEGATIVE,
                 value,
             ])
             import numpy as np
@@ -668,7 +697,8 @@ def classify_prompt_source_provenance_intent(
             provenance_rows = len(_PROMPT_PROVENANCE_POSITIVE) + len(_PROMPT_PROVENANCE_NEGATIVE)
             architecture_rows = len(_SOFTWARE_ARCHITECTURE_POSITIVE) + len(_SOFTWARE_ARCHITECTURE_NEGATIVE)
             workspace_rows = len(_GLOBAL_WORKSPACE_STATE_POSITIVE) + len(_GLOBAL_WORKSPACE_STATE_NEGATIVE)
-            expected_rows = provenance_rows + architecture_rows + workspace_rows + 1
+            affect_rows = len(_AFFECT_SELF_INTEGRATION_POSITIVE) + len(_AFFECT_SELF_INTEGRATION_NEGATIVE)
+            expected_rows = provenance_rows + architecture_rows + workspace_rows + affect_rows + 1
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("prompt provenance router received invalid embeddings")
             normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
@@ -678,31 +708,37 @@ def classify_prompt_source_provenance_intent(
             architecture_negative_end = provenance_rows + architecture_rows
             workspace_positive_end = architecture_negative_end + len(_GLOBAL_WORKSPACE_STATE_POSITIVE)
             workspace_negative_end = architecture_negative_end + workspace_rows
+            affect_positive_end = workspace_negative_end + len(_AFFECT_SELF_INTEGRATION_POSITIVE)
+            affect_negative_end = workspace_negative_end + affect_rows
             positive = normalized[:provenance_positive_end].mean(axis=0)
             negative = normalized[provenance_positive_end:provenance_negative_end].mean(axis=0)
             architecture_positive = normalized[provenance_negative_end:architecture_positive_end].mean(axis=0)
             architecture_negative = normalized[architecture_positive_end:architecture_negative_end].mean(axis=0)
             workspace_positive = normalized[architecture_negative_end:workspace_positive_end].mean(axis=0)
             workspace_negative = normalized[workspace_positive_end:workspace_negative_end].mean(axis=0)
+            affect_positive = normalized[workspace_negative_end:affect_positive_end].mean(axis=0)
+            affect_negative = normalized[affect_positive_end:affect_negative_end].mean(axis=0)
             positive /= max(float(np.linalg.norm(positive)), 1e-12)
             negative /= max(float(np.linalg.norm(negative)), 1e-12)
             architecture_positive /= max(float(np.linalg.norm(architecture_positive)), 1e-12)
             architecture_negative /= max(float(np.linalg.norm(architecture_negative)), 1e-12)
             workspace_positive /= max(float(np.linalg.norm(workspace_positive)), 1e-12)
             workspace_negative /= max(float(np.linalg.norm(workspace_negative)), 1e-12)
+            affect_positive /= max(float(np.linalg.norm(affect_positive)), 1e-12)
+            affect_negative /= max(float(np.linalg.norm(affect_negative)), 1e-12)
             actual_space = str(actual_space)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("prompt provenance routing requires Nomic v1.5")
             with _PROMPT_PROVENANCE_CENTROIDS_LOCK:
                 _PROMPT_PROVENANCE_CENTROIDS[actual_space] = (
                     positive, negative, architecture_positive, architecture_negative,
-                    workspace_positive, workspace_negative,
+                    workspace_positive, workspace_negative, affect_positive, affect_negative,
                 )
             query = normalized[-1]
         else:
             (
                 positive, negative, architecture_positive, architecture_negative,
-                workspace_positive, workspace_negative,
+                workspace_positive, workspace_negative, affect_positive, affect_negative,
             ) = cached
             vectors, actual_space = encoder(value)
             import numpy as np
@@ -738,6 +774,15 @@ def classify_prompt_source_provenance_intent(
             workspace_status, workspace_route = "not_global_workspace_state_intent", False
         else:
             workspace_status, workspace_route = "workspace_state_intent_uncertain", False
+        affect_positive_score = float(query @ affect_positive)
+        affect_negative_score = float(query @ affect_negative)
+        affect_margin = affect_positive_score - affect_negative_score
+        if affect_positive_score >= 0.72 and affect_margin >= 0.06:
+            affect_status, affect_route = "affect_self_integration_intent", True
+        elif affect_positive_score < 0.66 or affect_margin < 0.0:
+            affect_status, affect_route = "not_affect_self_integration_intent", False
+        else:
+            affect_status, affect_route = "affect_self_integration_intent_uncertain", False
         return {
             "status": status,
             "route": route,
@@ -759,6 +804,12 @@ def classify_prompt_source_provenance_intent(
             "global_workspace_state_negative_similarity": round(workspace_negative_score, 4),
             "global_workspace_state_margin": round(workspace_margin, 4),
             "global_workspace_state_reason_code": "cross_lingual_semantic_centroid_margin",
+            "affect_self_integration_status": affect_status,
+            "affect_self_integration_route": affect_route,
+            "affect_self_integration_positive_similarity": round(affect_positive_score, 4),
+            "affect_self_integration_negative_similarity": round(affect_negative_score, 4),
+            "affect_self_integration_margin": round(affect_margin, 4),
+            "affect_self_integration_reason_code": "cross_lingual_semantic_centroid_margin",
         }
     except Exception as exc:
         return {
@@ -772,6 +823,9 @@ def classify_prompt_source_provenance_intent(
             "global_workspace_state_status": "router_unavailable",
             "global_workspace_state_route": False,
             "global_workspace_state_reason_code": type(exc).__name__,
+            "affect_self_integration_status": "router_unavailable",
+            "affect_self_integration_route": False,
+            "affect_self_integration_reason_code": type(exc).__name__,
         }
 
 
@@ -946,9 +1000,10 @@ def is_self_affect_query(user_input: str) -> bool:
 
 def affect_report_mode(
     user_input: str, *, debug_introspection: bool = False, peer_dialogue: bool = False,
+    self_integration_query: bool = False,
 ) -> str:
     """Choose the affect evidence projection for this conversational turn."""
-    if peer_dialogue:
+    if peer_dialogue or self_integration_query:
         return "none"
     if debug_introspection or is_structured_affect_status_query(user_input):
         return "detailed"
@@ -1135,6 +1190,8 @@ def affect_self_report_context(
     description: str = "",
     latest_event: Any = None,
     recent_events: Any = None,
+    *,
+    integration_mode: bool = False,
 ) -> str:
     """Format the live affect snapshot with source and similarly named-drive limits."""
     allowed_channels = (
@@ -1197,6 +1254,26 @@ def affect_self_report_context(
             f"{', turn=' + event['turn_id'] if event.get('turn_id') else ''}"
         )
     recent_text = "\n".join(event_lines) if event_lines else ""
+    if integration_mode:
+        interpretation_rule = (
+            "The user asks for integration into your self-model, not a channel dump. Relate the full available "
+            "affect profile to the persistent SelfModelMoment in the cognitive telemetry: distinguish current "
+            "channel levels from deviations to baseline, momentary valence/arousal from slow mood, and recorded "
+            "event causes from interpretation. Explain how multiple signals can coexist and shape the current "
+            "point of view over time; do not collapse the self to the top channel or a single tone. Treat only "
+            "the supplied events as causes, state when causal history is incomplete, and do not invent new affect "
+            "channels, causes, persistence, or memories. A concise synthesis is preferred over listing every value."
+        )
+    else:
+        interpretation_rule = (
+            "For this self-report, use only these affect-channel values. In particular, "
+            "the CuriosityEngine/DecisionPressure `Curiosity Drive` elsewhere in cognitive "
+            "telemetry is a separate motivation signal; do not substitute it for the "
+            "EmotionalStateManager `curiosity` channel. Identify the source when giving "
+            "numbers. The appraisal is the latest logged event, not necessarily the sole "
+            "cause of the whole state. These computational signals do not establish human-like "
+            "subjective experience. If the relevant value is unavailable here, say so."
+        )
     return (
         "━━ AFFECT SELF-REPORT EVIDENCE ━━\n"
         "Source: EmotionalStateManager.get_response_modifiers().affective_profile; "
@@ -1205,13 +1282,7 @@ def affect_self_report_context(
         f"State description: {state_text}\n"
         f"Latest recorded affect-changing appraisal: {latest_text}.\n"
         f"{recent_text + chr(10) if recent_text else ''}"
-        "For this self-report, use only these affect-channel values. In particular, "
-        "the CuriosityEngine/DecisionPressure `Curiosity Drive` elsewhere in cognitive "
-        "telemetry is a separate motivation signal; do not substitute it for the "
-        "EmotionalStateManager `curiosity` channel. Identify the source when giving "
-        "numbers. The appraisal is the latest logged event, not necessarily the sole "
-        "cause of the whole state. These computational signals do not establish human-like "
-        "subjective experience. If the relevant value is unavailable here, say so."
+        + interpretation_rule
     )
 
 
