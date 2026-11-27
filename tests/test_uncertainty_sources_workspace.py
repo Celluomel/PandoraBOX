@@ -8,6 +8,7 @@ from cognition.cognitive_organism import (
     _global_workspace_prompt_fragment,
     _workspace_state_for_prompt,
 )
+from cognition.persona_bridge import _workspace_prompt_uncertainty_receipt
 from core.cognitive_event_bus import (
     CognitiveEventBus,
     CONTRADICTION_DETECTED,
@@ -244,6 +245,48 @@ def test_prompt_uses_current_workspace_sources_not_stale_slow_cycle_snapshot():
     assert "Which source remains unresolved?" in fragment
     assert "ref=turn-current" in fragment
     assert "Several possible sources remain open." not in fragment
+
+
+def test_prompt_receipt_attributes_all_open_origins_from_canonical_workspace():
+    workspace = GlobalWorkspace()
+    user = workspace.record_uncertainty(
+        source_type="user_exchange:competing_explanations",
+        source_module="semantic_extractor", source_ref="turn-user", turn_id="turn-user",
+        question="Which explanation accounts for the mismatch?",
+        evidence="private user quote", salience=0.7,
+    )
+    prediction = workspace.record_uncertainty(
+        source_type="prediction_error", source_module="predictive_mind",
+        source_ref="cycle-12", turn_id="turn-trigger", cycle_id=12,
+        question="Why did the predicted outcome differ?",
+        evidence="private prediction evidence", salience=0.8,
+    )
+    organism = SimpleNamespace(
+        workspace=workspace,
+        _v32_workspace_state=GlobalWorkspace().get_state(),
+    )
+    state = _workspace_state_for_prompt(organism)
+    prompt = _global_workspace_prompt_fragment(state)
+
+    receipt = _workspace_prompt_uncertainty_receipt(organism, prompt)
+    assert receipt["open_uncertainty_source_count"] == 2
+    assert receipt["uncertainty_synthesis_included"] is True
+    assert set(receipt["uncertainty_source_refs"]) == {
+        user["uncertainty_id"], prediction["uncertainty_id"],
+    }
+    assert receipt["uncertainty_source_turn_ids"] == ["turn-trigger", "turn-user"]
+    assert receipt["uncertainty_source_types"] == [
+        "prediction_error", "user_exchange:competing_explanations",
+    ]
+    assert "private user quote" not in prompt
+    assert "private prediction evidence" not in prompt
+
+    workspace.resolve_uncertainty(user["uncertainty_id"], "resolution:turn-review")
+    remaining = _workspace_prompt_uncertainty_receipt(
+        organism, _global_workspace_prompt_fragment(_workspace_state_for_prompt(organism)),
+    )
+    assert remaining["open_uncertainty_source_count"] == 1
+    assert remaining["uncertainty_source_refs"] == [prediction["uncertainty_id"]]
 
 
 def test_intention_reasoning_limits_enter_workspace_as_separate_evidence(tmp_path):

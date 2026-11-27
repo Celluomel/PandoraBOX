@@ -616,6 +616,37 @@ def _workspace_focus_state_provenance(snapshot: Any, *, now: float | None = None
     return {}
 
 
+def _workspace_prompt_uncertainty_receipt(organism: Any, prompt_block: str) -> dict[str, Any]:
+    """Attribute uncertainty included in a prompt to the current canonical state."""
+    from cognition.cognitive_organism import _workspace_state_for_prompt
+
+    snapshot = _workspace_state_for_prompt(organism)
+    if not isinstance(snapshot, dict):
+        to_dict = getattr(snapshot, "to_dict", None)
+        snapshot = to_dict() if callable(to_dict) else {}
+    records = [
+        item for item in (snapshot.get("uncertainty_sources", []) if isinstance(snapshot, dict) else [])
+        if isinstance(item, dict) and item.get("status", "open") == "open"
+    ]
+    refs = [
+        str(item.get("uncertainty_id") or item.get("source_ref") or "")[:96]
+        for item in records if item.get("source_ref") or item.get("uncertainty_id")
+    ]
+    return {
+        "open_uncertainty_source_count": len(records),
+        "uncertainty_synthesis_included": bool(
+            refs and "[Open uncertainty synthesis]" in str(prompt_block or "")
+        ),
+        "uncertainty_source_refs": refs,
+        "uncertainty_source_turn_ids": sorted({
+            str(item.get("turn_id") or "")[:96] for item in records if item.get("turn_id")
+        }),
+        "uncertainty_source_types": sorted({
+            str(item.get("source_type") or "unspecified")[:64] for item in records
+        }),
+    }
+
+
 def _prior_assistant_trace_evidence(
     manager: Any,
     trace: dict[str, Any],
@@ -6439,9 +6470,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _workspace_winner = getattr(
                         self._organism, "_v32_workspace_winner", None
                     )
+                    _uncertainty_receipt = _workspace_prompt_uncertainty_receipt(
+                        self._organism, organism_block,
+                    )
                     _workspace_included = any(
                         marker in organism_block
-                        for marker in ("[Global workspace]", "[DOMINANT FOCUS]")
+                        for marker in (
+                            "[Global workspace]", "[DOMINANT FOCUS]",
+                            "[Open uncertainty synthesis]",
+                        )
                     )
                     _workspace_type = ""
                     _workspace_score = None
@@ -6484,17 +6521,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _workspace_source_ref = str(getattr(
                         self._organism, "_v32_workspace_winner_evidence_ref", ""
                     ) or "")[:64]
-                    _workspace_state = getattr(
-                        self._organism, "_v32_workspace_state", None,
-                    )
-                    if _workspace_state is None:
-                        _workspace = getattr(self._organism, "workspace", None)
-                        _get_workspace_state = getattr(_workspace, "get_state", None)
-                        if callable(_get_workspace_state):
-                            try:
-                                _workspace_state = _get_workspace_state()
-                            except Exception:
-                                _workspace_state = None
+                    from cognition.cognitive_organism import _workspace_state_for_prompt
+                    _workspace_state = _workspace_state_for_prompt(self._organism)
                     _workspace_state_provenance = _workspace_focus_state_provenance(
                         _workspace_state,
                     )
@@ -6502,30 +6530,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     if not isinstance(_workspace_snapshot, dict):
                         _to_dict = getattr(_workspace_snapshot, "to_dict", None)
                         _workspace_snapshot = _to_dict() if callable(_to_dict) else {}
-                    _open_uncertainty_records = [
-                        item for item in (
-                            _workspace_snapshot.get("uncertainty_sources", [])
-                            if isinstance(_workspace_snapshot, dict) else []
-                        )
-                        if isinstance(item, dict) and item.get("status", "open") == "open"
-                    ]
-                    _uncertainty_source_refs = [
-                        str(item.get("uncertainty_id") or item.get("source_ref") or "")[:96]
-                        for item in _open_uncertainty_records
-                        if item.get("source_ref") or item.get("uncertainty_id")
-                    ]
-                    _uncertainty_source_turn_ids = sorted({
-                        str(item.get("turn_id") or "")[:96]
-                        for item in _open_uncertainty_records if item.get("turn_id")
-                    })
-                    _uncertainty_source_types = sorted({
-                        str(item.get("source_type") or "unspecified")[:64]
-                        for item in _open_uncertainty_records
-                    })
-                    _uncertainty_synthesis_included = bool(
-                        _uncertainty_source_refs
-                        and "[Open uncertainty synthesis]" in organism_block
-                    )
                     _workspace_status = (
                         "injected" if _workspace_included and _workspace_source_ref
                         else "injected_snapshot_attributed"
@@ -6543,11 +6547,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "focus_score": _workspace_score,
                         "focus_ref": _workspace_focus_ref,
                         "context_included": _workspace_included,
-                        "open_uncertainty_source_count": len(_open_uncertainty_records),
-                        "uncertainty_synthesis_included": _uncertainty_synthesis_included,
-                        "uncertainty_source_refs": _uncertainty_source_refs,
-                        "uncertainty_source_turn_ids": _uncertainty_source_turn_ids,
-                        "uncertainty_source_types": _uncertainty_source_types,
+                        **_uncertainty_receipt,
                         **_workspace_state_provenance,
                     }
                     self._record_turn_context_source(
