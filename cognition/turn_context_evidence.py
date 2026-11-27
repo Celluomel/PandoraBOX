@@ -665,6 +665,24 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         memory_profile_reason = str(value.get("memory_profile_intent_reason") or "")
         if memory_profile_reason in {"cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input"}:
             receipt["memory_profile_intent_reason"] = memory_profile_reason
+        if isinstance(value.get("uncertainty_signal_candidate"), bool):
+            receipt["uncertainty_signal_candidate"] = value["uncertainty_signal_candidate"]
+        for key in (
+            "uncertainty_positive_similarity",
+            "uncertainty_negative_similarity",
+            "uncertainty_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        uncertainty_reason = str(value.get("uncertainty_router_reason") or "")
+        if uncertainty_reason in {
+            "cross_lingual_semantic_centroid_margin",
+            "below_uncertainty_signal_threshold", "router_unavailable",
+        }:
+            receipt["uncertainty_router_reason"] = uncertainty_reason
         return receipt
 
     if value.get("type") == "cognitive_deliberation_receipt":
@@ -758,6 +776,18 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             receipt["dominant_topic_selected"] = value["dominant_topic_selected"]
         if isinstance(value.get("goal_signal_evidence_valid"), bool):
             receipt["goal_signal_evidence_valid"] = value["goal_signal_evidence_valid"]
+        if isinstance(value.get("uncertainty_candidate"), bool):
+            receipt["uncertainty_candidate"] = value["uncertainty_candidate"]
+        uncertainty_source = value.get("uncertainty_source_receipt")
+        if isinstance(uncertainty_source, Mapping):
+            source_receipt = {
+                "status": str(uncertainty_source.get("status") or "unknown")[:40],
+                "recorded": bool(uncertainty_source.get("recorded")),
+            }
+            uncertainty_id = str(uncertainty_source.get("uncertainty_id") or "")
+            if uncertainty_id and re.fullmatch(r"[A-Za-z0-9_.:-]{1,96}", uncertainty_id):
+                source_receipt["uncertainty_id"] = uncertainty_id
+            receipt["uncertainty_source_receipt"] = source_receipt
         curiosity_status = str(value.get("curiosity_status") or "")[:32]
         if curiosity_status in {
             "stimulated", "unavailable", "failed", "skipped_peer_source",

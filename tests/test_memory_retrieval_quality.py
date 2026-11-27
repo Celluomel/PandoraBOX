@@ -33,7 +33,10 @@ class _MemoryProfileRouterEmbedder:
         from cognition.profile_flow import (
             _GENERAL_MEMORY_PROFILE_EXAMPLES,
             _HISTORY_RECALL_EXAMPLES,
+            _NO_EXPLICIT_UNCERTAINTY_EXAMPLES,
             _PROFILE_LOOKUP_EXAMPLES,
+            _PROFILE_FACT_SCOPE_EXAMPLES,
+            _USER_UNCERTAINTY_EXAMPLES,
         )
 
         if isinstance(texts, str):
@@ -43,20 +46,51 @@ class _MemoryProfileRouterEmbedder:
             + len(_HISTORY_RECALL_EXAMPLES)
             + len(_GENERAL_MEMORY_PROFILE_EXAMPLES)
         )
+        category_count = sum(len(items) for items in _PROFILE_FACT_SCOPE_EXAMPLES.values())
+        uncertainty_positive_start = prototype_count + category_count
+        uncertainty_negative_start = uncertainty_positive_start + len(_USER_UNCERTAINTY_EXAMPLES)
+        query_start = uncertainty_negative_start + len(_NO_EXPLICIT_UNCERTAINTY_EXAMPLES)
+        batch_has_prototypes = len(texts) > query_start
         vectors = []
         for index, text in enumerate(texts):
+            if not batch_has_prototypes:
+                if any(marker in text.casefold() for marker in (
+                    "i am uncertain", "i do not know which", "cannot distinguish",
+                    "je doute", "je ne sais pas encore", "no estoy seguro", "ich bin unsicher",
+                )):
+                    vectors.append([0.0, 0.0, 0.0, 1.0, 0.0])
+                elif any(marker in text.casefold() for marker in (
+                    "previous conversations", "conversation précédente",
+                )):
+                    vectors.append([0.0, 1.0, 0.0, 0.0, 0.0])
+                else:
+                    vectors.append([0.0, 0.0, 1.0, 0.0, 0.0])
+                continue
             if index < len(_PROFILE_LOOKUP_EXAMPLES):
-                vectors.append([1.0, 0.0, 0.0])
+                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0])
             elif index < len(_PROFILE_LOOKUP_EXAMPLES) + len(_HISTORY_RECALL_EXAMPLES):
-                vectors.append([0.0, 1.0, 0.0])
+                vectors.append([0.0, 1.0, 0.0, 0.0, 0.0])
             elif index < prototype_count:
-                vectors.append([0.0, 0.0, 1.0])
-            elif "previous conversations" in text.casefold():
-                vectors.append([0.0, 1.0, 0.0])
+                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0])
+            elif index < uncertainty_positive_start:
+                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0])
+            elif index < uncertainty_negative_start:
+                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0])
+            elif index < query_start:
+                vectors.append([0.0, 0.0, 0.0, 0.0, 1.0])
+            elif any(marker in text.casefold() for marker in (
+                "i am uncertain", "i do not know which", "cannot distinguish",
+                "je doute", "je ne sais pas encore", "no estoy seguro", "ich bin unsicher",
+            )):
+                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0])
+            elif any(marker in text.casefold() for marker in (
+                "previous conversations", "conversation précédente",
+            )):
+                vectors.append([0.0, 1.0, 0.0, 0.0, 0.0])
             elif "explicitly stored" in text.casefold():
-                vectors.append([1.0, 0.0, 0.0])
+                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0])
             else:
-                vectors.append([0.0, 0.0, 1.0])
+                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0])
         return vectors, self.embedding_space_id
 
 
@@ -175,6 +209,16 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(results[0]["intent"], "history_recall")
         self.assertEqual(results[1]["intent"], "uncertain")
         self.assertEqual(results[2]["intent"], "profile_lookup")
+
+    def test_semantic_uncertainty_router_is_independent_of_memory_recall_route(self):
+        results = classify_memory_profile_intents([
+            "Je ne sais pas encore laquelle de ces sources est correcte, les éléments ne permettent pas de trancher.",
+            "Quels éléments ai-je mentionnés dans notre conversation précédente ?",
+        ], embedder=_MemoryProfileRouterEmbedder())
+
+        self.assertTrue(results[0]["uncertainty_signal_candidate"])
+        self.assertFalse(results[1]["uncertainty_signal_candidate"])
+        self.assertEqual(results[1]["intent"], "history_recall")
 
     def test_semantic_historical_intent_abstains_without_a_clear_retrieved_source(self):
         query = "From earlier conversations, what concern did I raise about memory recall?"

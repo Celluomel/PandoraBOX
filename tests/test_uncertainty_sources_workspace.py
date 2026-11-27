@@ -97,6 +97,64 @@ def test_semantic_extractor_records_user_uncertainty_only_with_verbatim_evidence
     assert ungrounded == {}
 
 
+def test_retrieval_hint_does_not_suppress_semantically_routed_user_uncertainty():
+    user_text = "Je ne sais pas quelle source est correcte; plusieurs restent possibles."
+    parsed = {
+        "turn_kind": "topic",
+        "goal_signal": "none",
+        "goal_signal_evidence": "",
+        "uncertainty_signal": {
+            "present": True,
+            "issue": "Which of the possible sources is correct",
+            "evidence": user_text,
+            "kind": "user_stated_doubt",
+            "salience": 0.72,
+        },
+        "concepts": [],
+        "relations": [],
+        "profile_claims": [],
+        "dominant_topic": "",
+        "cognitive_load": 0.2,
+    }
+    workspace = GlobalWorkspace()
+    extractor = SemanticExtractor(_Memory(), llm_fn=lambda _prompt: json.dumps(parsed))
+
+    receipt = extractor._extract(
+        user_text, "", None, workspace, observation_role="user_topic",
+        turn_id="turn-retrieval-uncertainty", turn_kind_hint="retrieval",
+        uncertainty_candidate=True,
+    )
+
+    assert receipt["turn_kind"] == "retrieval"
+    assert receipt["classification_source"] == (
+        "upstream_turn_contract_plus_uncertainty_extraction"
+    )
+    assert receipt["learning_status"] == "skipped_non_topic_turn"
+    assert receipt["uncertainty_source_receipt"]["recorded"] is True
+    assert workspace.get_state().uncertainty_sources[0]["turn_id"] == (
+        "turn-retrieval-uncertainty"
+    )
+
+
+def test_peer_turn_never_becomes_user_uncertainty_source():
+    workspace = GlobalWorkspace()
+    extractor = SemanticExtractor(
+        _Memory(), llm_fn=lambda _prompt: (_ for _ in ()).throw(
+            AssertionError("peer turn should not trigger user uncertainty extraction")
+        ),
+    )
+
+    receipt = extractor._extract(
+        "uncertainty-like peer input", "", None, workspace,
+        observation_role="peer_topic", turn_id="peer-turn",
+        turn_kind_hint="retrieval", uncertainty_candidate=True,
+    )
+
+    assert receipt["classification_source"] == "upstream_turn_contract"
+    assert receipt["uncertainty_source_receipt"]["status"] == "not_candidate"
+    assert workspace.get_state().uncertainty_sources == []
+
+
 def test_event_bus_routes_conflict_and_prediction_error_as_distinct_sources():
     workspace = GlobalWorkspace()
     bus = CognitiveEventBus()
@@ -131,16 +189,34 @@ def test_workspace_prompt_surfaces_open_uncertainty_without_flattening_source():
     state = GlobalWorkspace().get_state()
     state.uncertainty_sources = [
         {"status": "open", "source_type": "user_exchange:open_question",
-         "source_ref": "turn-3", "question": "Which source supports this claim?"},
+         "source_module": "semantic_extractor", "source_ref": "turn-3",
+         "question": "Which source supports this claim?", "salience": 0.7},
         {"status": "open", "source_type": "belief_conflict",
-         "source_ref": "contradiction-4", "question": "Do these beliefs conflict?"},
+         "source_module": "belief_reviser", "source_ref": "contradiction-4",
+         "question": "Do these beliefs conflict?", "salience": 0.8},
+        {"status": "open", "source_type": "prediction_error",
+         "source_module": "predictive_mind", "source_ref": "event-5",
+         "question": "Why did the observed outcome differ?", "salience": 0.6},
+        {"status": "open", "source_type": "decision_reasoning_limit",
+         "source_module": "intention_reasoner", "source_ref": "episode-6",
+         "question": "Which action is feasible?", "salience": 0.5},
+        {"status": "open", "source_type": "user_exchange:clarification",
+         "source_module": "semantic_extractor", "source_ref": "turn-7",
+         "question": "Which of the cited origins is still unverified?", "salience": 0.9},
     ]
 
     fragment = _global_workspace_prompt_fragment(state)
 
     assert "user_exchange:open_question" in fragment
     assert "belief_conflict" in fragment
-    assert "turn-3" in fragment and "contradiction-4" in fragment
+    assert "prediction_error" in fragment and "decision_reasoning_limit" in fragment
+    assert "user_exchange:clarification" in fragment
+    assert all(ref in fragment for ref in (
+        "turn-3", "contradiction-4", "event-5", "episode-6", "turn-7",
+    ))
+    assert "5 independent open source record(s)" in fragment
+    assert "peak salience=0.90" in fragment
+    assert "contributing modules" in fragment
 
 
 def test_intention_reasoning_limits_enter_workspace_as_separate_evidence(tmp_path):

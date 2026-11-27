@@ -173,6 +173,7 @@ class SemanticExtractor:
         turn_id: str = "",
         completion_callback=None,
         turn_kind_hint: str = "",
+        uncertainty_candidate: bool = False,
     ):
         """Queue a completed turn for semantic extraction.
 
@@ -187,7 +188,8 @@ class SemanticExtractor:
         item = (
             user_input, response, None, workspace, role,
             str(turn_id or ""), completion_callback,
-            str(turn_kind_hint or "").strip().casefold(), 0, completion_future,
+            str(turn_kind_hint or "").strip().casefold(),
+            bool(uncertainty_candidate), 0, completion_future,
         )
         with self._lock:
             self._queue.put_nowait(item)
@@ -213,7 +215,7 @@ class SemanticExtractor:
                 continue
             try:
                 try:
-                    receipt = self._extract(*item[:8])
+                    receipt = self._extract(*item[:9])
                 except Exception as extraction_error:
                     # A malformed/provider-specific turn must resolve its
                     # receipt and must not kill the sole queue worker. Without
@@ -236,12 +238,12 @@ class SemanticExtractor:
                         "profile_claims_status": "unavailable",
                         "error_type": type(extraction_error).__name__,
                     }
-                retry_count = int(item[8]) if len(item) > 8 else 0
+                retry_count = int(item[9]) if len(item) > 9 else 0
                 if receipt.get("status") == "deferred":
                     if retry_count < _MAX_DEFERRED_RETRIES:
                         self._schedule_retry((
-                            *item[:8], retry_count + 1,
-                            item[9] if len(item) > 9 else None,
+                            *item[:9], retry_count + 1,
+                            item[10] if len(item) > 10 else None,
                         ))
                         continue
                     receipt.update({
@@ -261,7 +263,7 @@ class SemanticExtractor:
                             "[SemanticExtractor] Completion receipt callback failed: %s",
                             callback_error,
                         )
-                completion_future = item[9] if len(item) > 9 else None
+                completion_future = item[10] if len(item) > 10 else None
                 if isinstance(completion_future, Future) and not completion_future.done():
                     completion_future.set_result(completion_result)
             finally:
@@ -289,7 +291,7 @@ class SemanticExtractor:
 
     def _extract(self, user_input, response, meta_scores, workspace,
                  observation_role="user_topic", turn_id="", completion_callback=None,
-                 turn_kind_hint=""):
+                 turn_kind_hint="", uncertainty_candidate=False):
         receipt = {
             "type": "semantic_extraction_receipt",
             "status": "failed",
@@ -310,6 +312,7 @@ class SemanticExtractor:
             "workspace_status": "not_requested",
             "profile_claims": [],
             "profile_claims_status": "unavailable",
+            "uncertainty_candidate": bool(uncertainty_candidate),
         }
         try:
             t0 = time.time()
@@ -320,7 +323,11 @@ class SemanticExtractor:
             trusted_hint = str(turn_kind_hint or "").strip().casefold()
             profile_claims = []
             uncertainty_signal = {}
-            if trusted_hint in {"retrieval", "social", "instruction", "feedback", "other"}:
+            preserved_turn_kinds = {"retrieval", "social", "instruction", "feedback", "other"}
+            extract_user_uncertainty = bool(
+                uncertainty_candidate and observation_role == "user_topic"
+            )
+            if trusted_hint in preserved_turn_kinds and not extract_user_uncertainty:
                 parsed = ([], [], "", 0.3, trusted_hint, "none", "")
                 receipt["classification_source"] = "upstream_turn_contract"
             else:
@@ -344,6 +351,11 @@ class SemanticExtractor:
                     # call rediscovering whether the user asked for a decision.
                     parsed = (*parsed[:4], "decision", *parsed[5:])
                     receipt["classification_source"] = "upstream_turn_contract_plus_semantic_extraction"
+                elif trusted_hint in preserved_turn_kinds:
+                    parsed = (*parsed[:4], trusted_hint, *parsed[5:])
+                    receipt["classification_source"] = (
+                        "upstream_turn_contract_plus_uncertainty_extraction"
+                    )
                 else:
                     receipt["classification_source"] = "semantic_llm"
             if len(parsed) >= 7:
@@ -391,7 +403,14 @@ class SemanticExtractor:
             receipt["turn_kind"] = turn_kind
             receipt["goal_signal"] = goal_signal
             receipt["goal_signal_evidence_valid"] = goal_signal_evidence_valid
-            uncertainty_receipt = {"status": "no_grounded_signal", "recorded": False}
+            uncertainty_receipt = {
+                "status": (
+                    "no_grounded_signal"
+                    if uncertainty_candidate and observation_role == "user_topic"
+                    else "not_candidate"
+                ),
+                "recorded": False,
+            }
             if uncertainty_signal:
                 if observation_role != "user_topic":
                     uncertainty_receipt = {

@@ -154,13 +154,33 @@ def _global_workspace_prompt_fragment(
 
     fragment = f"[Global workspace] focus: {focus or 'unset'}"
     if open_uncertainties:
+        source_counts: dict[str, int] = {}
+        module_counts: dict[str, int] = {}
+        peak_salience = 0.0
         rendered = []
-        for item in open_uncertainties[:3]:
+        for item in open_uncertainties:
             source = str(item.get("source_type") or "unspecified")[:64]
+            module = str(item.get("source_module") or "unknown")[:48]
+            source_counts[source] = source_counts.get(source, 0) + 1
+            module_counts[module] = module_counts.get(module, 0) + 1
+            try:
+                peak_salience = max(peak_salience, min(1.0, max(0.0, float(item.get("salience", 0.0)))))
+            except (TypeError, ValueError):
+                pass
             issue = str(item.get("question") or "")[:140]
             source_ref = str(item.get("source_ref") or item.get("uncertainty_id") or "")[:64]
-            rendered.append(f"{source}: {issue} (ref={source_ref})")
-        fragment += "\n[Open uncertainty sources — preserve distinct origins] " + " | ".join(rendered)
+            rendered.append(f"{source} via {module}: {issue} (ref={source_ref})")
+        source_summary = ", ".join(
+            f"{source}×{count}" for source, count in sorted(source_counts.items())
+        )
+        module_summary = ", ".join(sorted(module_counts))
+        fragment += (
+            f"\n[Open uncertainty synthesis] {len(open_uncertainties)} independent open "
+            f"source record(s), peak salience={peak_salience:.2f}; "
+            f"source types: {source_summary}; contributing modules: {module_summary}. "
+            "Keep origins distinct; an unresolved record remains open unless explicitly resolved."
+        )
+        fragment += "\n[Open uncertainty sources] " + " | ".join(rendered)
     alternatives = ", ".join(
         item.get("label", item.get("name", "?"))
         for item in hypotheses[1:3]
@@ -1449,6 +1469,7 @@ class CognitiveOrganism:
         turn_id: str = "",
         semantic_topic_callback=None,
         semantic_turn_kind_hint: str = "",
+        semantic_uncertainty_hint: bool = False,
     ) -> Dict[str, Any]:
         """Post-response processing: evaluate, learn, update state."""
         self._last_interaction_ts = time.time()
@@ -1600,6 +1621,9 @@ class CognitiveOrganism:
                 turn_id=turn_id,
                 completion_callback=semantic_topic_callback,
                 turn_kind_hint=semantic_turn_kind_hint,
+                **({"uncertainty_candidate": True} if (
+                    bool(semantic_uncertainty_hint) and bool(human_interaction)
+                ) else {}),
             )
             semantic_topic_receipt.update({
                 "status": "queued",

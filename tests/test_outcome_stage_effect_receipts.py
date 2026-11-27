@@ -256,6 +256,11 @@ def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
         "curiosity_topic_selected": True,
         "curiosity_level_after": 0.60,
         "duration_ms": 12.5,
+        "uncertainty_candidate": True,
+        "uncertainty_source_receipt": {
+            "status": "recorded", "recorded": True,
+            "uncertainty_id": "uncertainty-123", "evidence": "private user evidence",
+        },
         "concepts": ["private concept text"],
         "curiosity_topic": "private topic text",
     })
@@ -270,9 +275,15 @@ def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
     assert summary["curiosity_status"] == "stimulated"
     assert summary["curiosity_topic_selected"] is True
     assert summary["curiosity_level_after"] == 0.60
+    assert summary["uncertainty_candidate"] is True
+    assert summary["uncertainty_source_receipt"] == {
+        "status": "recorded", "recorded": True,
+        "uncertainty_id": "uncertainty-123",
+    }
     assert "concepts" not in summary
     assert "curiosity_topic" not in summary
     assert "private topic text" not in str(summary)
+    assert "private user evidence" not in str(summary)
 
 
 def test_semantic_extraction_summary_preserves_non_topic_skip_reason():

@@ -62,6 +62,24 @@ _GENERAL_MEMORY_PROFILE_EXAMPLES = (
     "Ich mache mir Sorgen, ob das System meine Aussagen richtig erinnert und mein Profil aus unseren Gesprächen aufbaut.",
     "Erkläre allgemein, wie das Gesprächsgedächtnis funktioniert.",
 )
+_USER_UNCERTAINTY_EXAMPLES = (
+    "I am uncertain whether the previous memory retrieval found the right source; several explanations remain possible.",
+    "I do not know which of these explanations is correct, and the evidence does not resolve it.",
+    "My current evidence cannot distinguish these competing hypotheses.",
+    "Je doute que le rappel ait retrouvé la bonne source ; plusieurs explications restent possibles.",
+    "Je ne sais pas encore laquelle de ces explications est correcte, les éléments ne permettent pas de trancher.",
+    "No estoy seguro de cuál explicación es correcta; varias posibilidades siguen abiertas.",
+    "Ich bin unsicher, welche Erklärung zutrifft; mehrere Möglichkeiten bleiben offen.",
+)
+_NO_EXPLICIT_UNCERTAINTY_EXAMPLES = (
+    "What did I ask in the previous conversation about memory retrieval?",
+    "Explain how the memory index retrieves earlier conversation messages.",
+    "Summarize the evidence available about the memory retrieval process.",
+    "Quels éléments ai-je mentionnés dans notre conversation précédente ?",
+    "Explique comment fonctionne l'index de mémoire.",
+    "¿Qué dije en la conversación anterior sobre la memoria?",
+    "Erkläre, wie der Gesprächsspeicher frühere Nachrichten abruft.",
+)
 _PROFILE_FACT_SCOPE_EXAMPLES = {
     "preference": (
         "Which preferences are explicitly recorded in the user's profile?",
@@ -132,6 +150,8 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                     for category_examples in _PROFILE_FACT_SCOPE_EXAMPLES.values()
                     for example in category_examples
                 ),
+                *_USER_UNCERTAINTY_EXAMPLES,
+                *_NO_EXPLICIT_UNCERTAINTY_EXAMPLES,
                 *(texts[index] for index in active_indices),
             ])
             import numpy as np
@@ -144,8 +164,11 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 len(category_examples)
                 for category_examples in _PROFILE_FACT_SCOPE_EXAMPLES.values()
             )
+            uncertainty_positive_count = len(_USER_UNCERTAINTY_EXAMPLES)
+            uncertainty_negative_count = len(_NO_EXPLICIT_UNCERTAINTY_EXAMPLES)
             expected_rows = (
-                prototype_count + category_example_count + len(active_indices)
+                prototype_count + category_example_count + uncertainty_positive_count
+                + uncertainty_negative_count + len(active_indices)
             )
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("memory/profile router received invalid embeddings")
@@ -169,16 +192,27 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 center /= max(float(np.linalg.norm(center)), 1e-12)
                 category_centroids[category] = center
                 category_offset = category_end
+            uncertainty_positive_end = category_offset + uncertainty_positive_count
+            uncertainty_positive = normalized[category_offset:uncertainty_positive_end].mean(axis=0)
+            uncertainty_positive /= max(float(np.linalg.norm(uncertainty_positive)), 1e-12)
+            uncertainty_negative = normalized[
+                uncertainty_positive_end:uncertainty_positive_end + uncertainty_negative_count
+            ].mean(axis=0)
+            uncertainty_negative /= max(float(np.linalg.norm(uncertainty_negative)), 1e-12)
             actual_space = str(space_id)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("memory/profile thresholds require Nomic v1.5")
             with _MEMORY_PROFILE_ROUTER_LOCK:
                 _MEMORY_PROFILE_ROUTER_CENTROIDS[actual_space] = (
                     profile, history, general, category_centroids,
+                    uncertainty_positive, uncertainty_negative,
                 )
-            queries = normalized[prototype_count + category_example_count:]
+            queries = normalized[
+                prototype_count + category_example_count
+                + uncertainty_positive_count + uncertainty_negative_count:
+            ]
         else:
-            profile, history, general, category_centroids = cached
+            profile, history, general, category_centroids, uncertainty_positive, uncertainty_negative = cached
             vectors, actual_space = encoder([texts[index] for index in active_indices])
             import numpy as np
             queries = np.asarray(vectors, dtype="float64")
@@ -190,6 +224,12 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             profile_score = float(query @ profile)
             history_score = float(query @ history)
             general_score = float(query @ general)
+            uncertainty_positive_score = float(query @ uncertainty_positive)
+            uncertainty_negative_score = float(query @ uncertainty_negative)
+            uncertainty_margin = uncertainty_positive_score - uncertainty_negative_score
+            uncertainty_candidate = bool(
+                uncertainty_positive_score >= 0.66 and uncertainty_margin >= 0.035
+            )
             margin = profile_score - history_score
             if profile_score >= 0.63 and margin >= 0.04 and profile_score - general_score >= 0.04:
                 status, intent = "profile_lookup", "profile_lookup"
@@ -217,6 +257,15 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 "history_similarity": round(history_score, 4),
                 "general_similarity": round(general_score, 4),
                 "margin": round(margin, 4),
+                "uncertainty_signal_candidate": uncertainty_candidate,
+                "uncertainty_positive_similarity": round(uncertainty_positive_score, 4),
+                "uncertainty_negative_similarity": round(uncertainty_negative_score, 4),
+                "uncertainty_margin": round(uncertainty_margin, 4),
+                "uncertainty_score_semantics": "uncalibrated Nomic v1.5 semantic centroid scores; not probabilities",
+                "uncertainty_router_reason": (
+                    "cross_lingual_semantic_centroid_margin"
+                    if uncertainty_candidate else "below_uncertainty_signal_threshold"
+                ),
                 "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
                 "embedding_space": actual_space,
                 "reason_code": "cross_lingual_semantic_centroid_margin",
@@ -240,6 +289,8 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 "intent": "uncertain",
                 "reason_code": type(exc).__name__,
                 "score_semantics": "unavailable; do not intercept the user's response",
+                "uncertainty_signal_candidate": False,
+                "uncertainty_router_reason": "router_unavailable",
             }
     return [item for item in results if item is not None]
 
