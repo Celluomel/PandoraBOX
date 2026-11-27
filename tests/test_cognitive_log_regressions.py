@@ -331,6 +331,12 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             "api_route_intent_margin": -0.0884,
             "api_route_intent_space": "nomic_v1.5",
             "api_route_intent_reason": "cross_lingual_semantic_centroid_margin",
+            "prompt_source_provenance_query": False,
+            "prompt_source_provenance_intent_status": "not_prompt_provenance_intent",
+            "prompt_source_provenance_positive_similarity": 0.6778,
+            "prompt_source_provenance_negative_similarity": 0.8171,
+            "prompt_source_provenance_margin": -0.1394,
+            "prompt_source_provenance_reason": "cross_lingual_semantic_centroid_margin",
             "continuing_commitment_candidate": False,
             "commitment_positive_similarity": 0.6616,
             "commitment_negative_similarity": 0.7481,
@@ -348,6 +354,9 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(summary["api_route_intent_status"], "non_api_route_intent")
         self.assertEqual(summary["api_route_intent_margin"], -0.0884)
         self.assertEqual(summary["api_route_intent_space"], "nomic_v1.5")
+        self.assertEqual(summary["prompt_source_provenance_intent_status"], "not_prompt_provenance_intent")
+        self.assertEqual(summary["prompt_source_provenance_margin"], -0.1394)
+        self.assertEqual(summary["prompt_source_provenance_reason"], "cross_lingual_semantic_centroid_margin")
         self.assertFalse(summary["continuing_commitment_candidate"])
         self.assertEqual(summary["commitment_margin"], -0.0865)
         self.assertEqual(summary["commitment_router_reason"], "below_commitment_signal_threshold")

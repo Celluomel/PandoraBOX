@@ -70,6 +70,28 @@ _RUNTIME_API_ROUTE_NEGATIVE = (
 _RUNTIME_API_ROUTE_CENTROIDS: dict[str, tuple[Any, Any]] = {}
 _RUNTIME_API_ROUTE_CENTROIDS_LOCK = Lock()
 
+# Distinguish evidence about the model's prompt from records held by the
+# Global Workspace. These examples are intent prototypes, not trigger words;
+# Nomic's multilingual embedding space makes the boundary language-agnostic.
+_PROMPT_PROVENANCE_POSITIVE = (
+    "Which evidence sources were included in the prompt supplied to the language model for its latest answer?",
+    "Tell me what information the model actually received for this response, including retrieved memory and profile context.",
+    "Distingue les sources d'information effectivement injectées dans le prompt du modèle pour produire la réponse précédente.",
+    "¿Qué fuentes de información se incluyeron en el prompt del modelo para generar la respuesta anterior?",
+    "Welche Informationsquellen wurden tatsächlich in den Prompt des Modells für die letzte Antwort eingefügt?",
+    "Which retrieved records or context contributions were supplied to the model in this turn?",
+)
+_PROMPT_PROVENANCE_NEGATIVE = (
+    "Which uncertainty records are currently open in the Global Workspace? Summarize every source record while preserving its origin.",
+    "What information from the different cognitive modules is currently consolidated in the Global Workspace?",
+    "N'est-ce pas le rôle du Global Workspace de consolider toutes ces sources en un état partagé tout en gardant leur origine?",
+    "¿Qué fuentes de incertidumbre siguen abiertas en el espacio de trabajo global y cuál es su módulo de origen?",
+    "Welche offenen Einträge enthält der globale Arbeitsbereich aktuell und aus welchen Modulen stammen sie?",
+    "Describe the role of the Global Workspace in combining concurrent cognitive inputs without erasing their provenance.",
+)
+_PROMPT_PROVENANCE_CENTROIDS: dict[str, tuple[Any, Any]] = {}
+_PROMPT_PROVENANCE_CENTROIDS_LOCK = Lock()
+
 # Semantic intent prototypes, not trigger phrases. This distinguishes requests
 # for actual robot observations (including recorded motion/odometry) from
 # conceptual or hypothetical robot discussion across languages.
@@ -540,28 +562,87 @@ def is_cognitive_audit_status_query(user_input: str) -> bool:
     return refers_to_audit and refers_to_self and asks_for_recorded_state
 
 
-def is_prompt_source_provenance_query(user_input: str) -> bool:
-    """Recognize a request to report which evidence sources entered this turn."""
-    text = " ".join(str(user_input or "").casefold().split())
-    asks_which_source = bool(re.search(
-        r"\b(?:what|which|quelle?s?|quels?|disting(?:uish|ue)|"
-        r"tell\s+me|dis[- ]moi|as[- ]tu|did\s+you|do\s+you)\b"
-        r".{0,100}\b(?:source|sources|provenance|context|m[eé]moire|"
-        r"information|donn[eé]es?)\b|"
-        r"\b(?:source|sources|provenance)\b.{0,100}\b(?:as[- ]tu|did\s+you|"
-        r"used|consult[eé]e?s?|retriev[eé]e?s?|inject[eé]e?s?|"
-        r"included|supplied|utilis[eé]e?s?|r[eé]cup[eé]r[eé]e?s?|"
-        r"inclus(?:e|es)?|fourni(?:e|es)?|employ[eé]e?s?)\b",
-        text,
-    ))
-    asks_about_delivery = bool(re.search(
-        r"\b(?:used|consult[eé]e?s?|retriev[eé]e?s?|inject[eé]e?s?|"
-        r"included|supplied|utilis[eé]e?s?|r[eé]cup[eé]r[eé]e?s?|"
-        r"inclus(?:e|es)?|fourni(?:e|es)?|employ[eé]e?s?|"
-        r"prompt|context|available|entr[eé]e?s?)\b",
-        text,
-    ))
-    return asks_which_source and asks_about_delivery
+def classify_prompt_source_provenance_intent(
+    user_input: str, *, embedder: Any = None,
+) -> dict[str, Any]:
+    """Classify questions about prompt delivery, distinct from Workspace state.
+
+    This boundary uses multilingual semantic prototypes rather than word
+    patterns. It fails open: uncertain/unavailable routing leaves normal
+    generation and the Global Workspace route available.
+    """
+    value = " ".join(str(user_input or "").split()).strip()
+    if not value:
+        return {"status": "empty_input", "route": False, "reason_code": "empty_input"}
+    try:
+        if embedder is None:
+            from utils.shared_embedder import get_quality_embedder
+            embedder = get_quality_embedder()
+        encoder = getattr(embedder, "encode_interactive_with_metadata", None)
+        if not callable(encoder):
+            raise RuntimeError("interactive quality embedding unavailable")
+        cache_hint = str(
+            getattr(embedder, "embedding_space_id", "")
+            or getattr(embedder, "model_name", "")
+        )
+        with _PROMPT_PROVENANCE_CENTROIDS_LOCK:
+            cached = _PROMPT_PROVENANCE_CENTROIDS.get(cache_hint)
+        if cached is None:
+            vectors, actual_space = encoder([
+                *_PROMPT_PROVENANCE_POSITIVE, *_PROMPT_PROVENANCE_NEGATIVE, value,
+            ])
+            import numpy as np
+            matrix = np.asarray(vectors, dtype="float64")
+            expected_rows = len(_PROMPT_PROVENANCE_POSITIVE) + len(_PROMPT_PROVENANCE_NEGATIVE) + 1
+            if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
+                raise ValueError("prompt provenance router received invalid embeddings")
+            normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
+            positive_end = len(_PROMPT_PROVENANCE_POSITIVE)
+            positive = normalized[:positive_end].mean(axis=0)
+            negative = normalized[positive_end:-1].mean(axis=0)
+            positive /= max(float(np.linalg.norm(positive)), 1e-12)
+            negative /= max(float(np.linalg.norm(negative)), 1e-12)
+            actual_space = str(actual_space)
+            if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
+                raise RuntimeError("prompt provenance routing requires Nomic v1.5")
+            with _PROMPT_PROVENANCE_CENTROIDS_LOCK:
+                _PROMPT_PROVENANCE_CENTROIDS[actual_space] = (positive, negative)
+            query = normalized[-1]
+        else:
+            positive, negative = cached
+            vectors, actual_space = encoder(value)
+            import numpy as np
+            query = np.asarray(vectors, dtype="float64").reshape(-1)
+            if query.size != positive.size or not np.isfinite(query).all():
+                raise ValueError("prompt provenance query embedding is incompatible")
+            query /= max(float(np.linalg.norm(query)), 1e-12)
+
+        positive_score = float(query @ positive)
+        negative_score = float(query @ negative)
+        margin = positive_score - negative_score
+        if positive_score >= 0.70 and margin >= 0.06:
+            status, route = "prompt_provenance_intent", True
+        elif positive_score < 0.64 or margin < 0.0:
+            status, route = "not_prompt_provenance_intent", False
+        else:
+            status, route = "intent_uncertain", False
+        return {
+            "status": status,
+            "route": route,
+            "positive_similarity": round(positive_score, 4),
+            "negative_similarity": round(negative_score, 4),
+            "margin": round(margin, 4),
+            "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
+            "embedding_space": actual_space,
+            "reason_code": "cross_lingual_semantic_centroid_margin",
+        }
+    except Exception as exc:
+        return {
+            "status": "router_unavailable",
+            "route": False,
+            "reason_code": type(exc).__name__,
+            "score_semantics": "unavailable; preserve normal generation",
+        }
 
 
 def is_closed_world_cognitive_report_query(user_input: str) -> bool:

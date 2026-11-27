@@ -14,7 +14,7 @@ from cognition.self_description import (
     is_affect_change_analysis_query,
     is_cognitive_audit_status_query,
     is_closed_world_cognitive_report_query,
-    is_prompt_source_provenance_query,
+    classify_prompt_source_provenance_intent,
     is_cognitive_trace_query,
     is_internal_cognitive_query,
     is_runtime_api_route_question,
@@ -321,16 +321,44 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "Can you explore the idea of how memory shapes a person's identity?"
         ))
 
-    def test_prompt_source_provenance_query_requires_source_delivery_intent(self):
-        self.assertTrue(is_prompt_source_provenance_query(
-            "Distingue les sources incluses dans le prompt de la mémoire durable injectée."
-        ))
-        self.assertTrue(is_prompt_source_provenance_query(
-            "Which sources did you use or retrieve for this answer?"
-        ))
-        self.assertFalse(is_prompt_source_provenance_query(
-            "What is the source code for the memory module?"
-        ))
+    def test_prompt_provenance_router_uses_semantic_contrast_and_fails_open(self):
+        class FakeEmbedder:
+            embedding_space_id = "unit-test:text-embedding-nomic-embed-text-v1.5"
+
+            def __init__(self, query_vector):
+                self.query_vector = query_vector
+
+            def encode_interactive_with_metadata(self, texts):
+                import numpy as np
+                if isinstance(texts, str):
+                    return np.asarray([self.query_vector], dtype="float64"), self.embedding_space_id
+                positive_count = 6
+                negative_count = 6
+                vectors = (
+                    [[1.0, 0.0]] * positive_count
+                    + [[0.0, 1.0]] * negative_count
+                    + [self.query_vector]
+                )
+                return np.asarray(vectors, dtype="float64"), self.embedding_space_id
+
+        prompt_delivery = classify_prompt_source_provenance_intent(
+            "Tell me which retrieved memory and profile evidence entered the prompt for that answer.",
+            embedder=FakeEmbedder([0.98, 0.02]),
+        )
+        workspace_state = classify_prompt_source_provenance_intent(
+            "N'est-ce pas le rôle du Global Workspace de consolider toutes ces sources?",
+            embedder=FakeEmbedder([0.02, 0.98]),
+        )
+        unavailable = classify_prompt_source_provenance_intent(
+            "Which records remain open?", embedder=object(),
+        )
+
+        self.assertTrue(prompt_delivery["route"])
+        self.assertEqual(prompt_delivery["status"], "prompt_provenance_intent")
+        self.assertFalse(workspace_state["route"])
+        self.assertEqual(workspace_state["status"], "not_prompt_provenance_intent")
+        self.assertFalse(unavailable["route"])
+        self.assertEqual(unavailable["status"], "router_unavailable")
 
     def test_runtime_execution_evidence_query_is_closed_world(self):
         question = (

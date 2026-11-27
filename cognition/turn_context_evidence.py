@@ -660,6 +660,29 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 value.get("prompt_source_provenance_query", False)
             ),
         }
+        provenance_status = str(
+            value.get("prompt_source_provenance_intent_status") or ""
+        )
+        if provenance_status in {
+            "prompt_provenance_intent", "not_prompt_provenance_intent",
+            "intent_uncertain", "router_unavailable", "empty_input", "not_checked",
+        }:
+            receipt["prompt_source_provenance_intent_status"] = provenance_status
+        for key in (
+            "prompt_source_provenance_positive_similarity",
+            "prompt_source_provenance_negative_similarity",
+            "prompt_source_provenance_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        provenance_reason = str(value.get("prompt_source_provenance_reason") or "")
+        if provenance_reason in {
+            "cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input",
+        }:
+            receipt["prompt_source_provenance_reason"] = provenance_reason
         route_status = str(value.get("api_route_intent_status") or "")
         if route_status in {
             "api_route_intent", "non_api_route_intent", "intent_uncertain",
