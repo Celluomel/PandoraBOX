@@ -46,6 +46,7 @@ For async handlers, wrap with asyncio.create_task().
 import logging
 import threading
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -59,6 +60,7 @@ class CognitiveEvent:
     payload:    Dict[str, Any]
     source:     str = "unknown"
     timestamp:  float = field(default_factory=time.time)
+    event_id:   str = field(default_factory=lambda: f"event:{uuid.uuid4().hex}")
 
 
 # ── Known event types ─────────────────────────────────────────────────────────
@@ -287,6 +289,34 @@ def wire_cognitive_bus(organism: Any, bus: CognitiveEventBus) -> None:
             "workspace_status": "unavailable",
         }
 
+        # Keep the originating contradiction as a first-class workspace
+        # signal. Curiosity/tension are downstream reactions, not substitutes
+        # for the evidence that produced the uncertainty.
+        ws = getattr(organism, "workspace", None)
+        record_uncertainty = getattr(ws, "record_uncertainty", None)
+        if callable(record_uncertainty):
+            try:
+                claimed = str(event.payload.get("claimed_belief") or topic or "")
+                observed = str(event.payload.get("actual_behavior") or "")
+                issue = (f"Is this belief consistent with the observed behavior? {claimed}"
+                         + (f" | observed: {observed}" if observed else ""))
+                event.payload["uncertainty_workspace_receipt"] = record_uncertainty(
+                    source_type="belief_conflict",
+                    source_module=event.source or "contradiction_handler",
+                    source_ref=str(event.payload.get("contradiction_id") or event.event_id),
+                    turn_id=str(event.payload.get("turn_id") or ""),
+                    cycle_id=event.payload.get("cycle_id"),
+                    question=issue,
+                    evidence=observed,
+                    salience=float(event.payload.get(
+                        "pressure", event.payload.get("severity", 0.5)
+                    )),
+                )
+            except Exception as exc:
+                event.payload["uncertainty_workspace_receipt"] = {
+                    "status": f"failed_{type(exc).__name__}", "recorded": False,
+                }
+
         # Raise tension
         te = getattr(organism, 'tension_engine', None)
         add_pressure = getattr(te, 'add_contradiction_pressure', None)
@@ -330,6 +360,28 @@ def wire_cognitive_bus(organism: Any, bus: CognitiveEventBus) -> None:
     def on_surprise(event: CognitiveEvent):
         domain     = event.payload.get("domain", "")
         error_lvl  = float(event.payload.get("error_level", 0.5))
+
+        # Prediction error is a distinct uncertainty source. Preserve its
+        # source event and turn/cycle lineage even if another source raises
+        # uncertainty about the same topic.
+        ws = getattr(organism, "workspace", None)
+        record_uncertainty = getattr(ws, "record_uncertainty", None)
+        if callable(record_uncertainty):
+            try:
+                event.payload["uncertainty_workspace_receipt"] = record_uncertainty(
+                    source_type="prediction_error",
+                    source_module=event.source or "predictive_mind",
+                    source_ref=event.event_id,
+                    turn_id=str(event.payload.get("turn_id") or ""),
+                    cycle_id=event.payload.get("cycle_id"),
+                    question=f"Why did the prediction differ in {domain or 'this domain'}?",
+                    evidence=str(event.payload.get("evidence") or event.payload.get("actual_intent") or ""),
+                    salience=error_lvl,
+                )
+            except Exception as exc:
+                event.payload["uncertainty_workspace_receipt"] = {
+                    "status": f"failed_{type(exc).__name__}", "recorded": False,
+                }
 
         # Curiosity toward the unexpected domain
         cu = getattr(organism, 'curiosity', None)

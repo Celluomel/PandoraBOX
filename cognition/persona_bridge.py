@@ -1467,6 +1467,10 @@ class PersonaBridge:
                     emit_with_receipt = getattr(event_bus, "emit_with_receipt", None)
                     event_payload = {
                         "topic": str(getattr(contradiction, "claimed_belief", ""))[:80],
+                        "claimed_belief": str(getattr(contradiction, "claimed_belief", ""))[:240],
+                        "actual_behavior": str(getattr(contradiction, "actual_behavior", ""))[:240],
+                        "contradiction_id": str(getattr(contradiction, "contradiction_id", "")),
+                        "turn_id": str(turn_id or ""),
                         "pressure": 0.6,
                     }
                     emitted_event = None

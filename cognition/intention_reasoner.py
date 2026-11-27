@@ -160,6 +160,26 @@ class IntentionReasoner:
             self._episodes[episode.id] = episode
             self._prune()
             self._save_locked()
+        # Keep each epistemic limitation as a separate source in the shared
+        # workspace. The aggregate episode is useful for arbitration, while
+        # the individual statements remain independently inspectable.
+        workspace = getattr(self._organism, "workspace", None)
+        record_uncertainty = getattr(workspace, "record_uncertainty", None)
+        if callable(record_uncertainty):
+            for index, limitation in enumerate(uncertainties):
+                try:
+                    record_uncertainty(
+                        source_type="decision_reasoning_limit",
+                        source_module="intention_reasoner",
+                        source_ref=f"{episode.id}:uncertainty:{index}",
+                        turn_id=str(getattr(goal, "source_turn_id", "") or ""),
+                        cycle_id=getattr(goal, "source_cycle_id", None),
+                        question=episode.question,
+                        evidence=limitation,
+                        salience=max(0.0, min(1.0, 1.0 - episode.confidence)),
+                    )
+                except Exception as exc:
+                    logger.debug("[IntentionReasoner] uncertainty handoff failed: %s", exc)
         logger.info(
             "[IntentionReasoner] %s | support_score_uncalibrated=%.2f | %s",
             episode.intention_id, episode.confidence, episode.conclusion,

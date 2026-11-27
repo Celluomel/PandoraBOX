@@ -23,7 +23,7 @@ import re
 import threading
 import time
 from concurrent.futures import Future
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from cognition.semantic_memory import SemanticMemory
 
@@ -94,6 +94,7 @@ Return exactly this structure:
   "turn_kind": "topic",
   "goal_signal": "none",
   "goal_signal_evidence": "",
+  "uncertainty_signal": {{"present": false, "issue": "", "evidence": "", "kind": "", "salience": 0.0}},
   "concepts": [{{"name": "concept1", "evidence": "exact words from the incoming message"}}],
   "relations": [
     {{"from": "concept1", "to": "concept2", "type": "leads_to", "evidence": "exact words from the incoming message supporting this relation"}}
@@ -109,6 +110,7 @@ Rules:
 - Classify the incoming message's primary conversational act as exactly one of: topic, retrieval, social, instruction, feedback, decision, other. Use "topic" for a substantive subject the user asks to explain, investigate, or discuss. Use "retrieval" when they ask what was said, decided, or observed earlier. Use "social" for greetings, thanks, and small talk. Use "instruction" for operational commands to the assistant/system. Use "feedback" for evaluation of a prior response. Use "decision" for a request to compare feasible actions to achieve a concrete outcome. Use "other" when none fits. Classify the user's intent, not the assistant response.
 - Classify whether the user is asking Lumina to maintain an objective beyond this exchange as exactly one of: continuing_commitment, topic_only, none. Use continuing_commitment only when the incoming message clearly expresses an ongoing project, durable objective, or explicit intent to keep pursuing this subject across turns. A question, request for information, one-off task, or repeated mention alone is topic_only; social/non-substantive turns are none. Use the message meaning in any language; do not infer this signal from the assistant response.
 - If and only if goal_signal is continuing_commitment, set goal_signal_evidence to the exact contiguous phrase from the incoming message that supports ongoing commitment. Copy it verbatim, preserving its original language. Otherwise set it to an empty string. Never paraphrase or use assistant text as evidence.
+- Report a user-origin uncertainty signal when this message semantically expresses an unresolved question, doubt, conflict between plausible alternatives, or an unknown the user is asking to clarify. Do not infer uncertainty merely because the message is interrogative or because the assistant response sounds uncertain. Set present=true only with exact verbatim evidence from the incoming message; preserve its language. "kind" is an open descriptive label, not a fixed category list. Set salience from the strength of the expressed uncertainty (0.0–1.0). Otherwise leave present=false and the other fields empty/zero. Never use assistant text as evidence.
 - Persist only concepts and relations grounded in the incoming message. Assistant wording is not evidence of an interlocutor's belief, fact, preference, or intent.
 - profile_claims: 0-3 claims explicitly stated by the user about themself. Allowed categories: preference, dislike, interest, characteristic. Include a claim only when it is a direct first-person assertion, not quoted/reported speech, a question, hypothetical, negation reversal, instruction, or temporary state. Preferences/interests must express a durable preference or interest; characteristics must be explicitly stable identity facts, not current feelings or activities. Set assertion to exactly "explicit_first_person" and durability to exactly "durable" only when both conditions hold; otherwise omit the claim. Evidence must be an exact contiguous quotation from the incoming message. Value must itself be an exact phrase contained in that evidence, in the user's original language. Never infer a fact from context or assistant text.
 - concepts: 0-8 lowercase nouns or noun phrases, max 3 words each; every concept needs an exact evidence phrase from the incoming message
@@ -126,11 +128,12 @@ _DEFERRED_RETRY_DELAY_SECONDS = 1.0
 
 
 class _SemanticParseResult:
-    """Seven-field legacy parse tuple plus non-positional profile metadata."""
+    """Seven-field legacy parse tuple plus non-positional source metadata."""
 
-    def __init__(self, values, profile_claims=None):
+    def __init__(self, values, profile_claims=None, uncertainty_signal=None):
         self._values = tuple(values)
         self.profile_claims = list(profile_claims or [])
+        self.uncertainty_signal = dict(uncertainty_signal or {})
 
     def __iter__(self):
         return iter(self._values)
@@ -316,6 +319,7 @@ class SemanticExtractor:
             # instead of spending another LLM call to rediscover it.
             trusted_hint = str(turn_kind_hint or "").strip().casefold()
             profile_claims = []
+            uncertainty_signal = {}
             if trusted_hint in {"retrieval", "social", "instruction", "feedback", "other"}:
                 parsed = ([], [], "", 0.3, trusted_hint, "none", "")
                 receipt["classification_source"] = "upstream_turn_contract"
@@ -328,6 +332,9 @@ class SemanticExtractor:
                 try:
                     parsed = self._parse(user_input, response)
                     profile_claims = list(getattr(parsed, "profile_claims", []))
+                    uncertainty_signal = dict(
+                        getattr(parsed, "uncertainty_signal", {}) or {}
+                    )
                 finally:
                     current_turn_id.reset(turn_context_token)
                 if trusted_hint == "decision" and len(parsed) >= 5:
@@ -384,6 +391,33 @@ class SemanticExtractor:
             receipt["turn_kind"] = turn_kind
             receipt["goal_signal"] = goal_signal
             receipt["goal_signal_evidence_valid"] = goal_signal_evidence_valid
+            uncertainty_receipt = {"status": "no_grounded_signal", "recorded": False}
+            if uncertainty_signal:
+                if observation_role != "user_topic":
+                    uncertainty_receipt = {
+                        "status": "skipped_non_user_source", "recorded": False,
+                    }
+                elif callable(getattr(workspace, "record_uncertainty", None)):
+                    uncertainty_receipt = workspace.record_uncertainty(
+                        source_type=(
+                            "user_exchange:" + str(
+                                uncertainty_signal.get("kind") or "uncertainty"
+                            )
+                        ),
+                        source_module="semantic_extractor",
+                        source_ref=str(turn_id or "") or hashlib.sha256(
+                            str(user_input or "").encode("utf-8")
+                        ).hexdigest()[:24],
+                        turn_id=str(turn_id or ""),
+                        question=str(uncertainty_signal.get("issue") or ""),
+                        evidence=str(uncertainty_signal.get("evidence") or ""),
+                        salience=uncertainty_signal.get("salience", 0.5),
+                    )
+                else:
+                    uncertainty_receipt = {
+                        "status": "workspace_unavailable", "recorded": False,
+                    }
+            receipt["uncertainty_source_receipt"] = uncertainty_receipt
             receipt["concepts_parsed"] = len(concepts)
             receipt["dominant_topic_selected"] = bool(topic and topic in concepts)
 
@@ -557,7 +591,11 @@ class SemanticExtractor:
                ) -> Tuple[List[str], List[Dict], str, float, str, str, str]:
         """Compatibility wrapper for callers using the original seven-field contract."""
         parsed = self._parse_with_profile(user_input, response)
-        return _SemanticParseResult(parsed[:7], parsed[7] if len(parsed) >= 8 else [])
+        return _SemanticParseResult(
+            parsed[:7],
+            parsed[7] if len(parsed) >= 8 else [],
+            parsed[8] if len(parsed) >= 9 else {},
+        )
 
     def _parse_with_profile(self, user_input: str, response: str):
         """Extract semantic topics and evidence-grounded user profile claims."""
@@ -572,7 +610,7 @@ class SemanticExtractor:
             # Lexical fallback can suggest concepts but cannot reliably select
             # a dominant semantic topic. Leave topic arbitration to a later
             # stage instead of promoting the first surface token.
-            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none", "", []
+            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none", "", [], {}
 
         try:
             prompt = _EXTRACTION_PROMPT.format(
@@ -591,6 +629,9 @@ class SemanticExtractor:
             concepts = input_llm_concepts[:8]
             relations = self._ground_relations(data.get("relations", []), concepts, input_source)
             profile_claims = self._ground_profile_claims(data.get("profile_claims", []), user_input)
+            uncertainty_signal = self._ground_uncertainty_signal(
+                data.get("uncertainty_signal"), user_input,
+            )
             topic_value = data.get("dominant_topic", "")
             topic = self._normalize_concept(topic_value)
             turn_kind = str(data.get("turn_kind") or "").strip().casefold()
@@ -623,13 +664,37 @@ class SemanticExtractor:
             # A valid empty extraction means this message did not yield a
             # grounded topic. Do not turn lexical leftovers into a semantic
             # topic merely to force a workspace update.
-            return concepts, relations, topic, cog_load, turn_kind, goal_signal, goal_signal_evidence, profile_claims
+            return (concepts, relations, topic, cog_load, turn_kind,
+                    goal_signal, goal_signal_evidence, profile_claims,
+                    uncertainty_signal)
 
         except Exception as e:
             if getattr(e, "semantic_learning_deferred", False):
                 raise
             logger.debug(f"[SemanticExtractor] LLM parse failed ({e}), using keywords")
-            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none", "", []
+            return kw_concepts, kw_relations, "", 0.3, "unclassified", "none", "", [], {}
+
+    @staticmethod
+    def _ground_uncertainty_signal(value, user_input: str) -> Dict[str, Any]:
+        """Accept a semantic uncertainty only when its quoted source is exact."""
+        if not isinstance(value, dict) or value.get("present") is not True:
+            return {}
+        evidence = str(value.get("evidence") or "").strip()
+        issue = str(value.get("issue") or "").strip()
+        if not evidence or not issue or evidence not in str(user_input or ""):
+            return {}
+        try:
+            salience = float(value.get("salience", 0.5))
+        except (TypeError, ValueError):
+            salience = 0.5
+        if not math.isfinite(salience):
+            salience = 0.5
+        return {
+            "issue": issue[:500],
+            "evidence": evidence[:500],
+            "kind": str(value.get("kind") or "user_exchange")[:80],
+            "salience": max(0.0, min(1.0, salience)),
+        }
 
     @staticmethod
     def _ground_profile_claims(values, user_input: str) -> List[Dict[str, str]]:

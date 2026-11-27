@@ -109,6 +109,9 @@ class WorkspaceState:
     # but required for "Broadcast Participants" / "Recent Workspace Changes")
     updated_by:            List[Dict]         = field(default_factory=list)
     last_updated:          float              = field(default_factory=time.time)
+    # Independent source records are retained alongside the aggregate signal.
+    # The workspace may arbitrate their salience, but must not erase provenance.
+    uncertainty_sources:  List[Dict]         = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         return {
@@ -116,6 +119,7 @@ class WorkspaceState:
             "intention":          self.intention,
             "active_hypotheses":  copy.deepcopy(self.active_hypotheses),
             "uncertainty":        round(self.uncertainty, 4),
+            "uncertainty_sources": copy.deepcopy(self.uncertainty_sources),
             "predicted_futures":  copy.deepcopy(self.predicted_futures),
             "goals":              copy.deepcopy(self.goals),
             "motivations":        copy.deepcopy(self.motivations),
@@ -223,6 +227,21 @@ class GlobalWorkspace:
         with self._state_lock:
             for key in accepted_fields:
                 value = copy.deepcopy(fields[key])
+                if key == "uncertainty":
+                    try:
+                        value = max(float(value), max(
+                            (float(item.get("salience", 0.0))
+                             for item in self._state.uncertainty_sources
+                             if item.get("status") == "open"),
+                            default=0.0,
+                        ))
+                    except (TypeError, ValueError):
+                        value = max(
+                            (float(item.get("salience", 0.0))
+                             for item in self._state.uncertainty_sources
+                             if item.get("status") == "open"),
+                            default=0.0,
+                        )
                 if key == "context":
                     context = copy.deepcopy(self._state.context or {})
                     context.update(value or {})
@@ -253,6 +272,103 @@ class GlobalWorkspace:
             self._state.updated_by = self._state.updated_by[-50:]
             self._state.last_updated = time.time()
             return copy.deepcopy(self._state)
+
+    def record_uncertainty(
+        self,
+        *,
+        source_type: str,
+        source_module: str,
+        question: str,
+        source_ref: str = "",
+        turn_id: str = "",
+        cycle_id: Any = None,
+        evidence: str = "",
+        salience: float = 0.5,
+        uncertainty_id: str = "",
+    ) -> Dict[str, Any]:
+        """Retain one uncertainty signal with its independent source lineage.
+
+        ``source_type`` is intentionally open-ended: new cognitive and user
+        sources can participate without changing a closed enum or being
+        collapsed into one privileged origin. Repeated records are idempotent
+        only when they carry the same explicit source reference.
+        """
+        import uuid
+
+        source_type = str(source_type or "unspecified").strip()[:80] or "unspecified"
+        source_module = str(source_module or "unknown").strip()[:120] or "unknown"
+        question = str(question or "").strip()[:500]
+        source_ref = str(source_ref or "").strip()[:180]
+        if not question:
+            return {"status": "rejected_missing_question", "recorded": False}
+        try:
+            salience = float(salience)
+        except (TypeError, ValueError):
+            salience = 0.5
+        if not 0.0 <= salience <= 1.0:
+            salience = max(0.0, min(1.0, salience))
+
+        with self._state_lock:
+            records = self._state.uncertainty_sources
+            if source_ref:
+                for prior in records:
+                    if (prior.get("source_module") == source_module
+                            and prior.get("source_ref") == source_ref
+                            and prior.get("status") == "open"):
+                        return {"status": "already_recorded", "recorded": True,
+                                "uncertainty_id": prior["uncertainty_id"]}
+            record = {
+                "uncertainty_id": str(uncertainty_id or f"uncertainty:{uuid.uuid4().hex}"),
+                "source_type": source_type,
+                "source_module": source_module,
+                "source_ref": source_ref or None,
+                "turn_id": str(turn_id or "") or None,
+                "cycle_id": cycle_id,
+                "question": question,
+                "evidence": str(evidence or "")[:500],
+                "salience": round(salience, 4),
+                "status": "open",
+                "created_at": round(time.time(), 3),
+            }
+            records.append(record)
+            self._state.uncertainty_sources = records
+            self._state.uncertainty = max(
+                (float(item.get("salience", 0.0)) for item in self._state.uncertainty_sources
+                 if item.get("status") == "open"), default=0.0,
+            )
+            self._state.updated_by.append({
+                "source": source_module,
+                "fields": ["uncertainty", "uncertainty_sources"],
+                "timestamp": round(time.time(), 3),
+            })
+            self._state.updated_by = self._state.updated_by[-50:]
+            self._state.last_updated = time.time()
+            return {"status": "recorded", "recorded": True,
+                    "uncertainty_id": record["uncertainty_id"]}
+
+    def resolve_uncertainty(self, uncertainty_id: str, resolution_ref: str) -> Dict[str, Any]:
+        """Mark one source record resolved without deleting or closing peers."""
+        with self._state_lock:
+            record = next((item for item in self._state.uncertainty_sources
+                           if item.get("uncertainty_id") == uncertainty_id), None)
+            if record is None:
+                return {"status": "not_found", "resolved": False}
+            record["status"] = "resolved"
+            record["resolution_ref"] = str(resolution_ref or "")[:180] or None
+            record["resolved_at"] = round(time.time(), 3)
+            self._state.uncertainty = max(
+                (float(item.get("salience", 0.0)) for item in self._state.uncertainty_sources
+                 if item.get("status") == "open"), default=0.0,
+            )
+            self._state.updated_by.append({
+                "source": "uncertainty_resolution",
+                "fields": ["uncertainty", "uncertainty_sources"],
+                "timestamp": round(time.time(), 3),
+            })
+            self._state.updated_by = self._state.updated_by[-50:]
+            self._state.last_updated = time.time()
+            return {"status": "resolved", "resolved": True,
+                    "uncertainty_id": uncertainty_id}
 
     def set_hypotheses(self, source: str, hypotheses: List[Dict]) -> None:
         """

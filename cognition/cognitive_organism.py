@@ -141,13 +141,26 @@ def _global_workspace_prompt_fragment(
         return ""
     hypotheses = getattr(workspace_state, "active_hypotheses", None) or []
     policy = getattr(workspace_state, "executive_policy", None) or {}
+    uncertainty_sources = getattr(workspace_state, "uncertainty_sources", None) or []
+    open_uncertainties = [
+        item for item in uncertainty_sources
+        if isinstance(item, dict) and item.get("status", "open") == "open"
+    ]
     # The post-arbitration winner on the organism is the canonical published
     # focus. The shared WorkspaceState snapshot can lag that publication.
     focus = published_focus or getattr(workspace_state, "focus", None)
-    if not (hypotheses or policy or focus):
+    if not (hypotheses or policy or focus or open_uncertainties):
         return ""
 
     fragment = f"[Global workspace] focus: {focus or 'unset'}"
+    if open_uncertainties:
+        rendered = []
+        for item in open_uncertainties[:3]:
+            source = str(item.get("source_type") or "unspecified")[:64]
+            issue = str(item.get("question") or "")[:140]
+            source_ref = str(item.get("source_ref") or item.get("uncertainty_id") or "")[:64]
+            rendered.append(f"{source}: {issue} (ref={source_ref})")
+        fragment += "\n[Open uncertainty sources — preserve distinct origins] " + " | ".join(rendered)
     alternatives = ", ".join(
         item.get("label", item.get("name", "?"))
         for item in hypotheses[1:3]
@@ -1661,6 +1674,8 @@ class CognitiveOrganism:
                     self.event_bus.emit(SURPRISE_DETECTED, {
                         "domain":      result.actual_intent,
                         "error_level": result.error_level,
+                        "turn_id":     str(turn_id or ""),
+                        "cycle_id":    cycle_data.get("cycle_id") if isinstance(cycle_data, dict) else None,
                     }, source="predictive_mind")
         except Exception:
             pass
