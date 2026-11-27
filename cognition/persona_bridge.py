@@ -3310,6 +3310,11 @@ class PersonaBridge:
         _prompt_source_provenance_intent: dict[str, Any] = {
             "status": "not_checked", "route": False,
         }
+        _software_architecture_intent: dict[str, Any] = {
+            "software_architecture_status": "not_checked",
+            "software_architecture_route": False,
+        }
+        _software_architecture_query = False
         _api_route_query = False
         _architecture_context_query = False
         _api_route_intent: dict[str, Any] = {"status": "not_checked", "route": False}
@@ -3336,14 +3341,19 @@ class PersonaBridge:
                 _api_route_intent.get("route") is True
                 and not _explicit_memory_recall
             )
-            _architecture_context_query = is_architecture_query(
-                effective_input, api_route_intent=_api_route_query,
-            )
             _prompt_source_provenance_intent = await asyncio.to_thread(
                 classify_prompt_source_provenance_intent, effective_input,
             )
             _prompt_source_provenance_query = (
                 _prompt_source_provenance_intent.get("route") is True
+            )
+            _software_architecture_intent = _prompt_source_provenance_intent
+            _software_architecture_query = bool(
+                _software_architecture_intent.get("software_architecture_route") is True
+            )
+            _architecture_context_query = (
+                is_architecture_query(effective_input, api_route_intent=_api_route_query)
+                or _software_architecture_query
             )
             # Explicit requests to recall conversation history must stay on
             # the source-backed memory route even when their subject contains
@@ -3370,6 +3380,7 @@ class PersonaBridge:
                 or _explicit_named_profile_query
                 or _prompt_source_provenance_query
                 or _api_route_query
+                or _software_architecture_query
             )
             _architecture_query = (
                 (_architecture_context_query or _cognitive_trace_query or _api_route_query)
@@ -3381,6 +3392,7 @@ class PersonaBridge:
                 or _explicit_memory_recall
                 or _explicit_named_profile_query
                 or _api_route_query
+                or _software_architecture_query
             )
             self._record_turn_stage(
                 "turn_evidence_routing", "classified",
@@ -3404,6 +3416,22 @@ class PersonaBridge:
                     "prompt_source_provenance_margin": _prompt_source_provenance_intent.get("margin"),
                     "prompt_source_provenance_reason": str(
                         _prompt_source_provenance_intent.get("reason_code") or "unavailable"
+                    ),
+                    "software_architecture_intent_status": str(
+                        _software_architecture_intent.get("software_architecture_status") or "unavailable"
+                    ),
+                    "software_architecture_query": _software_architecture_query,
+                    "software_architecture_positive_similarity": _software_architecture_intent.get(
+                        "software_architecture_positive_similarity"
+                    ),
+                    "software_architecture_negative_similarity": _software_architecture_intent.get(
+                        "software_architecture_negative_similarity"
+                    ),
+                    "software_architecture_margin": _software_architecture_intent.get(
+                        "software_architecture_margin"
+                    ),
+                    "software_architecture_reason": str(
+                        _software_architecture_intent.get("software_architecture_reason_code") or "unavailable"
                     ),
                     "api_route_query": bool(_api_route_query),
                     "api_route_intent_status": str(_api_route_intent.get("status") or "unavailable"),
@@ -3486,6 +3514,12 @@ class PersonaBridge:
             _api_route_query = False
             _explicit_named_profile_query = False
             _prompt_source_provenance_query = False
+            _software_architecture_query = False
+            _software_architecture_intent = {
+                "software_architecture_status": "router_unavailable",
+                "software_architecture_route": False,
+                "software_architecture_reason_code": type(_architecture_query_error).__name__,
+            }
             _prompt_source_provenance_intent = {
                 "status": "router_unavailable", "route": False,
                 "reason_code": type(_architecture_query_error).__name__,
@@ -3887,6 +3921,7 @@ class PersonaBridge:
             or _runtime_execution_query
             or _cognitive_audit_status_query
             or _factual_plan_query
+            or _software_architecture_query
             or (_internal_cognitive_query and not _architecture_query)
             or _affect_self_report_query
             or _quantitative_analysis is not None

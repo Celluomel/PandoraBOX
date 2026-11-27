@@ -660,6 +660,8 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 value.get("prompt_source_provenance_query", False)
             ),
         }
+        if isinstance(value.get("software_architecture_query"), bool):
+            receipt["software_architecture_query"] = value["software_architecture_query"]
         provenance_status = str(
             value.get("prompt_source_provenance_intent_status") or ""
         )
@@ -683,6 +685,30 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input",
         }:
             receipt["prompt_source_provenance_reason"] = provenance_reason
+        architecture_status = str(
+            value.get("software_architecture_intent_status") or ""
+        )
+        if architecture_status in {
+            "software_architecture_intent", "not_software_architecture_intent",
+            "architecture_intent_uncertain", "router_unavailable", "empty_input",
+            "not_checked",
+        }:
+            receipt["software_architecture_intent_status"] = architecture_status
+        for key in (
+            "software_architecture_positive_similarity",
+            "software_architecture_negative_similarity",
+            "software_architecture_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        architecture_reason = str(value.get("software_architecture_reason") or "")
+        if architecture_reason in {
+            "cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input",
+        }:
+            receipt["software_architecture_reason"] = architecture_reason
         route_status = str(value.get("api_route_intent_status") or "")
         if route_status in {
             "api_route_intent", "non_api_route_intent", "intent_uncertain",

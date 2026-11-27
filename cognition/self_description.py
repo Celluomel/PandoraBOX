@@ -89,7 +89,24 @@ _PROMPT_PROVENANCE_NEGATIVE = (
     "Welche offenen Einträge enthält der globale Arbeitsbereich aktuell und aus welchen Modulen stammen sie?",
     "Describe the role of the Global Workspace in combining concurrent cognitive inputs without erasing their provenance.",
 )
-_PROMPT_PROVENANCE_CENTROIDS: dict[str, tuple[Any, Any]] = {}
+_SOFTWARE_ARCHITECTURE_POSITIVE = (
+    "Explain how this software's Global Workspace implementation integrates output from cognitive modules and makes it available to downstream reasoning.",
+    "Describe the implemented data flow through the Global Workspace, including how it consolidates inputs while retaining provenance.",
+    "Does the Global Workspace in this codebase combine cognitive-module outputs? Explain the mechanisms that are actually implemented and their limits.",
+    "Quel est le rôle du Global Workspace dans l’architecture cognitive de ce logiciel, et comment les résultats des modules y sont-ils consolidés ?",
+    "Comment le code du Global Workspace réunit-il les contributions des modules cognitifs et conserve-t-il leur provenance ?",
+    "¿Cómo integra este software las salidas de sus módulos cognitivos en el Global Workspace y conserva su procedencia?",
+    "Wie führt die Implementierung des Global Workspace Ausgaben kognitiver Module zusammen und bewahrt ihre Herkunft?",
+)
+_SOFTWARE_ARCHITECTURE_NEGATIVE = (
+    "Which uncertainty records are currently open in the Global Workspace? List their source records and preserve each origin.",
+    "Which information sources were included in the language model prompt for the last response?",
+    "Explain global workspace theory in cognitive science in general, without discussing this software implementation.",
+    "What is your personal philosophical path and purpose?",
+    "How should I organize my physical workspace for a project?",
+    "What did the live Global Workspace contain on this exact turn? Report its current records, not the architecture.",
+)
+_PROMPT_PROVENANCE_CENTROIDS: dict[str, tuple[Any, Any, Any, Any]] = {}
 _PROMPT_PROVENANCE_CENTROIDS_LOCK = Lock()
 
 # Semantic intent prototypes, not trigger phrases. This distinguishes requests
@@ -589,27 +606,40 @@ def classify_prompt_source_provenance_intent(
             cached = _PROMPT_PROVENANCE_CENTROIDS.get(cache_hint)
         if cached is None:
             vectors, actual_space = encoder([
-                *_PROMPT_PROVENANCE_POSITIVE, *_PROMPT_PROVENANCE_NEGATIVE, value,
+                *_PROMPT_PROVENANCE_POSITIVE, *_PROMPT_PROVENANCE_NEGATIVE,
+                *_SOFTWARE_ARCHITECTURE_POSITIVE, *_SOFTWARE_ARCHITECTURE_NEGATIVE,
+                value,
             ])
             import numpy as np
             matrix = np.asarray(vectors, dtype="float64")
-            expected_rows = len(_PROMPT_PROVENANCE_POSITIVE) + len(_PROMPT_PROVENANCE_NEGATIVE) + 1
+            provenance_rows = len(_PROMPT_PROVENANCE_POSITIVE) + len(_PROMPT_PROVENANCE_NEGATIVE)
+            architecture_rows = len(_SOFTWARE_ARCHITECTURE_POSITIVE) + len(_SOFTWARE_ARCHITECTURE_NEGATIVE)
+            expected_rows = provenance_rows + architecture_rows + 1
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("prompt provenance router received invalid embeddings")
             normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
-            positive_end = len(_PROMPT_PROVENANCE_POSITIVE)
-            positive = normalized[:positive_end].mean(axis=0)
-            negative = normalized[positive_end:-1].mean(axis=0)
+            provenance_positive_end = len(_PROMPT_PROVENANCE_POSITIVE)
+            provenance_negative_end = provenance_rows
+            architecture_positive_end = provenance_rows + len(_SOFTWARE_ARCHITECTURE_POSITIVE)
+            architecture_negative_end = provenance_rows + architecture_rows
+            positive = normalized[:provenance_positive_end].mean(axis=0)
+            negative = normalized[provenance_positive_end:provenance_negative_end].mean(axis=0)
+            architecture_positive = normalized[provenance_negative_end:architecture_positive_end].mean(axis=0)
+            architecture_negative = normalized[architecture_positive_end:architecture_negative_end].mean(axis=0)
             positive /= max(float(np.linalg.norm(positive)), 1e-12)
             negative /= max(float(np.linalg.norm(negative)), 1e-12)
+            architecture_positive /= max(float(np.linalg.norm(architecture_positive)), 1e-12)
+            architecture_negative /= max(float(np.linalg.norm(architecture_negative)), 1e-12)
             actual_space = str(actual_space)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("prompt provenance routing requires Nomic v1.5")
             with _PROMPT_PROVENANCE_CENTROIDS_LOCK:
-                _PROMPT_PROVENANCE_CENTROIDS[actual_space] = (positive, negative)
+                _PROMPT_PROVENANCE_CENTROIDS[actual_space] = (
+                    positive, negative, architecture_positive, architecture_negative,
+                )
             query = normalized[-1]
         else:
-            positive, negative = cached
+            positive, negative, architecture_positive, architecture_negative = cached
             vectors, actual_space = encoder(value)
             import numpy as np
             query = np.asarray(vectors, dtype="float64").reshape(-1)
@@ -626,6 +656,15 @@ def classify_prompt_source_provenance_intent(
             status, route = "not_prompt_provenance_intent", False
         else:
             status, route = "intent_uncertain", False
+        architecture_positive_score = float(query @ architecture_positive)
+        architecture_negative_score = float(query @ architecture_negative)
+        architecture_margin = architecture_positive_score - architecture_negative_score
+        if architecture_positive_score >= 0.72 and architecture_margin >= 0.05:
+            architecture_status, architecture_route = "software_architecture_intent", True
+        elif architecture_positive_score < 0.66 or architecture_margin < 0.0:
+            architecture_status, architecture_route = "not_software_architecture_intent", False
+        else:
+            architecture_status, architecture_route = "architecture_intent_uncertain", False
         return {
             "status": status,
             "route": route,
@@ -635,6 +674,12 @@ def classify_prompt_source_provenance_intent(
             "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
             "embedding_space": actual_space,
             "reason_code": "cross_lingual_semantic_centroid_margin",
+            "software_architecture_status": architecture_status,
+            "software_architecture_route": architecture_route,
+            "software_architecture_positive_similarity": round(architecture_positive_score, 4),
+            "software_architecture_negative_similarity": round(architecture_negative_score, 4),
+            "software_architecture_margin": round(architecture_margin, 4),
+            "software_architecture_reason_code": "cross_lingual_semantic_centroid_margin",
         }
     except Exception as exc:
         return {
@@ -642,6 +687,9 @@ def classify_prompt_source_provenance_intent(
             "route": False,
             "reason_code": type(exc).__name__,
             "score_semantics": "unavailable; preserve normal generation",
+            "software_architecture_status": "router_unavailable",
+            "software_architecture_route": False,
+            "software_architecture_reason_code": type(exc).__name__,
         }
 
 
@@ -1895,6 +1943,25 @@ class SelfDescription:
                 drift_count += 1
         except Exception as e:
             logger.debug(f"[SelfDescription] scan SymbolSystem failed: {e}")
+
+        try:
+            from cognition.global_workspace import GlobalWorkspace
+            from cognition.workspace_competition import WorkspaceCompetition
+            if self.register_or_update(
+                "GlobalWorkspace", "cognition/global_workspace.py",
+                "Shared cognitive state and broadcast buffer. update_state merges allowlisted fields; context maps are merged by key, and merge_context records the writer for each key. record_uncertainty retains each open source with its type, module, reference, turn/cycle, question, evidence, salience, and status; resolving one record leaves peers unchanged. broadcast submits source/content/priority to a bounded buffer (default capacity 32, at most 4 items per source); recent semantic duplicates may be rejected and a full buffer may evict its lowest-priority item. WorkspaceCompetition writes the selected focus and up to three ranked candidates (including the winner) as active hypotheses. Only outputs published through these interfaces, admitted by their gates, and later read by a consumer become available there. This does not establish universal access to every module output or calibrated confidence metadata on every broadcast.",
+                {
+                    "CAPACITY": GlobalWorkspace.CAPACITY,
+                    "SOURCE_MAX": GlobalWorkspace.SOURCE_MAX,
+                    "SIMILARITY_BLOCK": GlobalWorkspace.SIMILARITY_BLOCK,
+                    "RECENCY_WINDOW": GlobalWorkspace.RECENCY_WINDOW,
+                    "PRIORITY_OVERRIDE": GlobalWorkspace.PRIORITY_OVERRIDE,
+                    "MAX_HYPOTHESES_TO_WORKSPACE": WorkspaceCompetition.MAX_HYPOTHESES_TO_WORKSPACE,
+                },
+            ):
+                drift_count += 1
+        except Exception as e:
+            logger.debug(f"[SelfDescription] scan GlobalWorkspace failed: {e}")
 
         return drift_count
 

@@ -330,24 +330,41 @@ class SelfDescriptionPromptTests(unittest.TestCase):
 
             def encode_interactive_with_metadata(self, texts):
                 import numpy as np
-                if isinstance(texts, str):
+                from cognition.self_description import (
+                    _PROMPT_PROVENANCE_POSITIVE, _PROMPT_PROVENANCE_NEGATIVE,
+                    _SOFTWARE_ARCHITECTURE_POSITIVE, _SOFTWARE_ARCHITECTURE_NEGATIVE,
+                )
+                if isinstance(texts, str) or len(texts) == 1:
                     return np.asarray([self.query_vector], dtype="float64"), self.embedding_space_id
-                positive_count = 6
-                negative_count = 6
+                vectors = []
+                for value in texts[:-1]:
+                    if value in _PROMPT_PROVENANCE_POSITIVE:
+                        vectors.append([1.0, 0.0, 0.0, 0.0])
+                    elif value in _PROMPT_PROVENANCE_NEGATIVE:
+                        vectors.append([0.0, 1.0, 0.0, 0.0])
+                    elif value in _SOFTWARE_ARCHITECTURE_POSITIVE:
+                        vectors.append([0.0, 0.0, 1.0, 0.0])
+                    elif value in _SOFTWARE_ARCHITECTURE_NEGATIVE:
+                        vectors.append([0.0, 0.0, 0.0, 1.0])
+                    else:
+                        vectors.append([0.0, 0.0, 0.0, 0.0])
+                vectors.append(self.query_vector)
                 vectors = (
-                    [[1.0, 0.0]] * positive_count
-                    + [[0.0, 1.0]] * negative_count
-                    + [self.query_vector]
+                    vectors
                 )
                 return np.asarray(vectors, dtype="float64"), self.embedding_space_id
 
         prompt_delivery = classify_prompt_source_provenance_intent(
             "Tell me which retrieved memory and profile evidence entered the prompt for that answer.",
-            embedder=FakeEmbedder([0.98, 0.02]),
+            embedder=FakeEmbedder([0.98, 0.02, 0.0, 0.0]),
         )
         workspace_state = classify_prompt_source_provenance_intent(
             "N'est-ce pas le rôle du Global Workspace de consolider toutes ces sources?",
-            embedder=FakeEmbedder([0.02, 0.98]),
+            embedder=FakeEmbedder([0.02, 0.98, 0.0, 0.0]),
+        )
+        workspace_architecture = classify_prompt_source_provenance_intent(
+            "N’est-ce pas le rôle du Global Workspace de consolider toutes ces sources ?",
+            embedder=FakeEmbedder([0.0, 0.0, 0.98, 0.02]),
         )
         unavailable = classify_prompt_source_provenance_intent(
             "Which records remain open?", embedder=object(),
@@ -357,8 +374,31 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertEqual(prompt_delivery["status"], "prompt_provenance_intent")
         self.assertFalse(workspace_state["route"])
         self.assertEqual(workspace_state["status"], "not_prompt_provenance_intent")
+        self.assertTrue(workspace_architecture["software_architecture_route"])
+        self.assertEqual(
+            workspace_architecture["software_architecture_status"],
+            "software_architecture_intent",
+        )
+        self.assertFalse(workspace_architecture["route"])
         self.assertFalse(unavailable["route"])
         self.assertEqual(unavailable["status"], "router_unavailable")
+        self.assertFalse(unavailable["software_architecture_route"])
+
+    def test_global_workspace_registry_describes_real_merge_and_provenance_limits(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            description = SelfDescription(str(Path(temp_dir) / "self.json"))
+            description.scan_known_components()
+            component = description.components["GlobalWorkspace"]
+            context = description.prompt_context()
+
+        self.assertEqual(component.module_path, "cognition/global_workspace.py")
+        self.assertEqual(component.key_parameters["CAPACITY"], 32)
+        self.assertEqual(component.key_parameters["SOURCE_MAX"], 4)
+        self.assertEqual(component.key_parameters["MAX_HYPOTHESES_TO_WORKSPACE"], 3)
+        self.assertIn("resolving one record leaves peers unchanged", component.role)
+        self.assertIn("Only outputs published through these interfaces", component.role)
+        self.assertIn("does not establish universal access", component.role)
+        self.assertIn("GlobalWorkspace [cognition/global_workspace.py]", context)
 
     def test_runtime_execution_evidence_query_is_closed_world(self):
         question = (
