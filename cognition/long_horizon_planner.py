@@ -721,6 +721,10 @@ class LongHorizonPlanner:
                     success,
                     result,
                     effect_measured=step.effect_measured,
+                    execution_id=step.execution_id,
+                    cycle_id=step.cycle_id,
+                    output_ref=step.output_ref,
+                    consumed_output_ref=step.consumed_output_ref,
                 )
         revised = False
         if success:

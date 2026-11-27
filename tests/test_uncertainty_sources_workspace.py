@@ -72,6 +72,74 @@ def test_global_workspace_keeps_independent_uncertainty_sources_and_resolves_one
     assert state.uncertainty == 0.8
 
 
+def test_reasoning_episode_and_outcome_keep_workspace_uncertainty_lineage(tmp_path):
+    workspace = GlobalWorkspace(uncertainty_path=tmp_path / "workspace.json")
+    organism = SimpleNamespace(workspace=workspace, _loop=None)
+    reasoner = IntentionReasoner(
+        organism, path=str(tmp_path / "reasoning.json"),
+    )
+    goal = SimpleNamespace(
+        id="goal-lineage", topic="compare unresolved explanations",
+        origin="user_exchange", priority=0.7,
+        source_turn_id="turn-source-1", source_cycle_id=12,
+    )
+
+    episode = reasoner.deliberate(goal, ["memory_recall", "self_question"])
+    records = workspace.get_state().uncertainty_sources
+    ids = {item["uncertainty_id"] for item in records}
+    assert len(records) == len(episode.uncertainties)
+    assert {item["uncertainty_id"] for item in episode.uncertainty_sources} == ids
+    assert all(item["status"] == "recorded" for item in episode.uncertainty_sources)
+    assert all(item["persistence_status"] == "persisted" for item in episode.uncertainty_sources)
+    assert all(item["status"] == "open" for item in records)
+    assert all(item["turn_id"] == "turn-source-1" for item in records)
+    assert all(item["cycle_id"] == 12 for item in records)
+
+    reasoner.record_outcome(
+        episode.id, "memory_recall", True, "execution finished; effect unmeasured",
+        execution_id="exec-lineage-1", cycle_id=13,
+        output_ref="recall-output-1", consumed_output_ref="question-input-1",
+    )
+    reloaded = IntentionReasoner(organism, path=str(tmp_path / "reasoning.json"))
+    restored = reloaded.get(episode.id)
+    outcome = restored.outcomes[-1]
+    assert set(outcome["uncertainty_ids"]) == ids
+    assert outcome["execution_id"] == "exec-lineage-1"
+    assert outcome["cycle_id"] == 13
+    assert outcome["output_ref"] == "recall-output-1"
+    assert outcome["consumed_output_ref"] == "question-input-1"
+    # An execution receipt is not evidence that the source uncertainty is resolved.
+    assert all(item["status"] == "open" for item in workspace.get_state().uncertainty_sources)
+
+
+def test_legacy_reasoning_episode_recovers_exact_uncertainty_refs(tmp_path):
+    workspace = GlobalWorkspace(uncertainty_path=tmp_path / "workspace.json")
+    organism = SimpleNamespace(workspace=workspace, _loop=None)
+    path = tmp_path / "reasoning.json"
+    reasoner = IntentionReasoner(organism, path=str(path))
+    episode = reasoner.deliberate(
+        SimpleNamespace(
+            id="legacy-lineage", topic="retain independent evidence",
+            origin="user_exchange", priority=0.5,
+        ),
+        ["memory_recall"],
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["episodes"][episode.id].pop("uncertainty_sources")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    migrated = IntentionReasoner(organism, path=str(path)).get(episode.id)
+
+    expected = {
+        item["uncertainty_id"] for item in workspace.get_state().uncertainty_sources
+    }
+    assert {item["uncertainty_id"] for item in migrated.uncertainty_sources} == expected
+    assert all(item["source_status"] == "open" for item in migrated.uncertainty_sources)
+    assert all(item["status"] == "linked_existing" for item in migrated.uncertainty_sources)
+    # Provenance recovery is not a resolution operation.
+    assert all(item["status"] == "open" for item in workspace.get_state().uncertainty_sources)
+
+
 def test_uncertainty_sources_survive_restart_and_resolution_is_source_scoped(tmp_path):
     ledger_path = tmp_path / "workspace-uncertainties.json"
     first = GlobalWorkspace(uncertainty_path=ledger_path)

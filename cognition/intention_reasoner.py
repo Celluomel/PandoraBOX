@@ -74,6 +74,10 @@ class ReasoningEpisode:
     updated_at: float = field(default_factory=time.time)
     outcomes: List[Dict[str, Any]] = field(default_factory=list)
     initial_confidence: float = 0.0
+    # Workspace uncertainty records are independent source records. Keep their
+    # IDs on the originating episode so downstream receipts can cite them
+    # without collapsing or implicitly resolving any source.
+    uncertainty_sources: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class IntentionReasoner:
@@ -156,6 +160,9 @@ class IntentionReasoner:
             uncertainties=uncertainties,
             initial_confidence=round(mean_confidence, 3),
         )
+        # Persist the episode before publishing its independent workspace
+        # sources. If the process stops between the two writes, _load can
+        # recover the exact IDs from the deterministic source_ref.
         with self._lock:
             self._episodes[episode.id] = episode
             self._prune()
@@ -168,7 +175,7 @@ class IntentionReasoner:
         if callable(record_uncertainty):
             for index, limitation in enumerate(uncertainties):
                 try:
-                    record_uncertainty(
+                    receipt = record_uncertainty(
                         source_type="decision_reasoning_limit",
                         source_module="intention_reasoner",
                         source_ref=f"{episode.id}:uncertainty:{index}",
@@ -178,8 +185,20 @@ class IntentionReasoner:
                         evidence=limitation,
                         salience=max(0.0, min(1.0, 1.0 - episode.confidence)),
                     )
+                    episode.uncertainty_sources.append({
+                        "uncertainty_id": str(receipt.get("uncertainty_id") or ""),
+                        "source_ref": f"{episode.id}:uncertainty:{index}",
+                        "status": str(receipt.get("status") or "unknown"),
+                        "persistence_status": str(
+                            receipt.get("persistence_status") or "not_reported"
+                        ),
+                    })
                 except Exception as exc:
                     logger.debug("[IntentionReasoner] uncertainty handoff failed: %s", exc)
+        with self._lock:
+            self._episodes[episode.id] = episode
+            self._prune()
+            self._save_locked()
         logger.info(
             "[IntentionReasoner] %s | support_score_uncalibrated=%.2f | %s",
             episode.intention_id, episode.confidence, episode.conclusion,
@@ -200,7 +219,9 @@ class IntentionReasoner:
 
     def record_outcome(
         self, episode_id: str, operation: str, success: bool, result: str,
-        *, effect_measured: bool = False,
+        *, effect_measured: bool = False, execution_id: str = "",
+        cycle_id: Any = None, output_ref: str = "",
+        consumed_output_ref: str = "",
     ) -> Optional[ReasoningEpisode]:
         """Record an action receipt; validate the reasoning only with a measured effect."""
         with self._lock:
@@ -215,6 +236,15 @@ class IntentionReasoner:
                 "execution_success": bool(success),
                 "effect_measured": bool(effect_measured),
                 "result": str(result)[:240],
+                "execution_id": str(execution_id or "")[:180] or None,
+                "cycle_id": cycle_id,
+                "output_ref": str(output_ref or "")[:180] or None,
+                "consumed_output_ref": str(consumed_output_ref or "")[:180] or None,
+                "uncertainty_ids": [
+                    str(item.get("uncertainty_id"))
+                    for item in episode.uncertainty_sources
+                    if item.get("uncertainty_id")
+                ],
                 "observed_at": time.time(),
             })
             episode.updated_at = time.time()
@@ -359,6 +389,7 @@ class IntentionReasoner:
                     ReasoningHypothesis(**item) for item in value.get("hypotheses", [])
                 ]
                 value.setdefault("initial_confidence", value.get("confidence", 0.0))
+                value.setdefault("uncertainty_sources", [])
                 outcomes = value.get("outcomes", [])
                 legacy_outcomes = [
                     item for item in outcomes
@@ -383,6 +414,42 @@ class IntentionReasoner:
                         value["confidence"] = initial
                     migrated = True
                 self._episodes[key] = ReasoningEpisode(**value)
+            # Recover provenance for episodes written before uncertainty IDs
+            # were copied into the episode. The deterministic source_ref is
+            # an exact link; no semantic matching or source merging occurs.
+            workspace = getattr(self._organism, "workspace", None)
+            get_state = getattr(workspace, "get_state", None)
+            if callable(get_state):
+                try:
+                    workspace_records = get_state().uncertainty_sources
+                    by_ref = {
+                        item.get("source_ref"): item
+                        for item in workspace_records
+                        if item.get("source_module") == "intention_reasoner"
+                        and item.get("source_ref")
+                    }
+                    for episode in self._episodes.values():
+                        if episode.uncertainty_sources:
+                            continue
+                        recovered = []
+                        for index, _ in enumerate(episode.uncertainties):
+                            source_ref = f"{episode.id}:uncertainty:{index}"
+                            record = by_ref.get(source_ref)
+                            if record is not None:
+                                recovered.append({
+                                    "uncertainty_id": str(record.get("uncertainty_id") or ""),
+                                    "source_ref": source_ref,
+                                    "status": "linked_existing",
+                                    "source_status": str(record.get("status") or "unknown"),
+                                    "persistence_status": "existing_workspace_record",
+                                })
+                        if recovered:
+                            episode.uncertainty_sources = recovered
+                            migrated = True
+                except Exception as exc:
+                    logger.debug(
+                        "[IntentionReasoner] existing uncertainty linkage unavailable: %s", exc
+                    )
             if migrated:
                 with self._lock:
                     self._save_locked()

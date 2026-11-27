@@ -1317,10 +1317,12 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertTrue(all(0.0 <= event["priority"] <= 0.75 for event in created))
 
             planner._organism.workspace.events.clear()
-            _reserve_step(planner, goal, "exec-receipt-fail-1")
+            _reserve_step(planner, goal, "exec-receipt-fail-1", cycle_id=31)
             planner.record_goal_action_outcome(
                 goal.id, "memory_recall", False, "no evidence",
                 execution_id="exec-receipt-fail-1",
+                cycle_id=31, output_ref="memory-output-31",
+                consumed_output_ref="planner-input-31",
             )
             outcomes = planner._organism.workspace.events
             self.assertEqual(plan.steps_completed, 0)
@@ -1336,6 +1338,13 @@ class IntentionPlanningTests(unittest.TestCase):
                 and "progress=0/" in event["content"]
                 for event in outcomes
             ))
+            reasoner = planner._get_reasoner()
+            recorded = reasoner.get(plan.reasoning_episode_id).outcomes[-1]
+            self.assertEqual(recorded["execution_id"], "exec-receipt-fail-1")
+            self.assertEqual(recorded["cycle_id"], 31)
+            self.assertEqual(recorded["output_ref"], "memory-output-31")
+            self.assertEqual(recorded["consumed_output_ref"], "planner-input-31")
+            self.assertEqual(recorded["uncertainty_ids"], [])
 
             planner._organism.workspace.events.clear()
             _reserve_step(planner, goal, "exec-receipt-fail-2")
@@ -1369,7 +1378,9 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertNotIn("chain-of-thought", episode.decision_rationale.lower())
 
             reasoner.record_outcome(
-                episode.id, "memory_recall", False, "no relevant evidence"
+                episode.id, "memory_recall", False, "no relevant evidence",
+                execution_id="exec-memory-1", cycle_id=8,
+                output_ref="recall-result-8", consumed_output_ref="planner-input-8",
             )
             reloaded = IntentionReasoner(
                 planner._organism, path=str(Path(folder) / "reasoning.json")
@@ -1379,6 +1390,10 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertIsNone(restored.outcomes[-1]["success"])
             self.assertFalse(restored.outcomes[-1]["execution_success"])
             self.assertFalse(restored.outcomes[-1]["effect_measured"])
+            self.assertEqual(restored.outcomes[-1]["execution_id"], "exec-memory-1")
+            self.assertEqual(restored.outcomes[-1]["cycle_id"], 8)
+            self.assertEqual(restored.outcomes[-1]["output_ref"], "recall-result-8")
+            self.assertEqual(restored.outcomes[-1]["consumed_output_ref"], "planner-input-8")
             self.assertTrue(any(
                 item.source == "action_execution_receipt" for item in restored.evidence
             ))
