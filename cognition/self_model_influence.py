@@ -18,7 +18,7 @@ This module closes the loop:
        │
        ├─→ attention.receive_self_influence()   [channel weight bias]
        ├─→ goal_ecology._drive_urgency_bias()   [drive priority shift]
-       ├─→ emotional_state._baseline_shift()    [emotional ground shift]
+       ├─→ emotional_state.receive_self_influence() [bounded transient affect]
        ├─→ predictive_mind._prior_bias()        [prediction confidence modulation]
        └─→ memory_query_bias (returned str)     [retrieval topic bias]
 
@@ -34,7 +34,8 @@ Design principles
 1. Influence is proportional to phi.
    High phi (integrated, coherent self) → stronger causal influence.
    Low phi (scattered, fragmented) → weak influence, subsystems run more freely.
-   This means the self only dominates cognition when it is genuinely coherent.
+   This means the self's influence is scaled by its measured stability, rather
+   than selected from a natural-language description of its affect.
 
 2. Influence is directional, not overriding.
    Each hook applies a *nudge* or *bias*, not a hard constraint.
@@ -63,28 +64,18 @@ phi < 0.65, trend=dispersing   → 0.15   (fragmented — minimal influence)
 
 Attention channel nudges (scaled by influence_strength)
 ────────────────────────────────────────────────────────
-qualia "curiosity"          → +identity  curiosity↑  (inward exploration)
-qualia "warmth"             → +user      identity↓   (other-directed)
-qualia "anxiety"            → +identity  curiosity↓  (inward monitoring)
-qualia "settled/presence"   → balanced   (no strong nudge)
-qualia "grief/weight"       → +memory    user↓       (backward-looking)
-qualia "enthusiasm"         → +curiosity user↑       (outward + forward)
+Continuous self/novelty, surprise, and relational measurements nudge the
+existing attention channels. Natural-language qualia descriptions are not
+parsed to choose a channel.
 
 Goal urgency biases (added to existing urgency, scaled by influence_strength)
 ──────────────────────────────────────────────────────────────────────────────
-coherence "integrating" → resolve_contradiction↑  maintain_coherence↑
-coherence "dispersing"  → explore↑  grow↑
-emotional ground "rising into anxiety" → stabilize_identity↑  self_reflect↑
-emotional ground "holding warmth"      → connect↑  help_user↑
-top_values "honesty" active            → maintain_coherence↑
-top_values "care" active               → connect↑  help_user↑
+Coherence trend and measured relational/value stability shape goal urgency.
 
 Emotional baseline shifts (transient, one turn only)
 ─────────────────────────────────────────────────────
-qualia "warmth"      → warmth baseline +small
-qualia "curiosity"   → curiosity baseline +small
-qualia "anxiety"     → anxiety does NOT get a baseline boost — avoid loops
-coherence_trend "integrating" → satisfaction +small  anxiety -small
+Qualia text is never reapplied as an emotion nudge. A measured coherence
+trend can contribute a small, bounded integration effect.
 
 Prediction prior bias
 ──────────────────────
@@ -97,7 +88,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -152,39 +143,6 @@ def _composite_strength(
 
 
 
-# ── Qualia → channel nudge map ────────────────────────────────────────────────
-
-# Each entry: (channel_name, base_delta)  — will be scaled by influence_strength
-_QUALIA_ATTENTION: Dict[str, List[Tuple[str, float]]] = {
-    "curiosity":          [("curiosity", +0.12), ("identity", +0.06)],
-    "warmth":             [("user", +0.14),      ("identity", -0.04)],
-    "anxiety":            [("identity", +0.14),  ("curiosity", -0.08)],
-    "settled":            [],   # no nudge — balanced state
-    "presence":           [],
-    "grief":              [("memory", +0.12),    ("user", -0.06)],
-    "weight":             [("memory", +0.08),    ("curiosity", -0.04)],
-    "enthusiasm":         [("curiosity", +0.10), ("user", +0.06)],
-    "engaged":            [("user", +0.10),      ("curiosity", +0.04)],
-    "wonder":             [("curiosity", +0.14), ("identity", +0.04)],
-    "melancholy":         [("memory", +0.10),    ("identity", +0.06)],
-    "uncertain":          [("identity", +0.10),  ("memory", +0.06)],
-}
-
-
-# ── Qualia → emotional baseline nudge map ────────────────────────────────────
-
-_QUALIA_EMOTION_NUDGE: Dict[str, Dict[str, float]] = {
-    "warmth":      {"warmth": +0.025},
-    "enthusiasm":  {"enthusiasm": +0.025, "curiosity": +0.015},
-    "curiosity":   {"curiosity": +0.020},
-    "wonder":      {"curiosity": +0.018, "enthusiasm": +0.010},
-    "engaged":     {"warmth": +0.012, "enthusiasm": +0.012},
-    "melancholy":  {"satisfaction": -0.015},   # gentle negative
-    "grief":       {"satisfaction": -0.020},
-    # anxiety deliberately excluded — we do not reinforce it
-}
-
-
 # ── Coherence → goal urgency bias map ────────────────────────────────────────
 
 _TREND_GOAL_BIAS: Dict[str, Dict[str, float]] = {
@@ -202,21 +160,6 @@ _TREND_GOAL_BIAS: Dict[str, Dict[str, float]] = {
         "help_user":  +0.05,
         "connect":    +0.04,
     },
-}
-
-
-# ── Value → goal urgency bias map ────────────────────────────────────────────
-
-_VALUE_GOAL_BIAS: Dict[str, Dict[str, float]] = {
-    "honesty":        {"maintain_coherence": +0.06, "resolve_contradiction": +0.05},
-    "care":           {"connect": +0.07, "help_user": +0.06},
-    "autonomy":       {"grow": +0.05, "understand": +0.04},
-    "curiosity":      {"understand": +0.07, "grow": +0.05},
-    "dignity":        {"be_understood": +0.06},
-    "fairness":       {"resolve_contradiction": +0.05, "maintain_coherence": +0.04},
-    "beneficence":    {"help_user": +0.07, "connect": +0.04},
-    "non_maleficence":{"stabilize_identity": +0.04, "maintain_coherence": +0.05},
-    "societal_good":  {"grow": +0.04, "help_user": +0.03},
 }
 
 
@@ -277,7 +220,6 @@ class SelfModelInfluence:
         trend            = smm.coherence_trend
         qualia           = smm.qualia_tone or ""
         values           = smm.top_values  or ""
-        emotional_ground = smm.emotional_ground or ""
 
         # ── Point 2: Read the three non-phi dimensions ────────────────────
 
@@ -360,17 +302,24 @@ class SelfModelInfluence:
         )
 
         # 1. ── Attention channel nudges ───────────────────────────────────
-        result.attention_nudges = self._apply_attention(organism, qualia, strength)
+        result.attention_nudges = self._apply_attention(
+            organism,
+            phi=phi,
+            relational_stability=relational_stability,
+            surprise_index=surprise_idx,
+            novelty_pressure=novelty_pressure,
+            strength=strength,
+        )
 
         # 2. ── Goal urgency biases ────────────────────────────────────────
         result.goal_biases = self._apply_goal_biases(
-            organism, trend, values, emotional_ground, strength,
+            organism, trend, relational_stability, value_consistency, strength,
             novelty_active=novelty_active,
         )
 
         # 3. ── Emotional baseline nudges ──────────────────────────────────
         result.emotion_nudges = self._apply_emotion_nudges(
-            organism, qualia, trend, strength
+            organism, trend, strength
         )
 
         # 4. ── Prediction prior bias ──────────────────────────────────────
@@ -394,24 +343,29 @@ class SelfModelInfluence:
     def _apply_attention(
         self,
         organism: Any,
-        qualia:   str,
+        *,
+        phi: float,
+        relational_stability: float,
+        surprise_index: float,
+        novelty_pressure: float,
         strength: float,
     ) -> Dict[str, float]:
-        """Nudge attention channel weights from qualia tone."""
+        """Nudge attention from continuous measurements, never qualia text."""
         attn = getattr(organism, "attention", None)
         if attn is None or not hasattr(attn, "receive_self_influence"):
             return {}
 
-        # Find which qualia keyword is present
-        nudges: Dict[str, float] = {}
-        qualia_lower = qualia.lower()
-
-        for keyword, channel_deltas in _QUALIA_ATTENTION.items():
-            if keyword in qualia_lower:
-                for channel, base_delta in channel_deltas:
-                    scaled = base_delta * strength
-                    nudges[channel] = nudges.get(channel, 0.0) + scaled
-                break   # apply only the first matched qualia keyword
+        # Numeric state-to-channel coupling avoids interpreting a generated
+        # natural-language description as if it were an affect classifier.
+        clamp = lambda value: max(0.0, min(1.0, float(value)))
+        novelty = clamp(novelty_pressure / max(NOVELTY_PRESSURE_THRESHOLD, 1e-6))
+        nudges = {
+            "identity": (0.5 - clamp(phi)) * 0.12 * strength,
+            "user": (clamp(relational_stability) - 0.5) * 0.16 * strength,
+            "memory": clamp(surprise_index) * 0.08 * strength,
+            "curiosity": novelty * 0.10 * strength,
+        }
+        nudges = {channel: delta for channel, delta in nudges.items() if abs(delta) >= 1e-5}
 
         if nudges:
             try:
@@ -427,12 +381,12 @@ class SelfModelInfluence:
         self,
         organism:         Any,
         trend:            str,
-        values:           str,
-        emotional_ground: str,
+        relational_stability: float,
+        value_consistency: float,
         strength:         float,
         novelty_active:   bool = False,
     ) -> Dict[str, float]:
-        """Bias drive urgencies from coherence trend, active values, and emotional ground."""
+        """Bias goal drives from measured trend and numeric stability signals."""
         ecology = getattr(organism, "goal_ecology", None)
         if ecology is None or not hasattr(ecology, "receive_self_influence"):
             return {}
@@ -443,24 +397,15 @@ class SelfModelInfluence:
         for drive, delta in _TREND_GOAL_BIAS.get(trend, {}).items():
             biases[drive] = biases.get(drive, 0.0) + delta * strength
 
-        # Value-based biases
-        values_lower = values.lower()
-        for value_keyword, drive_map in _VALUE_GOAL_BIAS.items():
-            if value_keyword in values_lower:
-                for drive, delta in drive_map.items():
-                    biases[drive] = biases.get(drive, 0.0) + delta * strength * 0.7
-
-        # Emotional ground signal
-        ground_lower = emotional_ground.lower()
-        if "anxiety" in ground_lower:
-            biases["stabilize_identity"] = biases.get("stabilize_identity", 0.0) + 0.10 * strength
-            biases["self_reflect"]        = biases.get("self_reflect", 0.0)       + 0.06 * strength
-        elif "warmth" in ground_lower or "care" in ground_lower:
-            biases["connect"]    = biases.get("connect", 0.0)    + 0.08 * strength
-            biases["help_user"]  = biases.get("help_user", 0.0)  + 0.06 * strength
-        elif "curiosity" in ground_lower or "wonder" in ground_lower:
-            biases["understand"] = biases.get("understand", 0.0) + 0.08 * strength
-            biases["grow"]       = biases.get("grow", 0.0)       + 0.05 * strength
+        # Numeric relational and ethical stability remain soft influences;
+        # top-value labels and affect descriptions are not parsed as commands.
+        relational_delta = (max(0.0, min(1.0, relational_stability)) - 0.5) * 0.12 * strength
+        value_delta = (max(0.0, min(1.0, value_consistency)) - 0.5) * 0.10 * strength
+        if abs(relational_delta) >= 1e-5:
+            biases["connect"] = biases.get("connect", 0.0) + relational_delta
+            biases["help_user"] = biases.get("help_user", 0.0) + relational_delta * 0.75
+        if abs(value_delta) >= 1e-5:
+            biases["maintain_coherence"] = biases.get("maintain_coherence", 0.0) + value_delta
 
         if biases:
             try:
@@ -489,23 +434,15 @@ class SelfModelInfluence:
     def _apply_emotion_nudges(
         self,
         organism: Any,
-        qualia:   str,
         trend:    str,
         strength: float,
     ) -> Dict[str, float]:
-        """Apply transient baseline nudges from qualia and coherence trend."""
+        """Apply a bounded coherence effect without reparsing affect text."""
         emo_state = getattr(organism, "emotional_state", None)
         if emo_state is None or not hasattr(emo_state, "receive_self_influence"):
             return {}
 
         nudges: Dict[str, float] = {}
-        qualia_lower = qualia.lower()
-
-        for keyword, emo_map in _QUALIA_EMOTION_NUDGE.items():
-            if keyword in qualia_lower:
-                for emo, delta in emo_map.items():
-                    nudges[emo] = nudges.get(emo, 0.0) + delta * strength
-                break
 
         # Coherence bonus — integrating self nudges satisfaction slightly
         if trend == "integrating":
@@ -662,35 +599,17 @@ class SelfModelInfluence:
         narrative_thread: str,
     ) -> str:
         """
-        Compute a topic bias string for memory retrieval.
+        Assemble a bounded self-state context as a retrieval hint.
 
         This is returned in InfluenceResult and used by CognitiveOrganism
-        when building the memory retrieval query — the self-model biases
-        what gets remembered toward topics consistent with the current self.
+        when building the memory retrieval query. Context is passed through
+        up to the existing query budget; no trigger words are extracted and
+        no language-based classification is performed.
         """
-        parts: List[str] = []
-        qualia_lower = qualia.lower()
-
-        # Pull the most content-rich qualia word as a memory topic hint
-        for keyword in _QUALIA_ATTENTION:
-            if keyword in qualia_lower:
-                parts.append(keyword)
-                break
-
-        # Coherence trend shapes retrieval direction
-        if trend == "integrating":
-            parts.append("identity coherence self")
-        elif trend == "dispersing":
-            parts.append("exploration novel idea")
-
-        # Top active value
-        if values:
-            top_value = values.split(",")[0].strip()
-            parts.append(top_value)
-
-        # Narrative thread (trim to key phrase)
-        if narrative_thread:
-            first_phrase = narrative_thread.strip().split(".")[0][:40]
-            parts.append(first_phrase)
-
-        return " ".join(parts)[:120]
+        parts = [
+            str(qualia or "").strip(),
+            f"coherence trend: {trend}" if trend else "",
+            str(values or "").strip(),
+            str(narrative_thread or "").strip(),
+        ]
+        return " ".join(part for part in parts if part)[:240]
