@@ -313,6 +313,7 @@ def test_thought_evaluator_prefers_existing_structured_topic():
     result = evaluator._evaluate_thought({
         "content": "I wonder why this generic generated sentence exists",
         "topic": "cognitive_execution_flow",
+        "thought_type": "curiosity",
     })
 
     assert result["concept"] == "cognitive execution flow"
@@ -335,17 +336,14 @@ def test_structured_thought_reaches_persisted_workspace_goal_end_to_end(tmp_path
     assert dal.add_thought({**source.to_dict(), "id": "thought-e2e-1"}) is True
 
     evaluator = SimpleThoughtEvaluator(persona_dir)
-    evaluator._classify_thought = lambda *_args: "tension"
-    evaluator._compute_priority = lambda *_args: 0.82
-    evaluator._compute_actionability = lambda *_args: 0.8
-    evaluator._identify_friction = lambda *_args: "unresolved execution evidence"
-    evaluator._determine_goal_type = lambda *_args: "resolve_tension"
     evaluator._inject_followup_thoughts = lambda *_args: None
 
     proposals = evaluator.evaluate_recent_thoughts()
     assert len(proposals) == 1
     proposal = proposals[0]
     assert proposal["concept"] == "cognitive execution flow"
+    assert proposal["priority"] == 0.91
+    assert proposal["type"] == "test_hypothesis"
     assert proposal["concept_source"] == "structured_topic"
     assert proposal["origin_thought"] == "thought-e2e-1"
 

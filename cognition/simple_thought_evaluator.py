@@ -4,10 +4,33 @@ Transforms thoughts from word-focused logs into concept-focused decision inputs.
 This is the BRIDGE between thinking and acting.
 """
 import json
+import math
 from pathlib import Path
 from datetime import datetime
 import hashlib
 from typing import List, Dict, Any
+
+
+# These are producer-owned ThoughtStream schema IDs, not words searched in
+# thought text. Free prose must never decide whether the internal loop admits
+# a goal proposal. Unknown/legacy IDs remain non-actionable until a producer
+# supplies a typed signal.
+_THOUGHT_TYPES_BY_SIGNAL = {
+    "uncertainty": frozenset({"curiosity", "open_question", "uncertainty"}),
+    "tension": frozenset({
+        "tension_awareness", "associative_tension",
+        "associative_contradiction", "contradiction",
+    }),
+    "opportunity": frozenset({
+        "goal_evaluation", "associative_goal", "opportunity",
+        "action_affordance",
+    }),
+}
+_NON_REEVALUATABLE_SOURCE_IDS = frozenset({
+    "goal_action.self_question", "goal_action.memory_recall",
+    "goal_action.web_search", "insight", "reflection",
+    "thought_evaluator.followup", "thought_evaluator.stagnation_guard",
+})
 
 class SimpleThoughtEvaluator:
     
@@ -15,33 +38,6 @@ class SimpleThoughtEvaluator:
         self.persona_dir = Path(persona_dir)
         self.thought_stream = thought_stream
         
-        self.uncertainty_keywords = [
-            'wonder', 'curious', 'curiosity', 'why', 'how', 'what', 'uncertain',
-            'unclear', 'confus', 'question', 'understand', 'don\'t know',
-            'unsatisfied', 'not yet', 'still thinking', 'hasn\'t been',
-            'fascinat', 'intrigue', 'puzzle', 'mystery', 'wonder',
-            'me demande', 'curieux', 'comprendre', 'pourquoi', 'comment',
-        ]
-        
-        self.tension_keywords = [
-            'conflict', 'tension', 'contradiction', 'disagree',
-            'paradox', 'struggle', 'difficult', 'but', 'yet',
-            'however', 'despite', 'although', 'contrast', 'pull',
-            'keep thinking', 'returning', 'unresolved', 'stuck',
-        ]
-        
-        self.opportunity_keywords = [
-            'could', 'might', 'explore', 'try', 'experiment',
-            'discover', 'learn', 'grow', 'should', 'pursue',
-            'opportunity', 'potential', 'possible', 'consider',
-            'reflection', 'insight', 'realise', 'realize', 'notice',
-        ]
-        
-        self.insight_sources = {
-            'goal_action.self_question', 'goal_action.memory_recall',
-            'goal_action.web_search', 'insight', 'reflection',
-        }
-
     @staticmethod
     def _timestamp_seconds(value) -> float:
         try:
@@ -436,7 +432,7 @@ class SimpleThoughtEvaluator:
         return False
     
     def _evaluate_thought(self, thought: Dict) -> Dict[str, Any]:
-        text = (thought.get('content') or thought.get('text') or '').lower()
+        text = str(thought.get('content') or thought.get('text') or '')
         
         if not text:
             return None
@@ -453,7 +449,7 @@ class SimpleThoughtEvaluator:
         structured_topic = thought.get("topic") or thought.get("concept")
         concept = " ".join(str(structured_topic).replace("_", " ").split()) if structured_topic else ""
         concept_source = "structured_topic" if concept else "missing_structured_topic"
-        priority = self._compute_priority(text, thought_type)
+        priority = self._compute_priority(thought, thought_type)
         actionability = self._compute_actionability(text, thought_type)
         friction = self._identify_friction(text, thought_type)
         goal_type = self._determine_goal_type(thought_type)
@@ -499,73 +495,32 @@ class SimpleThoughtEvaluator:
     
     # ✅ FIX: added thought parameter
     def _classify_thought(self, text: str, thought: Dict) -> str:
-        source = thought.get('source', '')
-        
-        # Generated reflections/search are excluded from recursively creating
-        # goals. Retrieval provenance alone does not imply opportunity; recalled
-        # content uses the same content classification as other inputs.
-        GENERATIVE_SOURCES = {
-            'goal_action.self_question', 'goal_action.web_search',
-            'thought_evaluator.followup', 'thought_evaluator.stagnation_guard',
-            'insight', 'reflection',
-        }
-        
-        if source in GENERATIVE_SOURCES:
+        """Classify only from producer-owned schema fields, never prose."""
+        source = str(thought.get("source") or "").strip()
+        if (
+            source in _NON_REEVALUATABLE_SOURCE_IDS
+            or source.startswith("goal_action.")
+            or source.startswith("thought_evaluator.")
+        ):
             return 'mundane'
-        if any(kw in text for kw in self.uncertainty_keywords):
-            return 'uncertainty'
-        elif any(kw in text for kw in self.tension_keywords):
-            return 'tension'
-        elif any(kw in text for kw in self.opportunity_keywords):
-            return 'opportunity'
-        else:
-            return 'mundane'
+        explicit_signal = str(thought.get("cognitive_signal") or "").strip().casefold()
+        if explicit_signal in _THOUGHT_TYPES_BY_SIGNAL:
+            return explicit_signal
+        thought_type = str(thought.get("thought_type") or "").strip().casefold()
+        for signal, schema_ids in _THOUGHT_TYPES_BY_SIGNAL.items():
+            if thought_type in schema_ids:
+                return signal
+        return 'mundane'
     
-    def _compute_priority(self, text: str, thought_type: str) -> float:
-        """
-        Priority based on type + keyword density.
-        
-        The 'tension' base priority is READ from sma._tension_priority if available,
-        and otherwise uses the configured sidecar/default. Generated reflection
-        text is not treated as validated feedback for changing this weight.
-        """
-        tension_base = self._load_tension_priority()
-        base = {
-            'uncertainty': 0.50,
-            'tension':     tension_base,
-            'opportunity': 0.55,
-            'mundane':     0.20
-        }.get(thought_type, 0.30)
-
-        high_signal = ['contradiction', 'paradox', 'unresolved', 'stuck',
-                       'conflict', 'fascinat', 'mystery', 'puzzle']
-        boost = sum(0.05 for kw in high_signal if kw in text)
-        return min(0.95, base + boost)
-
-    def _load_tension_priority(self) -> float:
-        """
-        Load the existing tension priority from SelfModificationAuthority or a
-        legacy sidecar. No validated online update path currently writes it.
-        """
-        # Try live sma reference first
+    def _compute_priority(self, thought: Dict, _thought_type: str) -> float:
+        """Use producer-measured priority; do not infer it from wording."""
         try:
-            from core.state import state as _st
-            ai_sys = getattr(getattr(_st, 'persona', None), 'ai_system', None)
-            sma = getattr(ai_sys, 'liberty_self_mod', None)
-            if sma and hasattr(sma, '_tension_priority'):
-                return float(sma._tension_priority)
-        except Exception:
-            pass
-        # Fall back to persisted sidecar
-        try:
-            import json as _json
-            weights_path = self.persona_dir / 'evaluator_weights.json'
-            if weights_path.exists():
-                w = _json.loads(weights_path.read_text())
-                return float(w.get('tension_priority', 0.65))
-        except Exception:
-            pass
-        return 0.65  # hardcoded default
+            priority = float(thought.get("priority", 0.5))
+        except (TypeError, ValueError, OverflowError):
+            priority = 0.5
+        if not math.isfinite(priority):
+            priority = 0.5
+        return max(0.0, min(1.0, priority))
     
     def _compute_actionability(self, text: str, thought_type: str) -> float:
         return {

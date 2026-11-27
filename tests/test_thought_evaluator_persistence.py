@@ -216,25 +216,43 @@ def test_dal_updates_thought_by_id_without_adding_duplicate(tmp_path):
     assert matches[0]["evaluation"]["concept"] == "updated"
 
 
-def test_memory_recall_provenance_does_not_itself_create_an_opportunity(tmp_path):
+def test_thought_classification_uses_structured_type_not_prose(tmp_path):
     evaluator = SimpleThoughtEvaluator(tmp_path)
 
-    neutral = evaluator._classify_thought(
-        "retrieved context: the project stored a prior measurement",
-        {"source": "goal_action.memory_recall"},
-    )
-    tension = evaluator._classify_thought(
+    # Prose in a recalled/generated response cannot create a new signal.
+    assert evaluator._classify_thought(
         "retrieved context describes an unresolved contradiction",
-        {"source": "goal_action.memory_recall"},
-    )
-    opportunity = evaluator._classify_thought(
-        "retrieved context says we could explore a new experiment",
-        {"source": "goal_action.memory_recall"},
+        {"source": "goal_action.memory_recall", "thought_type": "tension_awareness"},
+    ) == "mundane"
+
+    # Producer-owned schema IDs carry the same meaning independent of wording
+    # or language; prose with the same words but no signal remains inert.
+    for prose in (
+        "A resolved thought about ordinary routine.",
+        "Une note simple, sans formulation particulière.",
+        "一条普通的内部观察。",
+    ):
+        assert evaluator._classify_thought(
+            prose, {"source": "tension", "thought_type": "tension_awareness"},
+        ) == "tension"
+
+    assert evaluator._classify_thought(
+        "unresolved contradiction could be explored",
+        {"source": "external", "thought_type": "reflection"},
+    ) == "mundane"
+
+
+def test_producer_priority_is_preserved_without_word_density(tmp_path):
+    evaluator = SimpleThoughtEvaluator(tmp_path)
+
+    thought = {"priority": 0.37}
+    plain = evaluator._compute_priority(thought, "tension")
+    wordy = evaluator._compute_priority(
+        {**thought, "content": "contradiction paradox unresolved mystery conflict"},
+        "tension",
     )
 
-    assert neutral == "mundane"
-    assert tension == "tension"
-    assert opportunity == "opportunity"
+    assert plain == wordy == 0.37
 
 
 def test_generated_evaluator_thoughts_cannot_create_recursive_goal_intent(tmp_path):
