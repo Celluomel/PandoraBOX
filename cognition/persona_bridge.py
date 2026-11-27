@@ -617,7 +617,7 @@ def _workspace_focus_state_provenance(snapshot: Any, *, now: float | None = None
 
 
 def _workspace_prompt_uncertainty_receipt(organism: Any, prompt_block: str) -> dict[str, Any]:
-    """Attribute uncertainty included in a prompt to the current canonical state."""
+    """Attribute Workspace uncertainty and context origins to a prompt snapshot."""
     from cognition.cognitive_organism import _workspace_state_for_prompt
 
     snapshot = _workspace_state_for_prompt(organism)
@@ -632,6 +632,24 @@ def _workspace_prompt_uncertainty_receipt(organism: Any, prompt_block: str) -> d
         str(item.get("uncertainty_id") or item.get("source_ref") or "")[:96]
         for item in records if item.get("source_ref") or item.get("uncertainty_id")
     ]
+    context_by_source = snapshot.get("context_by_source", {}) if isinstance(snapshot, dict) else {}
+    if not isinstance(context_by_source, dict):
+        context_by_source = {}
+    context_sources = sorted(
+        str(source)[:120] for source, fields in context_by_source.items()
+        if isinstance(fields, dict) and fields
+    )
+    context_fields = {
+        str(source)[:120]: sorted(str(key)[:120] for key in fields)
+        for source, fields in context_by_source.items()
+        if isinstance(fields, dict) and fields
+    }
+    prompt_text = str(prompt_block or "")
+    context_marker_present = "[Workspace contributions by source; preserve distinct origins]" in prompt_text
+    context_contributions_included = bool(
+        context_sources and context_marker_present
+        and all(json.dumps(source, ensure_ascii=False)[1:-1] in prompt_text for source in context_sources)
+    )
     return {
         "open_uncertainty_source_count": len(records),
         "uncertainty_synthesis_included": bool(
@@ -645,6 +663,10 @@ def _workspace_prompt_uncertainty_receipt(organism: Any, prompt_block: str) -> d
         "uncertainty_source_types": sorted({
             str(item.get("source_type") or "unspecified")[:64] for item in records
         }),
+        "context_source_count": len(context_sources),
+        "context_source_names": context_sources,
+        "context_source_fields": context_fields,
+        "context_contributions_included": context_contributions_included,
     }
 
 

@@ -97,6 +97,11 @@ _SOFTWARE_ARCHITECTURE_POSITIVE = (
     "Comment le code du Global Workspace réunit-il les contributions des modules cognitifs et conserve-t-il leur provenance ?",
     "¿Cómo integra este software las salidas de sus módulos cognitivos en el Global Workspace y conserva su procedencia?",
     "Wie führt die Implementierung des Global Workspace Ausgaben kognitiver Module zusammen und bewahrt ihre Herkunft?",
+    "Does the shared cognitive workspace collect and preserve contributions from multiple independent module outputs even when attention selects one focus?",
+    "Should every unresolved origin remain available when a global workspace selects a primary focus?",
+    "Le Global Workspace doit-il intégrer les contributions de plusieurs modules en gardant leurs origines, même lorsqu'un focus est sélectionné ?",
+    "¿El espacio de trabajo global integra aportaciones de varios módulos y conserva sus orígenes aunque seleccione un foco?",
+    "Soll der globale Arbeitsbereich Beiträge mehrerer Module samt Herkunft behalten, auch wenn ein Fokus ausgewählt wird?",
 )
 _SOFTWARE_ARCHITECTURE_NEGATIVE = (
     "Which uncertainty records are currently open in the Global Workspace? List their source records and preserve each origin.",

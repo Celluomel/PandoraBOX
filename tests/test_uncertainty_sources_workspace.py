@@ -318,6 +318,15 @@ def test_workspace_prompt_exposes_context_contributions_with_each_origin():
     assert '"source":"radar"' in fragment
     assert '"label":"chair"' in fragment
     assert '"range_m":1.8' in fragment
+    receipt = _workspace_prompt_uncertainty_receipt(
+        SimpleNamespace(workspace=workspace), fragment,
+    )
+    assert receipt["context_source_names"] == ["radar", "vision"]
+    assert receipt["context_source_fields"] == {
+        "radar": ["nearest_object"],
+        "vision": ["nearest_object"],
+    }
+    assert receipt["context_contributions_included"] is True
 
 
 def test_prompt_uses_current_workspace_sources_not_stale_slow_cycle_snapshot():
