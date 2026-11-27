@@ -34,8 +34,10 @@ class _MemoryProfileRouterEmbedder:
             _GENERAL_MEMORY_PROFILE_EXAMPLES,
             _HISTORY_RECALL_EXAMPLES,
             _NO_EXPLICIT_UNCERTAINTY_EXAMPLES,
+            _NO_CONTINUING_COMMITMENT_EXAMPLES,
             _PROFILE_LOOKUP_EXAMPLES,
             _PROFILE_FACT_SCOPE_EXAMPLES,
+            _CONTINUING_COMMITMENT_EXAMPLES,
             _USER_UNCERTAINTY_EXAMPLES,
         )
 
@@ -49,48 +51,80 @@ class _MemoryProfileRouterEmbedder:
         category_count = sum(len(items) for items in _PROFILE_FACT_SCOPE_EXAMPLES.values())
         uncertainty_positive_start = prototype_count + category_count
         uncertainty_negative_start = uncertainty_positive_start + len(_USER_UNCERTAINTY_EXAMPLES)
-        query_start = uncertainty_negative_start + len(_NO_EXPLICIT_UNCERTAINTY_EXAMPLES)
+        commitment_positive_start = uncertainty_negative_start + len(_NO_EXPLICIT_UNCERTAINTY_EXAMPLES)
+        commitment_negative_start = commitment_positive_start + len(_CONTINUING_COMMITMENT_EXAMPLES)
+        query_start = commitment_negative_start + len(_NO_CONTINUING_COMMITMENT_EXAMPLES)
         batch_has_prototypes = len(texts) > query_start
         vectors = []
         for index, text in enumerate(texts):
             if not batch_has_prototypes:
                 if any(marker in text.casefold() for marker in (
+                    "i am committed", "keep pursuing this goal", "je m'engage",
+                    "poursuivre ce projet", "quiero continuar este proyecto",
+                    "ich möchte dieses vorhaben",
+                )):
+                    vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                elif any(marker in text.casefold() for marker in (
+                    "what uncertainties are you tracking", "quelles incertitudes",
+                    "what goals are currently active", "quels objectifs sont actuellement actifs",
+                    "explain how the system stores", "one-time question",
+                )):
+                    vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+                elif any(marker in text.casefold() for marker in (
                     "i am uncertain", "i do not know which", "cannot distinguish",
                     "je doute", "je ne sais pas encore", "no estoy seguro", "ich bin unsicher",
                 )):
-                    vectors.append([0.0, 0.0, 0.0, 1.0, 0.0])
+                    vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
                 elif any(marker in text.casefold() for marker in (
                     "previous conversations", "conversation précédente",
                 )):
-                    vectors.append([0.0, 1.0, 0.0, 0.0, 0.0])
+                    vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                elif "explicitly stored" in text.casefold():
+                    vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                 else:
-                    vectors.append([0.0, 0.0, 1.0, 0.0, 0.0])
+                    vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
                 continue
             if index < len(_PROFILE_LOOKUP_EXAMPLES):
-                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             elif index < len(_PROFILE_LOOKUP_EXAMPLES) + len(_HISTORY_RECALL_EXAMPLES):
-                vectors.append([0.0, 1.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             elif index < prototype_count:
-                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0])
+                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
             elif index < uncertainty_positive_start:
-                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0])
+                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
             elif index < uncertainty_negative_start:
-                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0])
+                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+            elif index < commitment_positive_start:
+                vectors.append([0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+            elif index < commitment_negative_start:
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
             elif index < query_start:
-                vectors.append([0.0, 0.0, 0.0, 0.0, 1.0])
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+            elif any(marker in text.casefold() for marker in (
+                "i am committed", "keep pursuing this goal", "je m'engage",
+                "poursuivre ce projet", "quiero continuar este proyecto",
+                "ich möchte dieses vorhaben",
+            )):
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+            elif any(marker in text.casefold() for marker in (
+                "what uncertainties are you tracking", "quelles incertitudes",
+                "what goals are currently active", "quels objectifs sont actuellement actifs",
+                "explain how the system stores", "one-time question",
+            )):
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
             elif any(marker in text.casefold() for marker in (
                 "i am uncertain", "i do not know which", "cannot distinguish",
                 "je doute", "je ne sais pas encore", "no estoy seguro", "ich bin unsicher",
             )):
-                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0])
+                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             elif any(marker in text.casefold() for marker in (
                 "previous conversations", "conversation précédente",
             )):
-                vectors.append([0.0, 1.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             elif "explicitly stored" in text.casefold():
-                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             else:
-                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0])
+                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
         return vectors, self.embedding_space_id
 
 
@@ -219,6 +253,21 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertTrue(results[0]["uncertainty_signal_candidate"])
         self.assertFalse(results[1]["uncertainty_signal_candidate"])
         self.assertEqual(results[1]["intent"], "history_recall")
+
+    def test_continuing_commitment_router_distinguishes_commitment_from_question(self):
+        results = classify_memory_profile_intents([
+            "I am committed to continuing this project across future conversations; keep this as an ongoing objective.",
+            "What uncertainties are you tracking in the Global Workspace?",
+            "Je m'engage à continuer ce travail et à revenir sur cet objectif dans nos prochaines conversations.",
+        ], embedder=_MemoryProfileRouterEmbedder())
+
+        self.assertTrue(results[0]["continuing_commitment_candidate"])
+        self.assertFalse(results[1]["continuing_commitment_candidate"])
+        self.assertTrue(results[2]["continuing_commitment_candidate"])
+        self.assertEqual(
+            results[1]["commitment_router_reason"],
+            "below_commitment_signal_threshold",
+        )
 
     def test_semantic_historical_intent_abstains_without_a_clear_retrieved_source(self):
         query = "From earlier conversations, what concern did I raise about memory recall?"

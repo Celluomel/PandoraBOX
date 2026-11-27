@@ -263,7 +263,7 @@ def test_semantic_worker_resolves_unexpected_failure_and_processes_next_turn():
     extractor = SemanticExtractor(semantic_memory=Mock())
     calls = 0
 
-    def fail_once_then_succeed(*args):
+    def fail_once_then_succeed(*args, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -451,6 +451,7 @@ def test_ordinary_topic_turn_still_queues_semantic_learning():
         turn_id="ordinary-topic-turn",
         completion_callback=None,
         turn_kind_hint="",
+        goal_commitment_candidate=False,
     )
     assert receipt["semantic_topic_learning"]["status"] == "queued"
     assert receipt["semantic_topic_learning"]["reason"] == "semantic_intent_classification"
@@ -481,6 +482,7 @@ def test_upstream_turn_kind_is_forwarded_without_disabling_topic_learning():
         turn_id="deterministic-social-turn",
         completion_callback=None,
         turn_kind_hint="social",
+        goal_commitment_candidate=False,
     )
     assert receipt["semantic_topic_learning"]["status"] == "queued"
     update_profile.assert_called_once()

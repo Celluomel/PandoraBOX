@@ -817,6 +817,10 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             receipt["dominant_topic_selected"] = value["dominant_topic_selected"]
         if isinstance(value.get("goal_signal_evidence_valid"), bool):
             receipt["goal_signal_evidence_valid"] = value["goal_signal_evidence_valid"]
+        if isinstance(value.get("continuing_commitment_candidate"), bool):
+            receipt["continuing_commitment_candidate"] = value[
+                "continuing_commitment_candidate"
+            ]
         if isinstance(value.get("uncertainty_candidate"), bool):
             receipt["uncertainty_candidate"] = value["uncertainty_candidate"]
         uncertainty_source = value.get("uncertainty_source_receipt")

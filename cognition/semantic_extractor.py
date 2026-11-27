@@ -174,6 +174,7 @@ class SemanticExtractor:
         completion_callback=None,
         turn_kind_hint: str = "",
         uncertainty_candidate: bool = False,
+        goal_commitment_candidate: bool = False,
     ):
         """Queue a completed turn for semantic extraction.
 
@@ -190,6 +191,7 @@ class SemanticExtractor:
             str(turn_id or ""), completion_callback,
             str(turn_kind_hint or "").strip().casefold(),
             bool(uncertainty_candidate), 0, completion_future,
+            bool(goal_commitment_candidate),
         )
         with self._lock:
             self._queue.put_nowait(item)
@@ -215,7 +217,10 @@ class SemanticExtractor:
                 continue
             try:
                 try:
-                    receipt = self._extract(*item[:9])
+                    receipt = self._extract(
+                        *item[:9],
+                        goal_commitment_candidate=(bool(item[11]) if len(item) > 11 else False),
+                    )
                 except Exception as extraction_error:
                     # A malformed/provider-specific turn must resolve its
                     # receipt and must not kill the sole queue worker. Without
@@ -244,6 +249,7 @@ class SemanticExtractor:
                         self._schedule_retry((
                             *item[:9], retry_count + 1,
                             item[10] if len(item) > 10 else None,
+                            item[11] if len(item) > 11 else False,
                         ))
                         continue
                     receipt.update({
@@ -291,7 +297,8 @@ class SemanticExtractor:
 
     def _extract(self, user_input, response, meta_scores, workspace,
                  observation_role="user_topic", turn_id="", completion_callback=None,
-                 turn_kind_hint="", uncertainty_candidate=False):
+                 turn_kind_hint="", uncertainty_candidate=False,
+                 goal_commitment_candidate=False):
         receipt = {
             "type": "semantic_extraction_receipt",
             "status": "failed",
@@ -313,6 +320,7 @@ class SemanticExtractor:
             "profile_claims": [],
             "profile_claims_status": "unavailable",
             "uncertainty_candidate": bool(uncertainty_candidate),
+            "continuing_commitment_candidate": bool(goal_commitment_candidate),
         }
         try:
             t0 = time.time()
@@ -392,6 +400,7 @@ class SemanticExtractor:
             )
             goal_signal_evidence_valid = bool(
                 goal_signal == "continuing_commitment"
+                and goal_commitment_candidate
                 and normalized_evidence
                 and normalized_evidence in normalized_input
             )
@@ -811,7 +820,10 @@ class SemanticExtractor:
             name_terms = set(re.findall(r"[^\W\d_][\w'-]{2,}", name, flags=re.UNICODE))
             if not name_terms or not evidence_terms or not name_terms.issubset(evidence_terms):
                 continue
-            normalized_source = " ".join(source.split())
+            # The LLM extraction prompt asks for exact source evidence, but
+            # casing is not semantically meaningful. Compare the normalized
+            # quote with the same case-folded form of the user-authored turn.
+            normalized_source = " ".join(source.casefold().split())
             normalized_evidence = " ".join(evidence.split())
             if normalized_evidence not in normalized_source:
                 continue
@@ -825,7 +837,7 @@ class SemanticExtractor:
         if not isinstance(values, list):
             return []
         concept_set = set(concepts)
-        normalized_source = " ".join(source.split())
+        normalized_source = " ".join(source.casefold().split())
         relations = []
         seen = set()
         for item in values[:10]:

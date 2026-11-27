@@ -178,6 +178,21 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         summary = audit_safe_turn_summary(evidence)
         assert summary["retrieval"]["embedding_model"] == "text-embedding-nomic-embed-text-v1.5"
         assert summary["retrieval"]["embedding_dim"] == 768
+
+    def test_semantic_trace_preserves_commitment_router_causality(self):
+        summary = audit_safe_turn_summary({
+            "type": "semantic_extraction_receipt",
+            "status": "completed",
+            "goal_signal": "topic_only",
+            "goal_signal_evidence_valid": False,
+            "continuing_commitment_candidate": False,
+            "source_message_sha256": "private-hash",
+        })
+
+        self.assertFalse(summary["continuing_commitment_candidate"])
+        self.assertFalse(summary["goal_signal_evidence_valid"])
+        self.assertEqual(summary["goal_signal"], "topic_only")
+        self.assertNotIn("source_message_sha256", summary)
         assert "C:\\Users" not in repr(summary)
 
     def test_prompt_memory_keeps_user_message_separate_from_unverified_lumina_reply(self):
@@ -570,6 +585,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             receipt = extractor._extract(
                 "Camera calibration is the current topic", "bounded answer",
                 None, None, turn_id="camera-turn-42",
+                goal_commitment_candidate=True,
             )
             self.assertEqual(receipt["status"], "completed")
             self.assertTrue(receipt["goal_signal_evidence_valid"])
@@ -585,6 +601,44 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                 "Camera calibration is the current topic",
             )
             self.assertIn("camera calibration", memory.recent_user_topics(min_observations=1))
+
+    def test_question_cannot_become_durable_goal_from_exact_quote_alone(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
+            parsed = {
+                "turn_kind": "decision",
+                "goal_signal": "continuing_commitment",
+                "goal_signal_evidence": "What uncertainties are you tracking in the Global Workspace?",
+                "concepts": [{
+                    "name": "uncertainties tracking",
+                    "evidence": "uncertainties are you tracking",
+                }],
+                "relations": [],
+                "dominant_topic": "uncertainties tracking",
+                "cognitive_load": 0.3,
+            }
+            extractor = SemanticExtractor(
+                memory, llm_fn=lambda _prompt: json.dumps(parsed),
+            )
+            message = "What uncertainties are you tracking in the Global Workspace?"
+            receipt = extractor._extract(
+                message, "I am tracking several open sources.", None, None,
+                turn_id="workspace-question-turn",
+                goal_commitment_candidate=False,
+            )
+
+            self.assertEqual(receipt["goal_signal"], "topic_only")
+            self.assertFalse(receipt["goal_signal_evidence_valid"])
+            self.assertFalse(receipt["continuing_commitment_candidate"])
+            self.assertNotIn(
+                "uncertainties tracking",
+                memory.recent_user_topics(min_observations=1),
+            )
+            with memory._conn() as conn:
+                row = conn.execute(
+                    "SELECT goal_signal, goal_signal_evidence FROM concept_observations"
+                ).fetchone()
+            self.assertEqual(tuple(row), ("topic_only", ""))
 
     def test_semantic_extractor_classifies_continuing_intent_in_its_existing_llm_call(self):
         calls = []

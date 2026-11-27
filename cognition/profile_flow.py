@@ -80,6 +80,33 @@ _NO_EXPLICIT_UNCERTAINTY_EXAMPLES = (
     "¿Qué dije en la conversación anterior sobre la memoria?",
     "Erkläre, wie der Gesprächsspeicher frühere Nachrichten abruft.",
 )
+_CONTINUING_COMMITMENT_EXAMPLES = (
+    "I am committed to continuing this project across future conversations; keep this as an ongoing objective.",
+    "Please keep pursuing this goal with me beyond this exchange; this is an ongoing commitment.",
+    "Je veux poursuivre ce projet avec toi dans les prochains échanges; c'est un engagement durable.",
+    "Je m'engage à continuer ce travail et à revenir sur cet objectif dans nos prochaines conversations.",
+    "Quiero continuar este proyecto en futuras conversaciones; es un compromiso que deseo mantener.",
+    "Ich möchte dieses Vorhaben in künftigen Gesprächen weiterverfolgen; das ist ein dauerhaftes Ziel.",
+)
+_NO_CONTINUING_COMMITMENT_EXAMPLES = (
+    "What goals are currently active?",
+    "Explain how the system stores a user's goals.",
+    "What uncertainties are you tracking in the Global Workspace?",
+    "For this one-time question, what is the answer?",
+    "Quels objectifs sont actuellement actifs ?",
+    "Quelles incertitudes suis-tu dans le Global Workspace ?",
+    "Explique comment le système enregistre les objectifs d'un utilisateur.",
+    "¿Qué objetivos están activos ahora?",
+    "Welche Ziele sind gerade aktiv?",
+)
+
+# These are semantic routing thresholds for Nomic v1.5 cosine centroids, not
+# probabilities. Keep the positive floor to reject general-topic questions;
+# use a small positive margin because the LLM's exact-quote evidence is checked
+# independently downstream and a wide margin caused clear commitments to be
+# dropped as durable intent.
+_COMMITMENT_MIN_SIMILARITY = 0.66
+_COMMITMENT_MIN_MARGIN = 0.02
 _PROFILE_FACT_SCOPE_EXAMPLES = {
     "preference": (
         "Which preferences are explicitly recorded in the user's profile?",
@@ -152,6 +179,8 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 ),
                 *_USER_UNCERTAINTY_EXAMPLES,
                 *_NO_EXPLICIT_UNCERTAINTY_EXAMPLES,
+                *_CONTINUING_COMMITMENT_EXAMPLES,
+                *_NO_CONTINUING_COMMITMENT_EXAMPLES,
                 *(texts[index] for index in active_indices),
             ])
             import numpy as np
@@ -166,9 +195,12 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             )
             uncertainty_positive_count = len(_USER_UNCERTAINTY_EXAMPLES)
             uncertainty_negative_count = len(_NO_EXPLICIT_UNCERTAINTY_EXAMPLES)
+            commitment_positive_count = len(_CONTINUING_COMMITMENT_EXAMPLES)
+            commitment_negative_count = len(_NO_CONTINUING_COMMITMENT_EXAMPLES)
             expected_rows = (
                 prototype_count + category_example_count + uncertainty_positive_count
-                + uncertainty_negative_count + len(active_indices)
+                + uncertainty_negative_count + commitment_positive_count
+                + commitment_negative_count + len(active_indices)
             )
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("memory/profile router received invalid embeddings")
@@ -199,6 +231,16 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 uncertainty_positive_end:uncertainty_positive_end + uncertainty_negative_count
             ].mean(axis=0)
             uncertainty_negative /= max(float(np.linalg.norm(uncertainty_negative)), 1e-12)
+            commitment_positive_start = uncertainty_positive_end + uncertainty_negative_count
+            commitment_positive_end = commitment_positive_start + commitment_positive_count
+            commitment_positive = normalized[
+                commitment_positive_start:commitment_positive_end
+            ].mean(axis=0)
+            commitment_positive /= max(float(np.linalg.norm(commitment_positive)), 1e-12)
+            commitment_negative = normalized[
+                commitment_positive_end:commitment_positive_end + commitment_negative_count
+            ].mean(axis=0)
+            commitment_negative /= max(float(np.linalg.norm(commitment_negative)), 1e-12)
             actual_space = str(space_id)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("memory/profile thresholds require Nomic v1.5")
@@ -206,13 +248,16 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 _MEMORY_PROFILE_ROUTER_CENTROIDS[actual_space] = (
                     profile, history, general, category_centroids,
                     uncertainty_positive, uncertainty_negative,
+                    commitment_positive, commitment_negative,
                 )
             queries = normalized[
                 prototype_count + category_example_count
-                + uncertainty_positive_count + uncertainty_negative_count:
+                + uncertainty_positive_count + uncertainty_negative_count
+                + commitment_positive_count + commitment_negative_count:
             ]
         else:
-            profile, history, general, category_centroids, uncertainty_positive, uncertainty_negative = cached
+            (profile, history, general, category_centroids, uncertainty_positive,
+             uncertainty_negative, commitment_positive, commitment_negative) = cached
             vectors, actual_space = encoder([texts[index] for index in active_indices])
             import numpy as np
             queries = np.asarray(vectors, dtype="float64")
@@ -229,6 +274,13 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             uncertainty_margin = uncertainty_positive_score - uncertainty_negative_score
             uncertainty_candidate = bool(
                 uncertainty_positive_score >= 0.66 and uncertainty_margin >= 0.035
+            )
+            commitment_positive_score = float(query @ commitment_positive)
+            commitment_negative_score = float(query @ commitment_negative)
+            commitment_margin = commitment_positive_score - commitment_negative_score
+            commitment_candidate = bool(
+                commitment_positive_score >= _COMMITMENT_MIN_SIMILARITY
+                and commitment_margin >= _COMMITMENT_MIN_MARGIN
             )
             margin = profile_score - history_score
             if profile_score >= 0.63 and margin >= 0.04 and profile_score - general_score >= 0.04:
@@ -266,6 +318,15 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                     "cross_lingual_semantic_centroid_margin"
                     if uncertainty_candidate else "below_uncertainty_signal_threshold"
                 ),
+                "continuing_commitment_candidate": commitment_candidate,
+                "commitment_positive_similarity": round(commitment_positive_score, 4),
+                "commitment_negative_similarity": round(commitment_negative_score, 4),
+                "commitment_margin": round(commitment_margin, 4),
+                "commitment_score_semantics": "uncalibrated Nomic v1.5 semantic centroid scores; not probabilities",
+                "commitment_router_reason": (
+                    "cross_lingual_semantic_centroid_margin"
+                    if commitment_candidate else "below_commitment_signal_threshold"
+                ),
                 "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
                 "embedding_space": actual_space,
                 "reason_code": "cross_lingual_semantic_centroid_margin",
@@ -291,6 +352,8 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 "score_semantics": "unavailable; do not intercept the user's response",
                 "uncertainty_signal_candidate": False,
                 "uncertainty_router_reason": "router_unavailable",
+                "continuing_commitment_candidate": False,
+                "commitment_router_reason": "router_unavailable",
             }
     return [item for item in results if item is not None]
 

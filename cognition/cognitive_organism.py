@@ -1512,6 +1512,7 @@ class CognitiveOrganism:
         semantic_topic_callback=None,
         semantic_turn_kind_hint: str = "",
         semantic_uncertainty_hint: bool = False,
+        semantic_commitment_hint: bool = False,
     ) -> Dict[str, Any]:
         """Post-response processing: evaluate, learn, update state."""
         self._last_interaction_ts = time.time()
@@ -1666,6 +1667,9 @@ class CognitiveOrganism:
                 **({"uncertainty_candidate": True} if (
                     bool(semantic_uncertainty_hint) and bool(human_interaction)
                 ) else {}),
+                goal_commitment_candidate=(
+                    bool(semantic_commitment_hint) and bool(human_interaction)
+                ),
             )
             semantic_topic_receipt.update({
                 "status": "queued",

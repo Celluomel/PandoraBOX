@@ -3286,6 +3286,10 @@ class PersonaBridge:
             _memory_profile_intent.get("uncertainty_signal_candidate")
             and not peer_name
         )
+        _user_commitment_candidate = bool(
+            _memory_profile_intent.get("continuing_commitment_candidate")
+            and not peer_name
+        )
         _explicit_profile_opt_out = has_explicit_profile_learning_opt_out(effective_input)
         _explicit_named_profile_query = (
             _memory_profile_intent.get("intent") == "profile_lookup"
@@ -3429,6 +3433,17 @@ class PersonaBridge:
                     "uncertainty_margin": _memory_profile_intent.get("uncertainty_margin"),
                     "uncertainty_router_reason": str(
                         _memory_profile_intent.get("uncertainty_router_reason") or "unavailable"
+                    ),
+                    "continuing_commitment_candidate": _user_commitment_candidate,
+                    "commitment_positive_similarity": _memory_profile_intent.get(
+                        "commitment_positive_similarity"
+                    ),
+                    "commitment_negative_similarity": _memory_profile_intent.get(
+                        "commitment_negative_similarity"
+                    ),
+                    "commitment_margin": _memory_profile_intent.get("commitment_margin"),
+                    "commitment_router_reason": str(
+                        _memory_profile_intent.get("commitment_router_reason") or "unavailable"
                     ),
                     "profile_fact_scope": str(_profile_fact_scope.get("scope") or "all"),
                     "profile_fact_scope_status": str(_profile_fact_scope.get("status") or "unavailable"),
@@ -6131,6 +6146,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     and not _explicit_profile_opt_out
                     and not _explicit_named_profile_query,
                     _user_uncertainty_candidate,
+                    _user_commitment_candidate,
                 )
 
             post_tasks.append(("cognitive_post_turn", _run_cognitive_lifecycle_after_memory()))
@@ -8735,6 +8751,7 @@ Memory honesty — two distinct cases:
         response_learning_already_run: bool = False,
         profile_learning_allowed: bool = False,
         semantic_uncertainty_hint: bool = False,
+        semantic_commitment_hint: bool = False,
     ) -> bool:
         """
         Mirrors everything get_response() does AFTER _generate_response().
@@ -8777,6 +8794,7 @@ Memory honesty — two distinct cases:
                         turn_id=audit_turn_id,
                         semantic_turn_kind_hint=semantic_turn_kind_hint,
                         semantic_uncertainty_hint=semantic_uncertainty_hint,
+                        semantic_commitment_hint=semantic_commitment_hint,
                         semantic_topic_callback=lambda receipt: self._record_semantic_topic_extraction(
                             receipt, audit_turn_id,
                             user_id=user_id,
@@ -9011,6 +9029,7 @@ Memory honesty — two distinct cases:
                         turn_id=audit_turn_id,
                         semantic_turn_kind_hint=semantic_turn_kind_hint,
                         semantic_uncertainty_hint=semantic_uncertainty_hint,
+                        semantic_commitment_hint=semantic_commitment_hint,
                         semantic_topic_callback=lambda receipt: self._record_semantic_topic_extraction(
                             receipt, audit_turn_id,
                             user_id=user_id,
