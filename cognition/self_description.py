@@ -127,6 +127,9 @@ _GLOBAL_WORKSPACE_STATE_POSITIVE = (
 _GLOBAL_WORKSPACE_STATE_NEGATIVE = (
     "Which information sources were included in the language model prompt for the last response?",
     "Explain the software architecture and general purpose of Global Workspace Theory.",
+    "Explain the software architecture and role of the Global Workspace in Lumina, including how its modules consolidate outputs.",
+    "How does the code implement the Global Workspace and pass module results to downstream reasoning?",
+    "N'est-ce pas le rôle du Global Workspace de consolider plusieurs sources dans une architecture cognitive?",
     "What information should ideally be stored in a cognitive workspace? This is a design question, not a request for its current contents.",
     "Quelles sources ont été insérées dans le prompt pour produire la dernière réponse ?",
     "Describe what the robot sensed in the physical environment using its sensors.",

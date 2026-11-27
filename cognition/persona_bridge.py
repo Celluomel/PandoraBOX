@@ -1353,7 +1353,7 @@ class PersonaBridge:
             return trace_id
 
     def _record_turn_context_source(
-        self, name: str, status: str, *, turn_id: str = "", **metadata: Any,
+        self, name: str, source_status: str, *, turn_id: str = "", **metadata: Any,
     ) -> None:
         """Record source/freshness metadata without retaining evidence payloads."""
         allowed = {
@@ -1468,7 +1468,7 @@ class PersonaBridge:
             if not isinstance(trace, dict) or not trace:
                 return
             trace.setdefault("context_sources", {})[name] = {
-                "status": str(status)[:48], "at": time.time(), **safe_metadata,
+                "status": str(source_status)[:48], "at": time.time(), **safe_metadata,
             }
 
     def _record_turn_stage(
@@ -5386,6 +5386,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                                     ),
                                     planner_snapshot=bool(_factual_plan_query),
                                     api_route_answer=bool(_api_route_query),
+                                    named_profile_facts=bool(
+                                        _explicit_named_profile_query and _deterministic_response
+                                    ),
+                                    source_provenance_report=bool(
+                                        _prompt_source_provenance_query and _deterministic_response
+                                    ),
+                                    workspace_state_report=bool(
+                                        _global_workspace_state_query and _deterministic_response
+                                    ),
                                 ),
                                 turn_id=_audit_turn_id,
                             )
@@ -6755,6 +6764,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         _api_route_intent = api_route_intent or {"status": "router_unavailable", "route": False}
         _api_route_query = bool(api_route_query)
         _architecture_context_query = bool(architecture_context_query)
+        # Set the fail-closed default before any prompt assembly can raise.
+        # The recovery block below also inspects this local.
+        _architecture_query = bool(architecture_context_query)
         self._last_web_sources = []
         self._last_research_trace = {}
         with self._research_receipt_lock:
@@ -6950,10 +6962,18 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "uncertainty_budget": _workspace_budget_receipt,
                         **_workspace_state_provenance,
                     }
+                    # The source helper receives `status` positionally. Some
+                    # receipt components also carry a `status` field; retain
+                    # that full receipt on the stage, but do not pass a second
+                    # status keyword into the source-summary helper.
+                    _workspace_source_metadata = {
+                        key: value for key, value in _workspace_receipt.items()
+                        if key != "status"
+                    }
                     self._record_turn_context_source(
                         "global_workspace_state", _workspace_status,
                         turn_id=audit_turn_id,
-                        **_workspace_receipt,
+                        **_workspace_source_metadata,
                     )
                     self._record_turn_stage(
                         "global_workspace_prompt_source", _workspace_status,
@@ -6985,6 +7005,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 except Exception as exc:
                     self._record_turn_stage(
                         "cognitive_prompt_context", "failed", str(exc),
+                        error_type=type(exc).__name__,
                         turn_id=audit_turn_id,
                     )
                     logger.exception("Cognitive prompt context assembly failed")

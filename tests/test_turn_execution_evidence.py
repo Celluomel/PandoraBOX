@@ -68,6 +68,18 @@ def test_workspace_snapshot_without_focus_writer_stays_unattributed():
     }, now=100.0) == {}
 
 
+def test_workspace_context_receipt_with_its_own_status_cannot_break_prompt_build():
+    bridge = _bridge()
+    bridge._record_turn_context_source(
+        "global_workspace_state", "injected", turn_id="turn-evidence-1",
+        status="nested receipt status", context_included=True,
+    )
+
+    source = bridge._last_turn_trace["context_sources"]["global_workspace_state"]
+    assert source["status"] == "injected"
+    assert source["context_included"] is True
+
+
 def test_body_source_gate_blocks_only_clear_data_dependent_turns_without_fresh_source():
     intent = {"route": True, "status": "body_observation_intent"}
 
@@ -860,6 +872,9 @@ def test_deterministic_reasoning_receipt_links_memory_and_planner_inputs():
     assert deterministic_reasoning_dependencies(
         selected=True, source_provenance_report=True,
     ) == ("turn_input", "turn_source_provenance_answer")
+    assert deterministic_reasoning_dependencies(
+        selected=True, workspace_state_report=True,
+    ) == ("turn_input", "global_workspace_state_answer")
     assert deterministic_reasoning_dependencies(selected=False, memory_recall=True) == ()
 
 

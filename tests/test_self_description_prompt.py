@@ -390,6 +390,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "software_architecture_intent",
         )
         self.assertFalse(workspace_architecture["route"])
+        self.assertFalse(workspace_architecture["global_workspace_state_route"])
         self.assertFalse(unavailable["route"])
         self.assertEqual(unavailable["status"], "router_unavailable")
         self.assertTrue(current_workspace["global_workspace_state_route"])
