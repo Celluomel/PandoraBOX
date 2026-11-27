@@ -3,9 +3,14 @@ Global Workspace
 ================
 Shared cognitive broadcast bus inspired by Bernard Baars' Global Workspace Theory.
 
-Every module in PandoraBOX can *broadcast* an item here.  The workspace acts as a
-short-term attention buffer: the most recently / highly-prioritised signals are
-visible to all other modules, enabling coordination without tight coupling.
+Modules may publish through the Global Workspace APIs, but publication is not
+automatic delivery to every module. The Workspace exposes separate shared
+surfaces: structured state (`update_state` / `get_state`), an uncertainty
+provenance ledger, and a bounded broadcast buffer (`broadcast` / `recent` /
+`top` / `by_source`). Consumers must explicitly read a surface; callbacks are
+opt-in through `add_listener`. Admission, deduplication, eviction, and selected
+focus mean that not every producer output is retained or exposed to every
+consumer.
 
 SEMANTIC COMPETITION (2026-03-09 rewrite)
 -----------------------------------------
@@ -58,7 +63,7 @@ Integration model (unchanged API)
   workspace.broadcast("memory", "contradiction detected", priority=0.8)
   workspace.broadcast("curiosity", "new topic: consciousness", priority=0.6)
   workspace.set_self_anchor("phi=0.63 | warm engaged curiosity")  # from SelfModelMoment
-  items = workspace.recent(n=10)   # anchor always included at position 0
+  items = workspace.recent(n=10)   # explicit read; anchor is prepended if set
 """
 
 import json
@@ -169,8 +174,9 @@ def _jaccard(a: WorkspaceItem, b: WorkspaceItem) -> float:
 
 class GlobalWorkspace:
     """
-    Shared broadcast bus for all cognitive modules — with semantic competition
-    and a persistent self-anchor that provides a stable identity reference frame.
+    Explicit pull-based shared state plus a bounded broadcast buffer, semantic
+    competition and a persistent self-anchor. No consumer receives every
+    publication unless it reads the appropriate API or registers a listener.
     Thread-safe.
     """
 

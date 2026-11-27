@@ -399,6 +399,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("resolving one record leaves peers unchanged", component.role)
         self.assertIn("Only outputs published through these interfaces", component.role)
         self.assertIn("does not establish universal access", component.role)
+        self.assertIn("not automatic fan-out", component.role)
         self.assertIn("GlobalWorkspace [cognition/global_workspace.py]", context)
 
     def test_architecture_answer_contract_distinguishes_workspace_publication_paths(self):
@@ -407,6 +408,8 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("writer per context key", ARCHITECTURE_ANSWER_CONTRACT)
         self.assertIn("does not imply a calibrated confidence", ARCHITECTURE_ANSWER_CONTRACT)
         self.assertIn("Do not claim universal module access", ARCHITECTURE_ANSWER_CONTRACT)
+        self.assertIn("Publication is not automatic fan-out", ARCHITECTURE_ANSWER_CONTRACT)
+        self.assertIn("explicitly registered", ARCHITECTURE_ANSWER_CONTRACT)
         self.assertIn("label any constructed example as hypothetical", ARCHITECTURE_ANSWER_CONTRACT)
 
     def test_runtime_execution_evidence_query_is_closed_world(self):
