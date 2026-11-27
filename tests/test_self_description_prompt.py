@@ -388,6 +388,10 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "Comment les émotions et sentiments modélisés contribuent-ils à la richesse de ton self ?",
             embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.98, 0.02]),
         )
+        affect_integration_english = classify_prompt_source_provenance_intent(
+            "How do the different affective signals recorded in your system relate to one another and contribute together to your continuing sense of self?",
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.98, 0.02]),
+        )
         direct_affect_report = classify_prompt_source_provenance_intent(
             "What emotions are active in you now? Give their current measured values and latest appraisal.",
             embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.98]),
@@ -414,6 +418,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertFalse(unavailable["software_architecture_route"])
         self.assertFalse(unavailable["global_workspace_state_route"])
         self.assertTrue(affect_integration["affect_self_integration_route"])
+        self.assertTrue(affect_integration_english["affect_self_integration_route"])
         self.assertEqual(
             affect_integration["affect_self_integration_status"],
             "affect_self_integration_intent",
