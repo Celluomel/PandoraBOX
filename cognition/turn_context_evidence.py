@@ -398,10 +398,34 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 source_type = re.sub(r"[^A-Za-z0-9_.:-]", "", str(raw_type or ""))[:64]
                 if source_type:
                     source_types.append(source_type)
+        context_names = []
+        raw_context_names = value.get("context_source_names")
+        if isinstance(raw_context_names, (list, tuple)):
+            for raw_name in raw_context_names[:64]:
+                name = re.sub(r"[^A-Za-z0-9_.:-]", "", str(raw_name or ""))[:120]
+                if name:
+                    context_names.append(name)
+        raw_context_fields = value.get("context_source_fields")
+        context_fields = {}
+        if isinstance(raw_context_fields, dict):
+            for raw_source, raw_fields in list(raw_context_fields.items())[:64]:
+                source = re.sub(r"[^A-Za-z0-9_.:-]", "", str(raw_source or ""))[:120]
+                if not source or not isinstance(raw_fields, (list, tuple)):
+                    continue
+                context_fields[source] = [
+                    re.sub(r"[^A-Za-z0-9_.:-]", "", str(field or ""))[:120]
+                    for field in raw_fields[:64] if field
+                ]
         return {
             "type": "global_workspace_prompt_receipt",
             "quality": "present",
             "context_included": bool(value.get("context_included")),
+            "context_source_count": max(
+                0, min(100000, int(value.get("context_source_count", len(context_names)) or 0))
+            ),
+            "context_source_names": context_names,
+            "context_source_fields": context_fields,
+            "context_contributions_included": bool(value.get("context_contributions_included")),
             "open_uncertainty_source_count": source_count,
             "uncertainty_synthesis_included": bool(
                 value.get("uncertainty_synthesis_included")

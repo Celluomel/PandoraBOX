@@ -1281,6 +1281,8 @@ class PersonaBridge:
             "source_cycle", "age_seconds", "age_cycles", "thread_id",
             "source_evidence_ref", "focus_type", "focus_score", "focus_ref",
             "context_included",
+            "context_source_count", "context_source_names",
+            "context_source_fields", "context_contributions_included",
             "open_uncertainty_source_count", "uncertainty_synthesis_included",
             "uncertainty_source_refs", "uncertainty_source_turn_ids",
             "uncertainty_source_types",
@@ -1302,6 +1304,20 @@ class PersonaBridge:
                     for item in value[:64]
                     if item
                 ]
+            elif key == "context_source_names" and isinstance(value, (list, tuple)):
+                safe_metadata[key] = [
+                    re.sub(r"[^A-Za-z0-9_.:-]", "", str(item or ""))[:120]
+                    for item in value[:64] if item
+                ]
+            elif key == "context_source_fields" and isinstance(value, dict):
+                safe_metadata[key] = {
+                    re.sub(r"[^A-Za-z0-9_.:-]", "", str(source or ""))[:120]: [
+                        re.sub(r"[^A-Za-z0-9_.:-]", "", str(field or ""))[:120]
+                        for field in fields[:64] if field
+                    ]
+                    for source, fields in list(value.items())[:64]
+                    if isinstance(fields, (list, tuple))
+                }
             elif key == "affect_profile" and isinstance(value, dict):
                 safe_metadata[key] = {}
                 for channel, raw_value in value.items():

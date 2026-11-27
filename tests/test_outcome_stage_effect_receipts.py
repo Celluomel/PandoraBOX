@@ -302,6 +302,13 @@ def test_global_workspace_prompt_receipt_proves_all_open_uncertainty_refs_includ
             "user_exchange:doubt", "prediction_error", "belief_conflict",
             "decision_reasoning_limit",
         ],
+        "context_source_count": 2,
+        "context_source_names": ["vision", "radar"],
+        "context_source_fields": {
+            "vision": ["nearest_object"],
+            "radar": ["nearest_object"],
+        },
+        "context_contributions_included": True,
         "evidence": "private user quote must not enter audit summary",
     })
 
@@ -310,6 +317,9 @@ def test_global_workspace_prompt_receipt_proves_all_open_uncertainty_refs_includ
     assert len(summary["uncertainty_source_refs"]) == 5
     assert summary["uncertainty_source_turn_ids"] == ["turn-1", "turn-5"]
     assert "decision_reasoning_limit" in summary["uncertainty_source_types"]
+    assert summary["context_source_count"] == 2
+    assert summary["context_source_names"] == ["vision", "radar"]
+    assert summary["context_contributions_included"] is True
     assert "private user quote" not in repr(summary)
 
 
