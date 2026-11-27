@@ -293,6 +293,7 @@ def _global_workspace_prompt_fragment(
         return ""
     hypotheses = getattr(workspace_state, "active_hypotheses", None) or []
     policy = getattr(workspace_state, "executive_policy", None) or {}
+    context_by_source = getattr(workspace_state, "context_by_source", None) or {}
     uncertainty_fragment = (
         _global_workspace_uncertainty_fragment(workspace_state)
         if include_uncertainties else ""
@@ -300,12 +301,26 @@ def _global_workspace_prompt_fragment(
     # The post-arbitration winner on the organism is the canonical published
     # focus. The shared WorkspaceState snapshot can lag that publication.
     focus = published_focus or getattr(workspace_state, "focus", None)
-    if not (hypotheses or policy or focus or uncertainty_fragment):
+    if not (hypotheses or policy or focus or uncertainty_fragment or context_by_source):
         return ""
 
     fragment = f"[Global workspace] focus: {focus or 'unset'}"
     if uncertainty_fragment:
         fragment += "\n" + uncertainty_fragment
+    if isinstance(context_by_source, dict) and context_by_source:
+        import json
+        source_rows = [
+            {"source": str(source), "contribution": contribution}
+            for source, contribution in sorted(
+                context_by_source.items(), key=lambda pair: str(pair[0])
+            )
+            if isinstance(contribution, dict)
+        ]
+        if source_rows:
+            fragment += "\n[Workspace contributions by source; preserve distinct origins] "
+            fragment += json.dumps(
+                source_rows, ensure_ascii=False, default=str, separators=(",", ":")
+            )
     alternatives = ", ".join(
         item.get("label", item.get("name", "?"))
         for item in hypotheses[1:3]

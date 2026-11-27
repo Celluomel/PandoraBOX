@@ -114,6 +114,10 @@ class WorkspaceState:
     executive_policy:     Dict[str, float]   = field(default_factory=dict)
     confidence:           float              = 0.5
     context:              Dict[str, Any]     = field(default_factory=dict)
+    # Source-scoped context is the lossless shared view. ``context`` remains
+    # a flattened compatibility projection for older consumers; collisions in
+    # that projection must not erase the independent contributions here.
+    context_by_source:     Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     # Reportability / provenance (not requested field-by-field in the spec,
     # but required for "Broadcast Participants" / "Recent Workspace Changes")
@@ -137,6 +141,7 @@ class WorkspaceState:
             "executive_policy":   copy.deepcopy(self.executive_policy),
             "confidence":         round(self.confidence, 4),
             "context":            copy.deepcopy(self.context),
+            "context_by_source":  copy.deepcopy(self.context_by_source),
             "updated_by":         copy.deepcopy(self.updated_by[-10:]),
             "last_updated":       round(self.last_updated, 3),
         }
@@ -175,9 +180,9 @@ def _jaccard(a: WorkspaceItem, b: WorkspaceItem) -> float:
 class GlobalWorkspace:
     """
     Explicit pull-based shared state plus a bounded broadcast buffer, semantic
-    competition and a persistent self-anchor. No consumer receives every
-    publication unless it reads the appropriate API or registers a listener.
-    Thread-safe.
+    competition and a persistent self-anchor. Admitted context contributions
+    are retained by source; consumers still opt in by reading the snapshot or
+    registering a listener for broadcasts. Thread-safe.
     """
 
     CAPACITY              = 32    # max items in competition buffer
@@ -289,8 +294,9 @@ class GlobalWorkspace:
     def update_state(self, source: str, **fields) -> WorkspaceState:
         """
         Merge supported fields into the shared WorkspaceState and record
-        provenance. Context updates merge by key so independent subsystem
-        publishers do not erase one another's entries. Provenance metadata is
+        provenance. Context updates merge by source and key; the flattened
+        compatibility view may show the latest same-key value, while
+        context_by_source retains each publisher's contribution. Provenance metadata is
         owned by this class and cannot be overwritten through this method.
 
         Any subsystem can call this with just the fields it computed this
@@ -325,9 +331,8 @@ class GlobalWorkspace:
                             default=0.0,
                         )
                 if key == "context":
-                    context = copy.deepcopy(self._state.context or {})
-                    context.update(value or {})
-                    value = context
+                    self._merge_context_locked(source, value)
+                    continue
                 setattr(self._state, key, value)
             if not accepted_fields:
                 return copy.deepcopy(self._state)
@@ -341,11 +346,15 @@ class GlobalWorkspace:
             return copy.deepcopy(self._state)
 
     def merge_context(self, source: str, updates: Dict[str, Any]) -> WorkspaceState:
-        """Atomically merge context keys so concurrent sensor publishers do not overwrite each other."""
+        """Merge a source's context while retaining every source contribution.
+
+        The flat ``context`` map is maintained for compatibility. If two
+        sources publish the same key, the latest value remains in that legacy
+        projection, while ``context_by_source`` preserves both values for
+        reasoning and audit.
+        """
         with self._state_lock:
-            context = dict(self._state.context or {})
-            context.update(copy.deepcopy(updates or {}))
-            self._state.context = context
+            self._merge_context_locked(source, updates)
             self._state.updated_by.append({
                 "source": source,
                 "fields": ["context." + str(key) for key in (updates or {})],
@@ -354,6 +363,22 @@ class GlobalWorkspace:
             self._state.updated_by = self._state.updated_by[-50:]
             self._state.last_updated = time.time()
             return copy.deepcopy(self._state)
+
+    def _merge_context_locked(self, source: str, updates: Dict[str, Any]) -> None:
+        """Update source-preserving and legacy context views under state lock."""
+        source_key = str(source or "unknown").strip()[:120] or "unknown"
+        payload = copy.deepcopy(updates or {})
+        if not isinstance(payload, dict):
+            return
+        by_source = copy.deepcopy(self._state.context_by_source or {})
+        contribution = dict(by_source.get(source_key) or {})
+        contribution.update(payload)
+        by_source[source_key] = contribution
+        self._state.context_by_source = by_source
+
+        flat_context = copy.deepcopy(self._state.context or {})
+        flat_context.update(payload)
+        self._state.context = flat_context
 
     def record_uncertainty(
         self,

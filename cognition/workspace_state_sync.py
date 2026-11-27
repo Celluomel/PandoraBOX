@@ -124,10 +124,7 @@ def sync_workspace_state(workspace, organism: Any = None, internal_loop: Any = N
         if sr is not None and hasattr(sr, "all_domain_confidence"):
             workspace.update_state(
                 "skill_registry",
-                context={
-                    **(workspace.get_state().context or {}),
-                    "skill_confidence": sr.all_domain_confidence(),
-                },
+                context={"skill_confidence": sr.all_domain_confidence()},
             )
     except Exception as e:
         logger.debug(f"[WorkspaceSync] skill_registry skipped: {e}")

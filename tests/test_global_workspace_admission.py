@@ -94,6 +94,33 @@ def test_context_publishers_merge_keys_and_copy_input_payloads():
     }
 
 
+def test_context_key_collision_retains_each_source_contribution():
+    workspace = GlobalWorkspace()
+    workspace.update_state("visual_perception", context={"nearest_object": {"name": "chair"}})
+    workspace.merge_context("radar", {"nearest_object": {"range_m": 1.8}})
+
+    state = workspace.get_state()
+    assert state.context["nearest_object"] == {"range_m": 1.8}
+    assert state.context_by_source == {
+        "visual_perception": {"nearest_object": {"name": "chair"}},
+        "radar": {"nearest_object": {"range_m": 1.8}},
+    }
+    assert state.to_dict()["context_by_source"] == state.context_by_source
+
+
+def test_context_updates_keep_prior_fields_from_the_same_source():
+    workspace = GlobalWorkspace()
+    workspace.update_state("introspection", context={"mode": "reflective"})
+    workspace.update_state("introspection", context={"question": "why?"})
+    workspace.update_state("world_model", context={"mode": "observing"})
+
+    state = workspace.get_state()
+    assert state.context_by_source == {
+        "introspection": {"mode": "reflective", "question": "why?"},
+        "world_model": {"mode": "observing"},
+    }
+
+
 def test_unknown_and_provenance_fields_do_not_create_false_receipts():
     workspace = GlobalWorkspace()
     before = workspace.get_state().last_updated

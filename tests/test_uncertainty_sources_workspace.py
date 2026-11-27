@@ -306,6 +306,20 @@ def test_workspace_prompt_explicitly_reports_zero_open_uncertainty_sources():
     assert receipt["uncertainty_source_refs"] == []
 
 
+def test_workspace_prompt_exposes_context_contributions_with_each_origin():
+    workspace = GlobalWorkspace()
+    workspace.update_state("vision", context={"nearest_object": {"label": "chair"}})
+    workspace.update_state("radar", context={"nearest_object": {"range_m": 1.8}})
+
+    fragment = _global_workspace_prompt_fragment(workspace.get_state())
+
+    assert "Workspace contributions by source" in fragment
+    assert '"source":"vision"' in fragment
+    assert '"source":"radar"' in fragment
+    assert '"label":"chair"' in fragment
+    assert '"range_m":1.8' in fragment
+
+
 def test_prompt_uses_current_workspace_sources_not_stale_slow_cycle_snapshot():
     workspace = GlobalWorkspace()
     record = workspace.record_uncertainty(

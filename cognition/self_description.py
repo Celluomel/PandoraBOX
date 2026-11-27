@@ -110,8 +110,10 @@ ARCHITECTURE_ANSWER_CONTRACT = (
     "Answer questions about this software's cognitive architecture directly and concisely. "
     "Separate implemented facts from inference. For the Global Workspace, distinguish "
     "structured update_state/context, the bounded broadcast buffer, the uncertainty ledger, "
-    "and WorkspaceCompetition's focus/hypotheses. merge_context records a writer per context "
-    "key; a broadcast records source/content/priority and does not imply a calibrated confidence. "
+    "and WorkspaceCompetition's focus/hypotheses. Context contributions are retained by source "
+    "in context_by_source and supplied to cognitive prompts with their origins; the flat context "
+    "map remains a compatibility projection where same-key collisions show the latest value. "
+    "A broadcast records source/content/priority and does not imply calibrated confidence. "
     "Only outputs explicitly published, admitted, and read by a consumer are shared with that "
     "consumer. Do not claim universal module access, that every module publishes, or that "
     "arbitration resolves/erases other sources. Do not invent module names, sensor values, or "
@@ -1962,7 +1964,7 @@ class SelfDescription:
             from cognition.workspace_competition import WorkspaceCompetition
             if self.register_or_update(
                 "GlobalWorkspace", "cognition/global_workspace.py",
-                "Shared cognitive state and broadcast buffer. update_state merges allowlisted fields; context maps are merged by key, and merge_context records the writer for each key. record_uncertainty retains each open source with its type, module, reference, turn/cycle, question, evidence, salience, and status; resolving one record leaves peers unchanged. broadcast submits source/content/priority to a bounded buffer (default capacity 32, at most 4 items per source); recent semantic duplicates may be rejected and a full buffer may evict its lowest-priority item. WorkspaceCompetition writes the selected focus and up to three ranked candidates (including the winner) as active hypotheses. Publication is not automatic fan-out: consumers must explicitly read the appropriate Workspace API, or register a listener for broadcast items. Only outputs published through these interfaces, admitted by their gates, and later read by a consumer become available there. This does not establish universal access to every module output or calibrated confidence metadata on every broadcast.",
+                "Shared cognitive state and broadcast buffer. update_state merges allowlisted fields; context_by_source retains each publisher's context values and the cognitive prompt receives these contributions with origins. The flat context map remains a compatibility view where same-key collisions show the latest value. record_uncertainty retains each open source with its type, module, reference, turn/cycle, question, evidence, salience, and status; resolving one record leaves peers unchanged. broadcast submits source/content/priority to a bounded buffer (default capacity 32, at most 4 items per source); recent semantic duplicates may be rejected and a full buffer may evict its lowest-priority item. WorkspaceCompetition writes the selected focus and up to three ranked candidates (including the winner) as active hypotheses. Publication is not automatic fan-out: consumers must explicitly read the appropriate Workspace API, or register a listener for broadcast items. Only outputs published through these interfaces, admitted by their gates, and later read by a consumer become available there. This does not establish universal access to every module output or calibrated confidence metadata on every broadcast.",
                 {
                     "CAPACITY": GlobalWorkspace.CAPACITY,
                     "SOURCE_MAX": GlobalWorkspace.SOURCE_MAX,
