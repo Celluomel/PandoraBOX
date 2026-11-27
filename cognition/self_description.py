@@ -777,7 +777,7 @@ def classify_prompt_source_provenance_intent(
         affect_positive_score = float(query @ affect_positive)
         affect_negative_score = float(query @ affect_negative)
         affect_margin = affect_positive_score - affect_negative_score
-        if affect_positive_score >= 0.72 and affect_margin >= 0.06:
+        if affect_positive_score >= 0.72 and affect_margin >= 0.05:
             affect_status, affect_route = "affect_self_integration_intent", True
         elif affect_positive_score < 0.66 or affect_margin < 0.0:
             affect_status, affect_route = "not_affect_self_integration_intent", False
@@ -1007,7 +1007,10 @@ def affect_report_mode(
         return "none"
     if debug_introspection or is_structured_affect_status_query(user_input):
         return "detailed"
-    if is_self_affect_query(user_input):
+    # Broad affect/self questions should reach semantic routing and normal
+    # synthesis. A lexical self-affect match alone must not replace them with
+    # a two-channel canned report.
+    if is_social_status_greeting(user_input):
         return "brief"
     return "none"
 

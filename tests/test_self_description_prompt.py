@@ -634,6 +634,9 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertEqual(affect_report_mode(
             "What emotions are active in you now?"
         ), "detailed")
+        self.assertEqual(affect_report_mode(
+            "Describe your current affective state and explain how several feelings combine into your self."
+        ), "none")
         self.assertEqual(affect_report_mode("Good morning", debug_introspection=True), "detailed")
         self.assertEqual(affect_report_mode(
             "How are you doing?", peer_dialogue=True,

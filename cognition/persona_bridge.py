@@ -7632,7 +7632,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     or _api_route_query
                 )
                 _affect_self_report = bool(
-                    not peer_name and (debug_introspection or _affect_self_integration_query)
+                    not peer_name and (
+                        debug_introspection
+                        or _affect_self_integration_query
+                        or _affect_self_report_query
+                    )
                 )
                 if _affect_self_report:
                     from cognition.self_description import sanitize_affect_event_receipts
