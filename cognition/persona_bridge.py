@@ -635,7 +635,7 @@ def _workspace_prompt_uncertainty_receipt(organism: Any, prompt_block: str) -> d
     return {
         "open_uncertainty_source_count": len(records),
         "uncertainty_synthesis_included": bool(
-            refs and "[Open uncertainty synthesis]" in str(prompt_block or "")
+            "[Open uncertainty synthesis]" in str(prompt_block or "")
         ),
         "uncertainty_source_refs": refs,
         "uncertainty_source_turn_ids": sorted({

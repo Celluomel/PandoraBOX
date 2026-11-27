@@ -45,11 +45,13 @@ def test_global_workspace_focus_alone_is_included_in_prompt_fragment():
 
     fragment = _global_workspace_prompt_fragment(state)
 
-    assert fragment == "[Global workspace] focus: cognitive harness audit"
+    assert fragment.startswith("[Global workspace] focus: cognitive harness audit")
+    assert "0 independent uncertainty source records" in fragment
 
 
 def test_global_workspace_prompt_omits_empty_state():
-    assert _global_workspace_prompt_fragment(GlobalWorkspace().get_state()) == ""
+    fragment = _global_workspace_prompt_fragment(GlobalWorkspace().get_state())
+    assert "0 independent uncertainty source records" in fragment
 
 
 def test_published_winner_overrides_lagging_workspace_snapshot_focus():
@@ -59,4 +61,4 @@ def test_published_winner_overrides_lagging_workspace_snapshot_focus():
         state, published_focus="selected cognitive goal",
     )
 
-    assert fragment == "[Global workspace] focus: selected cognitive goal"
+    assert fragment.startswith("[Global workspace] focus: selected cognitive goal")

@@ -724,6 +724,26 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "below_uncertainty_signal_threshold", "router_unavailable",
         }:
             receipt["uncertainty_router_reason"] = uncertainty_reason
+        if isinstance(value.get("continuing_commitment_candidate"), bool):
+            receipt["continuing_commitment_candidate"] = value[
+                "continuing_commitment_candidate"
+            ]
+        for key in (
+            "commitment_positive_similarity",
+            "commitment_negative_similarity",
+            "commitment_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        commitment_reason = str(value.get("commitment_router_reason") or "")
+        if commitment_reason in {
+            "cross_lingual_semantic_centroid_margin",
+            "below_commitment_signal_threshold", "router_unavailable",
+        }:
+            receipt["commitment_router_reason"] = commitment_reason
         return receipt
 
     if value.get("type") == "cognitive_deliberation_receipt":
@@ -829,6 +849,9 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 "status": str(uncertainty_source.get("status") or "unknown")[:40],
                 "recorded": bool(uncertainty_source.get("recorded")),
             }
+            persistence_status = str(uncertainty_source.get("persistence_status") or "")
+            if persistence_status in {"persisted", "not_configured", "persistence_failed"}:
+                source_receipt["persistence_status"] = persistence_status
             uncertainty_id = str(uncertainty_source.get("uncertainty_id") or "")
             if uncertainty_id and re.fullmatch(r"[A-Za-z0-9_.:-]{1,96}", uncertainty_id):
                 source_receipt["uncertainty_id"] = uncertainty_id

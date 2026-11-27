@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from cognition.global_workspace import GlobalWorkspace
@@ -61,6 +62,64 @@ def test_global_workspace_keeps_independent_uncertainty_sources_and_resolves_one
         "prediction_error": "open",
     }
     assert state.uncertainty == 0.8
+
+
+def test_uncertainty_sources_survive_restart_and_resolution_is_source_scoped(tmp_path):
+    ledger_path = tmp_path / "workspace-uncertainties.json"
+    first = GlobalWorkspace(uncertainty_path=ledger_path)
+    user = first.record_uncertainty(
+        source_type="user_exchange:open_question", source_module="semantic_extractor",
+        source_ref="turn-user-1", turn_id="turn-user-1",
+        question="Which of these sources is correct?", evidence="Two sources remain possible.",
+        salience=0.7,
+    )
+    prediction = first.record_uncertainty(
+        source_type="prediction_error", source_module="predictive_mind",
+        source_ref="cycle-18", turn_id="turn-prediction-1", cycle_id=18,
+        question="Why did the predicted result differ?", evidence="Observed result differed.",
+        salience=0.8,
+    )
+
+    assert user["persistence_status"] == "persisted"
+    assert prediction["persistence_status"] == "persisted"
+    restarted = GlobalWorkspace(uncertainty_path=ledger_path)
+    restored = restarted.get_state().uncertainty_sources
+    assert {item["uncertainty_id"] for item in restored} == {
+        user["uncertainty_id"], prediction["uncertainty_id"],
+    }
+    assert all(item["status"] == "open" for item in restored)
+    assert {item["source_module"] for item in restored} == {
+        "semantic_extractor", "predictive_mind",
+    }
+
+    resolution = restarted.resolve_uncertainty(
+        user["uncertainty_id"], "resolution:turn-review",
+    )
+    assert resolution["resolved"] is True
+    assert resolution["persistence_status"] == "persisted"
+    after_restart = GlobalWorkspace(uncertainty_path=ledger_path).get_state()
+    status_by_id = {item["uncertainty_id"]: item["status"] for item in after_restart.uncertainty_sources}
+    assert status_by_id == {
+        user["uncertainty_id"]: "resolved",
+        prediction["uncertainty_id"]: "open",
+    }
+
+
+def test_workspace_does_not_resolve_source_when_ledger_write_fails():
+    workspace = GlobalWorkspace()
+    source = workspace.record_uncertainty(
+        source_type="user_exchange:open_question", source_module="semantic_extractor",
+        source_ref="turn-user-2", turn_id="turn-user-2",
+        question="Which source remains open?", salience=0.6,
+    )
+    workspace._uncertainty_path = Path("unused-ledger.json")
+    workspace._persist_uncertainty_sources_locked = lambda: "persistence_failed"
+
+    resolution = workspace.resolve_uncertainty(source["uncertainty_id"], "resolution-attempt")
+
+    assert resolution["status"] == "persistence_failed"
+    assert resolution["resolved"] is False
+    assert workspace.get_state().uncertainty_sources[0]["status"] == "open"
 
 
 def test_semantic_extractor_records_user_uncertainty_only_with_verbatim_evidence():
@@ -224,6 +283,22 @@ def test_workspace_prompt_surfaces_open_uncertainty_without_flattening_source():
     assert "5 independent open source record(s)" in fragment
     assert "peak salience=0.90" in fragment
     assert "contributing modules" in fragment
+
+
+def test_workspace_prompt_explicitly_reports_zero_open_uncertainty_sources():
+    workspace = GlobalWorkspace()
+    state = workspace.get_state()
+    fragment = _global_workspace_uncertainty_fragment(state)
+    full_prompt = _global_workspace_prompt_fragment(state)
+    organism = SimpleNamespace(workspace=workspace)
+    receipt = _workspace_prompt_uncertainty_receipt(organism, full_prompt)
+
+    assert "0 independent uncertainty source records" in fragment
+    assert "do not invent an internal source" in fragment
+    assert "[Open uncertainty synthesis]" in full_prompt
+    assert receipt["open_uncertainty_source_count"] == 0
+    assert receipt["uncertainty_synthesis_included"] is True
+    assert receipt["uncertainty_source_refs"] == []
 
 
 def test_prompt_uses_current_workspace_sources_not_stale_slow_cycle_snapshot():

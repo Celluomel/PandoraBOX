@@ -133,13 +133,24 @@ def _global_workspace_uncertainty_fragment(workspace_state: Any) -> str:
     """Render all open uncertainty origins as a compact shared synthesis."""
     if workspace_state is None:
         return ""
-    sources = getattr(workspace_state, "uncertainty_sources", None) or []
+    if isinstance(workspace_state, dict):
+        if "uncertainty_sources" not in workspace_state:
+            return ""
+        sources = workspace_state.get("uncertainty_sources") or []
+    else:
+        if not hasattr(workspace_state, "uncertainty_sources"):
+            return ""
+        sources = getattr(workspace_state, "uncertainty_sources", None) or []
     open_sources = [
         item for item in sources
         if isinstance(item, dict) and item.get("status", "open") == "open"
     ]
     if not open_sources:
-        return ""
+        return (
+            "[Open uncertainty synthesis] 0 independent uncertainty source records "
+            "are currently open in the Global Workspace. This means none are "
+            "recorded there now; do not invent an internal source."
+        )
 
     source_counts: dict[str, int] = {}
     module_counts: dict[str, int] = {}
@@ -345,7 +356,9 @@ class CognitiveOrganism:
             pass
 
         # ── Autonomous architecture (v2) ──────────────────────────────────
-        self.workspace      = GlobalWorkspace()
+        self.workspace      = GlobalWorkspace(
+            uncertainty_path=self._data_dir / "global_workspace_uncertainties.json",
+        )
         self.semantic_memory = SemanticMemory(str(self._data_dir / "semantic_memory.db"))
         self._semantic_extractor = SemanticExtractor(self.semantic_memory, organism=self)
 

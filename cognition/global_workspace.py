@@ -61,11 +61,15 @@ Integration model (unchanged API)
   items = workspace.recent(n=10)   # anchor always included at position 0
 """
 
+import json
+import logging
+import os
 import threading
 import time
 import copy
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 
@@ -84,6 +88,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 # chamber (see module docstring above, 2026-03-09 rewrite). Hypotheses here
 # are timestamped and HYPOTHESIS_TTL-bounded for the same reason.
 HYPOTHESIS_TTL = 180.0  # seconds a hypothesis stays "active" without being re-asserted
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -180,7 +185,7 @@ class GlobalWorkspace:
     ANCHOR_COHERENCE_THRESH = 0.25   # Jaccard threshold to qualify for the boost
     ANCHOR_SOURCE           = "self_anchor"
 
-    def __init__(self, max_items: int = 32):
+    def __init__(self, max_items: int = 32, *, uncertainty_path: str | Path | None = None):
         self._lock     = threading.RLock()
         self._capacity = max(1, int(max_items))
         self._buffer: deque = deque(maxlen=self._capacity)
@@ -193,6 +198,77 @@ class GlobalWorkspace:
         # ── Phase 4.x: structured live state ───────────────────────────────
         self._state = WorkspaceState()
         self._state_lock = threading.RLock()
+        self._uncertainty_path = Path(uncertainty_path) if uncertainty_path else None
+        self._load_uncertainty_sources()
+
+    def _load_uncertainty_sources(self) -> None:
+        """Restore the provenance ledger without overwriting other workspace state."""
+        path = self._uncertainty_path
+        if path is None or not path.is_file():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            records = payload.get("uncertainty_sources") if isinstance(payload, dict) else None
+            if not isinstance(records, list):
+                raise ValueError("uncertainty ledger has no source list")
+            restored = []
+            for item in records:
+                if not isinstance(item, dict):
+                    continue
+                if not all(item.get(key) for key in (
+                    "uncertainty_id", "source_type", "source_module", "question",
+                )):
+                    continue
+                if item.get("status", "open") not in {"open", "resolved"}:
+                    continue
+                record = copy.deepcopy(item)
+                record.setdefault("status", "open")
+                restored.append(record)
+            with self._state_lock:
+                self._state.uncertainty_sources = restored
+                self._state.uncertainty = max((
+                    float(item.get("salience", 0.0)) for item in restored
+                    if item.get("status") == "open"
+                ), default=0.0)
+            logger.info(
+                "[GlobalWorkspace] restored %d uncertainty source records", len(restored),
+            )
+        except Exception as exc:
+            # Keep the app available, but make persistence loss observable.
+            logger.error(
+                "[GlobalWorkspace] could not restore uncertainty source ledger (%s)",
+                type(exc).__name__,
+            )
+
+    def _persist_uncertainty_sources_locked(self) -> str:
+        """Atomically persist the source ledger; caller holds ``_state_lock``."""
+        path = self._uncertainty_path
+        if path is None:
+            return "not_configured"
+        temp_path = path.with_name(path.name + ".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema_version": 1,
+                "uncertainty_sources": self._state.uncertainty_sources,
+            }
+            with temp_path.open("w", encoding="utf-8", newline="\n") as output:
+                json.dump(payload, output, ensure_ascii=False, indent=2)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temp_path, path)
+            return "persisted"
+        except Exception as exc:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            logger.error(
+                "[GlobalWorkspace] could not persist uncertainty source ledger (%s)",
+                type(exc).__name__,
+            )
+            return "persistence_failed"
 
     # ── Phase 4.x: WorkspaceState read/write ─────────────────────────────────
 
@@ -343,8 +419,10 @@ class GlobalWorkspace:
             })
             self._state.updated_by = self._state.updated_by[-50:]
             self._state.last_updated = time.time()
+            persistence_status = self._persist_uncertainty_sources_locked()
             return {"status": "recorded", "recorded": True,
-                    "uncertainty_id": record["uncertainty_id"]}
+                    "uncertainty_id": record["uncertainty_id"],
+                    "persistence_status": persistence_status}
 
     def resolve_uncertainty(self, uncertainty_id: str, resolution_ref: str) -> Dict[str, Any]:
         """Mark one source record resolved without deleting or closing peers."""
@@ -356,6 +434,15 @@ class GlobalWorkspace:
             record["status"] = "resolved"
             record["resolution_ref"] = str(resolution_ref or "")[:180] or None
             record["resolved_at"] = round(time.time(), 3)
+            persistence_status = self._persist_uncertainty_sources_locked()
+            if persistence_status == "persistence_failed":
+                record["status"] = "open"
+                record.pop("resolution_ref", None)
+                record.pop("resolved_at", None)
+                return {
+                    "status": "persistence_failed", "resolved": False,
+                    "uncertainty_id": uncertainty_id,
+                }
             self._state.uncertainty = max(
                 (float(item.get("salience", 0.0)) for item in self._state.uncertainty_sources
                  if item.get("status") == "open"), default=0.0,
@@ -368,7 +455,8 @@ class GlobalWorkspace:
             self._state.updated_by = self._state.updated_by[-50:]
             self._state.last_updated = time.time()
             return {"status": "resolved", "resolved": True,
-                    "uncertainty_id": uncertainty_id}
+                    "uncertainty_id": uncertainty_id,
+                    "persistence_status": persistence_status}
 
     def set_hypotheses(self, source: str, hypotheses: List[Dict]) -> None:
         """
