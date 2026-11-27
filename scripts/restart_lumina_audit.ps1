@@ -75,7 +75,22 @@ function Get-VerifiedAuditInstance {
 }
 
 function Test-PortsFree {
-    (Get-LuminaListeners).OwnerIds.Count -eq 0
+    if ((Get-LuminaListeners).OwnerIds.Count -gt 0) { return $false }
+
+    # Listener enumeration can be incomplete in restricted Windows sessions.
+    # A successful local bind is the final preflight; if an owner is invisible
+    # to Get-NetTCPConnection, do not start a second Lumina on the same port.
+    foreach ($port in $ports) {
+        $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, [int]$port)
+        try {
+            $probe.Start()
+            $probe.Stop()
+        } catch {
+            try { $probe.Stop() } catch { }
+            return $false
+        }
+    }
+    return $true
 }
 
 function Wait-ForPortsFree([int[]]$ProcessIds, [int]$TimeoutSeconds = 45) {
@@ -161,7 +176,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 Write-Output 'Starting exactly one audit instance through start.bat.'
 $launcher = Start-Process -FilePath $env:ComSpec `
-    -ArgumentList @('/d', '/c', 'call start.bat') `
+    -ArgumentList @('/d', '/c', 'call start.bat < nul') `
     -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 Write-Output "Launcher PID: $($launcher.Id). Waiting up to ${StartupTimeoutSeconds}s for ready=true and /next/ HTTP 200."
@@ -172,6 +187,18 @@ do {
     if ($ready) {
         $ready | ConvertTo-Json -Depth 4
         exit 0
+    }
+    $launcher.Refresh()
+    if ($launcher.HasExited) {
+        $errorLines = @()
+        foreach ($logPath in @($stderrPath, $stdoutPath)) {
+            if (Test-Path -LiteralPath $logPath) {
+                $errorLines += Get-Content -LiteralPath $logPath -Tail 30 -ErrorAction SilentlyContinue |
+                    Where-Object { $_ -match 'ERROR|Error|Traceback|only one usage|Press any key' }
+            }
+        }
+        $tail = if ($errorLines.Count) { $errorLines -join [Environment]::NewLine } else { 'No startup error line was captured.' }
+        throw "Audit launcher exited with code $($launcher.ExitCode) before Lumina became ready. No retry or force-kill was attempted.`n$tail"
     }
     Start-Sleep -Seconds 2
 } while ([DateTime]::UtcNow -lt $deadline)
