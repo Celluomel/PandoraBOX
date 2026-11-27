@@ -90,6 +90,8 @@ _PROMPT_PROVENANCE_NEGATIVE = (
     "Describe the role of the Global Workspace in combining concurrent cognitive inputs without erasing their provenance.",
 )
 _SOFTWARE_ARCHITECTURE_POSITIVE = (
+    "Explain the architecture and role of the Global Workspace in Lumina, including how its code consolidates outputs.",
+    "How does Lumina's implemented Global Workspace combine module outputs, preserve provenance, and provide data to consumers?",
     "Explain how this software's Global Workspace implementation integrates output from cognitive modules and makes it available to downstream reasoning.",
     "Describe the implemented data flow through the Global Workspace, including how it consolidates inputs while retaining provenance.",
     "Does the Global Workspace in this codebase combine cognitive-module outputs? Explain the mechanisms that are actually implemented and their limits.",
@@ -104,6 +106,8 @@ _SOFTWARE_ARCHITECTURE_POSITIVE = (
     "Soll der globale Arbeitsbereich Beiträge mehrerer Module samt Herkunft behalten, auch wenn ein Fokus ausgewählt wird?",
 )
 _SOFTWARE_ARCHITECTURE_NEGATIVE = (
+    "What is currently in your Global Workspace? Distinguish its structured state, broadcast buffer, and open uncertainties.",
+    "Show only the current recorded contents of the Workspace and its unresolved records, not how the software is designed.",
     "Which uncertainty records are currently open in the Global Workspace? List their source records and preserve each origin.",
     "Which information sources were included in the language model prompt for the last response?",
     "Explain global workspace theory in cognitive science in general, without discussing this software implementation.",
@@ -112,6 +116,8 @@ _SOFTWARE_ARCHITECTURE_NEGATIVE = (
     "What did the live Global Workspace contain on this exact turn? Report its current records, not the architecture.",
 )
 _GLOBAL_WORKSPACE_STATE_POSITIVE = (
+    "What is currently in your Global Workspace? Distinguish its structured state, broadcast buffer, and open uncertainties.",
+    "Show me the actual live contents currently recorded in the Global Workspace, including its focus, broadcasts, and unresolved uncertainty entries.",
     "Give me a factual snapshot of what is in your Global Workspace right now: current focus, source-attributed contributions, broadcast items, and open uncertainties.",
     "What do you currently see in your global workspace? Report the actual active records and their sources, and distinguish the focus from unresolved entries.",
     "What does your Global Workspace currently contain, based on its live state snapshot? Distinguish the selected focus, source contributions, broadcasts, and other open records.",
@@ -125,6 +131,8 @@ _GLOBAL_WORKSPACE_STATE_POSITIVE = (
     "現在のグローバルワークスペースの状態、出所別の寄稿、ブロードキャスト項目、未解決の不確実性を報告してください。",
 )
 _GLOBAL_WORKSPACE_STATE_NEGATIVE = (
+    "Explain the architecture and role of the Global Workspace in Lumina, including how its code consolidates outputs.",
+    "How does Lumina's implemented Global Workspace combine module outputs, preserve provenance, and provide data to consumers?",
     "Which information sources were included in the language model prompt for the last response?",
     "Explain the software architecture and general purpose of Global Workspace Theory.",
     "Explain the software architecture and role of the Global Workspace in Lumina, including how its modules consolidate outputs.",
