@@ -433,6 +433,41 @@ def test_workspace_synthesis_groups_repeated_questions_without_dropping_source_r
     assert selection["selected"] is True
 
 
+def test_workspace_uncertainty_synthesis_survives_full_prompt_budget_pressure():
+    workspace = GlobalWorkspace()
+    for episode in ("episode-a", "episode-b", "episode-c"):
+        for index, limitation in enumerate(("measurement missing", "priors unvalidated", "score uncalibrated")):
+            workspace.record_uncertainty(
+                source_type="decision_reasoning_limit",
+                source_module="intention_reasoner",
+                source_ref=f"{episode}:uncertainty:{index}",
+                question=f"Which sequence is most likely to make grounded progress on: {episode}?",
+                evidence=limitation,
+                salience=0.65,
+            )
+    workspace.record_uncertainty(
+        source_type="user_exchange:open_question",
+        source_module="semantic_extractor", source_ref="turn-user",
+        turn_id="turn-user", question="What remains unresolved?", salience=0.9,
+    )
+    fragment = _global_workspace_uncertainty_fragment(workspace.get_state())
+    budget = PromptContextBudget(path="unused-test-full-budget.json")
+    # Mirror the real assembly priorities: higher-priority factual context,
+    # the reserved uncertainty slot, then other cognitive context competing
+    # for the hard total cap.
+    budget.add("factual_telemetry", "factual_context", "x" * (480 * 4))
+    budget.add("epistemic_context", "global_workspace_uncertainty", fragment)
+    budget.add("self_evidence", "grounded_identity", "x" * (120 * 4))
+    budget.add("self_correction", "self_correction", "x" * (120 * 4))
+    budget.add("self_state", "self_model", "x" * (180 * 4))
+    budget.assemble()
+
+    receipt = budget.selection_receipt("epistemic_context", "global_workspace_uncertainty")
+    assert receipt["selected"] is True
+    assert receipt["reason"] == "budget_ok"
+    assert "10 records, 4 questions, 2 origins" in fragment
+
+
 def test_workspace_reference_prefix_compression_is_lossless():
     refs = [f"reason-abc123:uncertainty:{i}" for i in range(3)]
     compact = _compress_workspace_source_refs(refs)
