@@ -370,6 +370,47 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 receipt[field_name] = max(0, min(100000, number))
         return receipt
 
+    if value.get("type") == "global_workspace_prompt_receipt":
+        try:
+            source_count = max(
+                0, min(100000, int(value.get("open_uncertainty_source_count", 0)))
+            )
+        except (TypeError, ValueError, OverflowError):
+            source_count = 0
+        refs = []
+        raw_refs = value.get("uncertainty_source_refs")
+        if isinstance(raw_refs, (list, tuple)):
+            for raw_ref in raw_refs[:64]:
+                ref = re.sub(r"[^A-Za-z0-9_.:-]", "", str(raw_ref or ""))[:96]
+                if ref:
+                    refs.append(ref)
+        turns = []
+        raw_turns = value.get("uncertainty_source_turn_ids")
+        if isinstance(raw_turns, (list, tuple)):
+            for raw_turn in raw_turns[:64]:
+                turn = re.sub(r"[^A-Za-z0-9_.:-]", "", str(raw_turn or ""))[:96]
+                if turn:
+                    turns.append(turn)
+        source_types = []
+        raw_types = value.get("uncertainty_source_types")
+        if isinstance(raw_types, (list, tuple)):
+            for raw_type in raw_types[:32]:
+                source_type = re.sub(r"[^A-Za-z0-9_.:-]", "", str(raw_type or ""))[:64]
+                if source_type:
+                    source_types.append(source_type)
+        return {
+            "type": "global_workspace_prompt_receipt",
+            "quality": "present",
+            "context_included": bool(value.get("context_included")),
+            "open_uncertainty_source_count": source_count,
+            "uncertainty_synthesis_included": bool(
+                value.get("uncertainty_synthesis_included")
+            ),
+            "uncertainty_source_refs": refs,
+            "uncertainty_source_turn_ids": turns,
+            "uncertainty_source_types": source_types,
+        }
+
     if value.get("type") == "body_source_sufficiency_receipt":
         availability = str(value.get("source_availability") or "unavailable")
         if availability not in {

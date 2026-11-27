@@ -446,7 +446,10 @@ class SemanticExtractor:
                     "learning_status": "skipped_non_topic_turn",
                     "persistence_status": "not_needed",
                     "cag_status": "skipped_non_topic_turn",
-                    "workspace_status": "not_requested",
+                    "workspace_status": (
+                        "uncertainty_recorded"
+                        if uncertainty_receipt.get("recorded") else "not_requested"
+                    ),
                     "curiosity_status": "skipped_non_topic_turn",
                     "curiosity_topic_selected": False,
                 })

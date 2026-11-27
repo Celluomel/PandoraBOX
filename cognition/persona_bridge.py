@@ -1227,6 +1227,9 @@ class PersonaBridge:
             "source_cycle", "age_seconds", "age_cycles", "thread_id",
             "source_evidence_ref", "focus_type", "focus_score", "focus_ref",
             "context_included",
+            "open_uncertainty_source_count", "uncertainty_synthesis_included",
+            "uncertainty_source_refs", "uncertainty_source_turn_ids",
+            "uncertainty_source_types",
             "state_focus_source", "state_focus_updated_at", "state_focus_age_seconds",
             "interval_ms", "operations_ms", "uninstrumented_ms",
         }
@@ -1236,6 +1239,15 @@ class PersonaBridge:
                 continue
             if key == "source_kinds":
                 safe_metadata[key] = sorted({str(item)[:48] for item in value if item})[:16]
+            elif key in {
+                "uncertainty_source_refs", "uncertainty_source_turn_ids",
+                "uncertainty_source_types",
+            } and isinstance(value, (list, tuple)):
+                safe_metadata[key] = [
+                    re.sub(r"[^A-Za-z0-9_.:-]", "", str(item or ""))[:96]
+                    for item in value[:64]
+                    if item
+                ]
             elif key == "affect_profile" and isinstance(value, dict):
                 safe_metadata[key] = {}
                 for channel, raw_value in value.items():
@@ -6486,6 +6498,34 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _workspace_state_provenance = _workspace_focus_state_provenance(
                         _workspace_state,
                     )
+                    _workspace_snapshot = _workspace_state
+                    if not isinstance(_workspace_snapshot, dict):
+                        _to_dict = getattr(_workspace_snapshot, "to_dict", None)
+                        _workspace_snapshot = _to_dict() if callable(_to_dict) else {}
+                    _open_uncertainty_records = [
+                        item for item in (
+                            _workspace_snapshot.get("uncertainty_sources", [])
+                            if isinstance(_workspace_snapshot, dict) else []
+                        )
+                        if isinstance(item, dict) and item.get("status", "open") == "open"
+                    ]
+                    _uncertainty_source_refs = [
+                        str(item.get("uncertainty_id") or item.get("source_ref") or "")[:96]
+                        for item in _open_uncertainty_records
+                        if item.get("source_ref") or item.get("uncertainty_id")
+                    ]
+                    _uncertainty_source_turn_ids = sorted({
+                        str(item.get("turn_id") or "")[:96]
+                        for item in _open_uncertainty_records if item.get("turn_id")
+                    })
+                    _uncertainty_source_types = sorted({
+                        str(item.get("source_type") or "unspecified")[:64]
+                        for item in _open_uncertainty_records
+                    })
+                    _uncertainty_synthesis_included = bool(
+                        _uncertainty_source_refs
+                        and "[Open uncertainty synthesis]" in organism_block
+                    )
                     _workspace_status = (
                         "injected" if _workspace_included and _workspace_source_ref
                         else "injected_snapshot_attributed"
@@ -6495,6 +6535,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         else "empty"
                     )
                     _workspace_receipt = {
+                        "type": "global_workspace_prompt_receipt",
                         "source_cycle": _workspace_source_cycle,
                         "age_cycles": _workspace_age_cycles,
                         "source_evidence_ref": _workspace_source_ref,
@@ -6502,6 +6543,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "focus_score": _workspace_score,
                         "focus_ref": _workspace_focus_ref,
                         "context_included": _workspace_included,
+                        "open_uncertainty_source_count": len(_open_uncertainty_records),
+                        "uncertainty_synthesis_included": _uncertainty_synthesis_included,
+                        "uncertainty_source_refs": _uncertainty_source_refs,
+                        "uncertainty_source_turn_ids": _uncertainty_source_turn_ids,
+                        "uncertainty_source_types": _uncertainty_source_types,
                         **_workspace_state_provenance,
                     }
                     self._record_turn_context_source(

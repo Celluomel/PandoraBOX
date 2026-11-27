@@ -130,6 +130,7 @@ def test_retrieval_hint_does_not_suppress_semantically_routed_user_uncertainty()
         "upstream_turn_contract_plus_uncertainty_extraction"
     )
     assert receipt["learning_status"] == "skipped_non_topic_turn"
+    assert receipt["workspace_status"] == "uncertainty_recorded"
     assert receipt["uncertainty_source_receipt"]["recorded"] is True
     assert workspace.get_state().uncertainty_sources[0]["turn_id"] == (
         "turn-retrieval-uncertainty"

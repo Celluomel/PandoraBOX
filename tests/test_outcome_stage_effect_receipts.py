@@ -286,6 +286,33 @@ def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
     assert "private user evidence" not in str(summary)
 
 
+def test_global_workspace_prompt_receipt_proves_all_open_uncertainty_refs_included():
+    summary = audit_safe_turn_summary({
+        "type": "global_workspace_prompt_receipt",
+        "context_included": True,
+        "open_uncertainty_source_count": 5,
+        "uncertainty_synthesis_included": True,
+        "uncertainty_source_refs": [
+            "uncertainty:user-1", "uncertainty:prediction-2",
+            "uncertainty:belief-3", "uncertainty:intention-4",
+            "uncertainty:user-5",
+        ],
+        "uncertainty_source_turn_ids": ["turn-1", "turn-5"],
+        "uncertainty_source_types": [
+            "user_exchange:doubt", "prediction_error", "belief_conflict",
+            "decision_reasoning_limit",
+        ],
+        "evidence": "private user quote must not enter audit summary",
+    })
+
+    assert summary["open_uncertainty_source_count"] == 5
+    assert summary["uncertainty_synthesis_included"] is True
+    assert len(summary["uncertainty_source_refs"]) == 5
+    assert summary["uncertainty_source_turn_ids"] == ["turn-1", "turn-5"]
+    assert "decision_reasoning_limit" in summary["uncertainty_source_types"]
+    assert "private user quote" not in repr(summary)
+
+
 def test_semantic_extraction_summary_preserves_non_topic_skip_reason():
     summary = audit_safe_turn_summary({
         "type": "semantic_extraction_receipt",
