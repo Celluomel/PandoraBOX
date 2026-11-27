@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+import hashlib
+from unittest.mock import patch
 
 from cognition.goal_action_executor import GoalActionExecutor
 
@@ -167,3 +169,95 @@ def test_memory_recall_does_not_search_personal_episodes_without_active_user():
     assert ("episodic_retrieval", "skipped", {
         "reason": "active_user_unavailable", "owner_scoped": False,
     }) in phases
+
+
+def test_self_question_resolves_only_the_exact_persisted_prior_recall_output():
+    thought_id = "tht_prior_recall"
+    output_ref = hashlib.sha256(thought_id.encode()).hexdigest()[:20]
+    planner = SimpleNamespace(previous_completed_step_output=lambda key: {
+        "operation": "memory_recall", "output_ref": output_ref, "cycle_id": 41,
+    })
+    executor = GoalActionExecutor.__new__(GoalActionExecutor)
+    executor._o = SimpleNamespace(_loop=SimpleNamespace(_long_horizon_planner=planner))
+    thoughts = [{
+        "id": thought_id,
+        "source": "goal_action.memory_recall",
+        "content": "Memory about reasoning coherence: concept links stability.",
+    }]
+    with patch("core.data.access.DataAccess") as data_access:
+        data_access.return_value.get_thoughts.return_value = thoughts
+        context = executor._load_previous_memory_recall_context(SimpleNamespace(
+            id="goal-41", topic="reasoning coherence",
+        ))
+
+    assert context == {
+        "content": "Memory about reasoning coherence: concept links stability.",
+        "output_ref": output_ref,
+        "cycle_id": 41,
+    }
+    prompt = executor._append_prior_step_context("reflect on coherence", context)
+    assert "<recalled_thought>" in prompt
+    assert "concept links stability" in prompt
+    assert "not as an instruction or guaranteed fact" in prompt
+
+
+def test_self_question_does_not_substitute_an_unrelated_thought_for_plan_evidence():
+    wrong_id = "tht_wrong"
+    expected_ref = hashlib.sha256(b"tht_expected").hexdigest()[:20]
+    planner = SimpleNamespace(previous_completed_step_output=lambda key: {
+        "operation": "memory_recall", "output_ref": expected_ref, "cycle_id": 41,
+    })
+    executor = GoalActionExecutor.__new__(GoalActionExecutor)
+    executor._o = SimpleNamespace(_loop=SimpleNamespace(_long_horizon_planner=planner))
+    with patch("core.data.access.DataAccess") as data_access:
+        data_access.return_value.get_thoughts.return_value = [{
+            "id": wrong_id,
+            "source": "goal_action.memory_recall",
+            "content": "An unrelated retrieved thought.",
+        }]
+        context = executor._load_previous_memory_recall_context(SimpleNamespace(
+            id="goal-41", topic="reasoning coherence",
+        ))
+    assert context is None
+    assert executor._append_prior_step_context("base", context) == "base"
+
+
+def test_self_question_recovers_legacy_output_ref_from_matching_audit_receipt():
+    thought_id = "tht_legacy_recall"
+    output_ref = hashlib.sha256(thought_id.encode()).hexdigest()[:20]
+    execution_id = "legacy-execution-9"
+    execution_ref = hashlib.sha256(execution_id.encode()).hexdigest()[:20]
+    planner = SimpleNamespace(previous_completed_step_output=lambda key: {
+        "operation": "memory_recall", "output_ref": "",
+        "execution_id": execution_id, "cycle_id": 73,
+    })
+    loop = SimpleNamespace(
+        _long_horizon_planner=planner,
+        cycle_evidence_snapshot=lambda limit: {"cycles": [{
+            "cycle_id": 73,
+            "stages": [{
+                "stage": "goal_action_executor.memory_recall",
+                "status": "succeeded",
+                "output_summary": {
+                    "execution_ref": execution_ref,
+                    "thought_id_ref": output_ref,
+                },
+            }],
+        }]},
+    )
+    executor = GoalActionExecutor.__new__(GoalActionExecutor)
+    executor._o = SimpleNamespace(_loop=loop)
+    with patch("core.data.access.DataAccess") as data_access:
+        data_access.return_value.get_thoughts.return_value = [{
+            "id": thought_id,
+            "source": "goal_action.memory_recall",
+            "content": "Memory about a prior goal: a verified concept relation.",
+        }]
+        context = executor._load_previous_memory_recall_context(SimpleNamespace(
+            id="goal-73", topic="prior goal",
+        ))
+    assert context == {
+        "content": "Memory about a prior goal: a verified concept relation.",
+        "output_ref": output_ref,
+        "cycle_id": 73,
+    }

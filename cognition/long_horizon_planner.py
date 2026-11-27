@@ -76,6 +76,8 @@ class PlanStep:
     effect_measured: bool = False
     pending_execution_id: str = ""
     pending_cycle_id: Optional[int] = None
+    output_ref: str = ""             # bounded opaque ref to this step's persisted output
+    consumed_output_ref: str = ""     # bounded opaque ref consumed from prior step
 
 
 @dataclass
@@ -426,6 +428,25 @@ class LongHorizonPlanner:
                 return plan.steps[idx]
             return None
 
+    def previous_completed_step_output(self, plan_key: str) -> Optional[Dict[str, Any]]:
+        """Return a prior step's output reference for an explicitly chained operator."""
+        with self._lock:
+            plan = self._plans.get(str(plan_key or ""))
+            if not plan or plan.steps_completed < 1:
+                return None
+            previous = plan.steps[plan.steps_completed - 1]
+            if (
+                previous.status != "completed"
+                or previous.operation != "memory_recall"
+            ):
+                return None
+            return {
+                "operation": previous.operation,
+                "output_ref": str(previous.output_ref)[:64],
+                "execution_id": str(previous.execution_id or ""),
+                "cycle_id": previous.cycle_id,
+            }
+
     def ensure_goal_plan(self, goal: Any) -> Optional[Plan]:
         """Create or return the persistent intention plan for a live goal."""
         goal_id = str(getattr(goal, "id", ""))
@@ -602,17 +623,20 @@ class LongHorizonPlanner:
     def record_goal_action_outcome(
         self, goal_id: str, action_type: str, success: bool, result: str = "",
         *, execution_id: str = "", cycle_id: Optional[int] = None,
+        output_ref: str = "", consumed_output_ref: str = "",
     ) -> None:
         """Serialize receipt validation, plan mutation, and persistence."""
         with self._lock:
             self._record_goal_action_outcome_locked(
                 goal_id, action_type, success, result,
                 execution_id=execution_id, cycle_id=cycle_id,
+                output_ref=output_ref, consumed_output_ref=consumed_output_ref,
             )
 
     def _record_goal_action_outcome_locked(
         self, goal_id: str, action_type: str, success: bool, result: str = "",
         *, execution_id: str = "", cycle_id: Optional[int] = None,
+        output_ref: str = "", consumed_output_ref: str = "",
     ) -> None:
         """Advance a goal intention only after the operation really completed."""
         key = f"goal:{goal_id}"
@@ -683,6 +707,8 @@ class LongHorizonPlanner:
         step.result = result_text
         step.execution_id = execution_ref
         step.cycle_id = cycle_id
+        step.output_ref = str(output_ref or "").strip()[:64]
+        step.consumed_output_ref = str(consumed_output_ref or "").strip()[:64]
         step.observed_at = time.time()
         step.effect_measured = False
         episode = None
@@ -779,6 +805,8 @@ class LongHorizonPlanner:
             "observed_at": plan.decision_updated_at,
             "execution_id": str(execution_id or "") or None,
             "cycle_id": cycle_id,
+            "output_ref": step.output_ref or None,
+            "consumed_output_ref": step.consumed_output_ref or None,
         }
         if episode is not None:
             plan.reasoning_confidence = episode.confidence
@@ -873,6 +901,7 @@ class LongHorizonPlanner:
         cycle_id: Optional[int] = None,
         expected_operation: Optional[str] = None,
         expected_step_index: Optional[int] = None,
+        output_ref: str = "", consumed_output_ref: str = "",
     ) -> None:
         """Serialize and bind an aspiration outcome to the step it dispatched."""
         with self._lock:
@@ -885,6 +914,7 @@ class LongHorizonPlanner:
                 cycle_id=cycle_id,
                 expected_operation=expected_operation,
                 expected_step_index=expected_step_index,
+                output_ref=output_ref, consumed_output_ref=consumed_output_ref,
             )
 
     def _record_step_outcome_locked(
@@ -898,6 +928,7 @@ class LongHorizonPlanner:
         cycle_id: Optional[int] = None,
         expected_operation: Optional[str] = None,
         expected_step_index: Optional[int] = None,
+        output_ref: str = "", consumed_output_ref: str = "",
     ) -> None:
         """Complete a step only when its execution and result are attributable.
 
@@ -936,6 +967,8 @@ class LongHorizonPlanner:
             step.cycle_id = cycle_id
             step.observed_at = observed_at
             step.effect_measured = False
+            step.output_ref = str(output_ref or "").strip()[:64]
+            step.consumed_output_ref = str(consumed_output_ref or "").strip()[:64]
             plan.last_outcome = {
                 "operation": step.operation,
                 "success": None,
@@ -979,6 +1012,8 @@ class LongHorizonPlanner:
         step.cycle_id = cycle_id
         step.observed_at = observed_at
         step.effect_measured = deviation is not None
+        step.output_ref = str(output_ref or "").strip()[:64]
+        step.consumed_output_ref = str(consumed_output_ref or "").strip()[:64]
         step.pending_execution_id = ""
         step.pending_cycle_id = None
         plan.steps_completed += 1
@@ -992,6 +1027,8 @@ class LongHorizonPlanner:
             "observed_at": observed_at,
             "execution_id": execution_ref,
             "cycle_id": cycle_id,
+            "output_ref": step.output_ref or None,
+            "consumed_output_ref": step.consumed_output_ref or None,
         }
         plan.decision_updated_at = observed_at
         plan.current_decision = (
@@ -1053,6 +1090,7 @@ class LongHorizonPlanner:
         execution_id: str = "",
         cycle_id: Optional[int] = None,
         expected_step_index: Optional[int] = None,
+        output_ref: str = "", consumed_output_ref: str = "",
     ) -> None:
         """Serialize an autonomous action outcome against its current step."""
         with self._lock:
@@ -1065,6 +1103,7 @@ class LongHorizonPlanner:
                 execution_id=execution_id,
                 cycle_id=cycle_id,
                 expected_step_index=expected_step_index,
+                output_ref=output_ref, consumed_output_ref=consumed_output_ref,
             )
 
     def _record_autonomous_action_outcome_locked(
@@ -1078,6 +1117,7 @@ class LongHorizonPlanner:
         execution_id: str = "",
         cycle_id: Optional[int] = None,
         expected_step_index: Optional[int] = None,
+        output_ref: str = "", consumed_output_ref: str = "",
     ) -> None:
         """Resolve the current aspiration step from a completed autonomous action.
 
@@ -1151,6 +1191,7 @@ class LongHorizonPlanner:
                 cycle_id=cycle_id,
                 expected_operation=step.operation,
                 expected_step_index=expected_step_index,
+                output_ref=output_ref, consumed_output_ref=consumed_output_ref,
             )
         else:
             # A failed operation is an attempt, not completed progress.

@@ -422,6 +422,54 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.last_outcome["cycle_id"], 31)
             self.assertEqual(plan.last_outcome["operation"], "memory_recall")
 
+    def test_completed_memory_step_exposes_its_output_ref_to_the_next_step(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            goal = NS(id="g-output-chain", topic="understand causal memory", origin="resolve_uncertainty")
+            plan = planner.ensure_goal_plan(goal)
+            self.assertTrue(planner.reserve_goal_action_execution(
+                goal.id, "memory_recall", "memory-exec-1", 73,
+            ))
+            planner.record_goal_action_outcome(
+                goal.id, "memory_recall", True, "one source retrieved",
+                execution_id="memory-exec-1", cycle_id=73,
+                output_ref="sha256:thought-output-ref",
+            )
+
+            context = planner.previous_completed_step_output("goal:g-output-chain")
+            self.assertEqual(plan.steps_completed, 1)
+            self.assertEqual(plan.steps[0].output_ref, "sha256:thought-output-ref")
+            self.assertEqual(context, {
+                "operation": "memory_recall",
+                "output_ref": "sha256:thought-output-ref",
+                "execution_id": "memory-exec-1",
+                "cycle_id": 73,
+            })
+            planner._save()
+            reloaded, _, _ = self._planner(folder)
+            reloaded_plan = reloaded._plans["goal:g-output-chain"]
+            self.assertEqual(reloaded_plan.steps[0].output_ref, "sha256:thought-output-ref")
+            self.assertEqual(
+                reloaded.previous_completed_step_output("goal:g-output-chain"),
+                context,
+            )
+
+    def test_unverified_or_non_memory_step_does_not_expose_prior_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="goal:g-unverified-output",
+                steps=[
+                    PlanStep(0, "memory_recall", 0.04, 0.03, operation="memory_recall",
+                             status="unverified", output_ref="do-not-consume"),
+                    PlanStep(1, "self_question", 0.04, 0.03, operation="self_question"),
+                ],
+                resource_reserve=0.2, revision_trigger=0.25, horizon=2,
+                steps_completed=1,
+            )
+            planner._plans["goal:g-unverified-output"] = plan
+            self.assertIsNone(planner.previous_completed_step_output("goal:g-unverified-output"))
+
     def test_replayed_execution_receipt_cannot_advance_repeated_operation_step(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, _, _ = self._planner(folder)
