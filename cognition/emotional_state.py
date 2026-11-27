@@ -353,7 +353,8 @@ class EmotionalStateManager:
             # ── Micro-update: emit coherence delta and qualia vote ────────────
             # Rising positive emotion → slight phi increase (settling into state)
             # Rising negative emotion → slight phi decrease (fragmentation pressure)
-            # The dominant emotion after update determines the qualia vote.
+            # Affect configuration is derived from the complete channel
+            # profile. Do not collapse this update to a dominant-channel vote.
             try:
                 _phi_delta = 0.0
                 if valence == "Positive":
@@ -361,29 +362,11 @@ class EmotionalStateManager:
                 elif valence == "Negative":
                     _phi_delta = -0.012 * i
 
-                # Dominant emotion → qualia key
-                _dom_emo  = max(self.emotions.items(), key=lambda x: x[1].value)
-                _emo_name = _dom_emo[0]
-                _emo_val  = _dom_emo[1].value
-                _emo_qualia_map = {
-                    "warmth":       ("warmth",       0.014),
-                    "curiosity":    ("curiosity",     0.013),
-                    "enthusiasm":   ("enthusiasm",    0.012),
-                    "satisfaction": ("satisfaction",  0.011),
-                    "anxiety":      ("anxiety",       0.010),
-                    "frustration":  ("uncertain",     0.009),
-                    "melancholy":   ("melancholy",    0.009),
-                }
-                _qkey, _qweight = _emo_qualia_map.get(_emo_name, ("", 0.0))
-                _qweight *= _emo_val   # weight by how dominant the emotion is
-
                 _smm = getattr(getattr(self, "_organism", None), "self_moment", None)
                 if _smm is not None:
                     _smm.current.micro_update(
                         source          = "emotional_state",
                         coherence_delta = _phi_delta,
-                        qualia_key      = _qkey,
-                        qualia_weight   = _qweight,
                     )
             except Exception:
                 pass

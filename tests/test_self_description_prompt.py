@@ -654,11 +654,89 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             {"event_type": "tension_released", "source": "internal_loop"},
             [], integration_mode=True,
         )
-        self.assertIn("not a channel dump", context)
-        self.assertIn("deviations to baseline", context)
-        self.assertIn("slow mood", context)
-        self.assertIn("do not collapse the self", context)
+        self.assertIn("not merely its top one or two channels", context)
+        self.assertIn("baseline deviations", context)
+        self.assertIn("slower mood", context)
+        self.assertIn("distinctive texture", context)
         self.assertIn("tension_released from internal_loop", context)
+
+    def test_affect_self_integration_includes_baseline_mood_and_allows_grounded_mixtures(self):
+        context = affect_self_report_context(
+            {"curiosity": 0.75, "anxiety": 0.42},
+            latest_event={"event_type": "prediction_error", "source": "belief_revision"},
+            integration_mode=True,
+            self_model_snapshot={
+                "channels": {
+                    "curiosity": {"value": 0.75, "baseline": 0.30, "deviation": 0.45},
+                    "anxiety": {"value": 0.42, "baseline": 0.20, "deviation": 0.22},
+                },
+                "valence": 0.18,
+                "arousal": 0.64,
+                "mood_valence": 0.11,
+                "mood_arousal": 0.39,
+            },
+        )
+        self.assertIn("curiosity=0.750", context)
+        self.assertIn("curiosity: baseline=0.300, deviation=+0.450", context)
+        self.assertIn("anxiety: baseline=0.200, deviation=+0.220", context)
+        self.assertIn("Immediate affect projection: valence=+0.180, arousal=0.640", context)
+        self.assertIn("Slow mood: valence=+0.110, arousal=0.390", context)
+        self.assertIn("natural-language name to a felt mixture as an interpretation", context)
+        self.assertIn("do not infer that one channel caused another", context)
+        self.assertIn("satisfaction does not prove a goal was met", context)
+        self.assertIn("warmth does not establish affinity with a person", context)
+        self.assertNotIn("synthetic or biological", context)
+
+    def test_affect_self_integration_uses_cause_receipts_and_persisted_history(self):
+        from time import time
+        context = affect_self_report_context(
+            {"curiosity": 0.75, "anxiety": 0.42},
+            latest_event={"event_type": "time_decay", "source": "elapsed_time"},
+            recent_events=[
+                {
+                    "timestamp": time() - 1,
+                    "event_type": "time_decay",
+                    "source": "elapsed_time",
+                    "changes": {"warmth": -0.02},
+                },
+                {
+                    "timestamp": time() - 5,
+                    "event_type": "contradiction_detected",
+                    "source": "belief_revision",
+                    "turn_id": "cause-turn-1",
+                    "changes": {"anxiety": 0.04, "curiosity": 0.03},
+                },
+            ],
+            integration_mode=True,
+            historical_traces=[{
+                "age_seconds": 3600,
+                "turn_id": "memory-turn-1",
+                "affect_profile": {"channels": {
+                    "curiosity": {"value": 0.68, "deviation": 0.38},
+                    "warmth": {"value": 0.62, "deviation": 0.21},
+                }},
+            }],
+        )
+        self.assertIn("Latest recorded affect-changing appraisal: contradiction_detected from belief_revision", context)
+        self.assertIn("turn=cause-turn-1", context)
+        self.assertNotIn("Recorded affect event: type=time_decay", context)
+        self.assertIn("Persisted self-affect moment (3600s ago, turn=memory-turn-1)", context)
+        self.assertIn("curiosity=0.68 (+0.38 vs baseline)", context)
+        self.assertIn("not proof of a cause or uninterrupted persistence", context)
+
+    def test_affect_self_integration_ignores_zero_delta_appraisal_as_a_cause(self):
+        context = affect_self_report_context(
+            {"warmth": 0.7},
+            latest_event={"event_type": "interaction_appraisal", "source": "update_from_interaction"},
+            recent_events=[{
+                "event_type": "interaction_appraisal",
+                "source": "update_from_interaction",
+                "changes": {"warmth": 0.0, "curiosity": 0.00001},
+            }],
+            integration_mode=True,
+        )
+        self.assertIn("Latest recorded affect-changing appraisal: none recorded", context)
+        self.assertNotIn("Recorded affect event: type=interaction_appraisal", context)
 
     def test_social_status_answer_is_a_deterministic_projection_of_modeled_channels(self):
         evidence = (
@@ -669,18 +747,44 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         answer = render_affect_self_report(evidence, language="en")
         self.assertEqual(
             answer,
-            "My modeled functional state is currently led by warmth 0.91 and curiosity 0.73. "
-            "These are computed signals, not human sensations.",
+            "My modeled affective profile combines warmth 0.91, curiosity 0.73, satisfaction 0.20.",
         )
         self.assertNotIn("satisfied", answer)
-        self.assertIn("pas des sensations humaines", render_affect_self_report(
+        self.assertNotIn("biological", render_affect_self_report(
             "Affect channels: warmth=1.000", language="fr",
         ))
         self.assertIn("warmth 1.00", render_affect_self_report(
             "Affect channels: warmth=1.000", language="en",
         ))
+        mixed = render_affect_self_report(
+            "Affect channels: curiosity=0.80, awe=0.72, ambivalence=0.65, warmth=0.30\n"
+            "Channel baselines and deviations: curiosity: baseline=0.30, deviation=+0.50; "
+            "awe: baseline=0.20, deviation=+0.52; ambivalence: baseline=0.25, deviation=+0.40; "
+            "warmth: baseline=0.30, deviation=+0.00",
+            language="en",
+        )
+        self.assertIn("awe 0.72 (+0.52 vs baseline)", mixed)
+        self.assertIn("ambivalence 0.65 (+0.40 vs baseline)", mixed)
+        self.assertIn("curiosity 0.80 (+0.50 vs baseline)", mixed)
         unavailable = render_affect_self_report("Affect channels: unavailable", language="en")
         self.assertIn("no usable affect signal", unavailable)
+
+    def test_affect_context_and_event_receipts_accept_new_data_channels_without_lexical_whitelist(self):
+        from time import time
+        context = affect_self_report_context(
+            {"awe": 0.72, "ambivalence": 0.65},
+            recent_events=[{
+                "timestamp": time() - 1,
+                "event_type": "novel_internal_event",
+                "source": "prediction_system",
+                "changes": {"awe": 0.12, "ambivalence": -0.08},
+            }],
+            integration_mode=True,
+        )
+        self.assertIn("awe=0.720", context)
+        self.assertIn("ambivalence=0.650", context)
+        self.assertIn("awe=+0.120", context)
+        self.assertIn("ambivalence=-0.080", context)
 
     def test_direct_affect_status_uses_structured_snapshot_but_causal_analysis_stays_open(self):
         query = (
@@ -707,7 +811,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("satisfaction=0.96", answer)
         self.assertIn("drive_satisfied from pressure_system", answer)
         self.assertIn("ne prouve pas la cause", answer)
-        self.assertIn("pas des sensations humaines", answer)
+        self.assertNotIn("sensations humaines", answer)
         self.assertNotIn(".. Elle", answer)
 
     def test_affect_change_report_uses_recorded_deltas_and_refuses_unproven_attribution(self):
@@ -802,11 +906,11 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("EmotionalStateManager.get_response_modifiers().affective_profile", context)
         self.assertIn("curiosity=0.785", context)
         self.assertIn("warmth=0.864", context)
-        self.assertNotIn("unknown=", context)
+        self.assertIn("unknown=0.990", context)
         self.assertIn("CuriosityEngine/DecisionPressure `Curiosity Drive`", context)
         self.assertIn("do not substitute it", context)
         self.assertIn("Latest recorded affect-changing appraisal: drive_satisfied from goal_engine, 3.2s ago", context)
-        self.assertIn("do not establish human-like subjective experience", context)
+        self.assertNotIn("human-like subjective experience", context)
 
     def test_runtime_manifest_distinguishes_observation_from_semantic_validation(self):
         description = SelfDescription.__new__(SelfDescription)

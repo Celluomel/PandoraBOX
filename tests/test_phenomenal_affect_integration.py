@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from cognition.emotional_state import EmotionalStateManager
 from cognition.phenomenal_binder import ExperientialMoment, PhenomenalBinder
+from cognition.affect_composition import affect_profile_change
 
 
 class PhenomenalAffectIntegrationTests(unittest.TestCase):
@@ -54,6 +55,29 @@ class PhenomenalAffectIntegrationTests(unittest.TestCase):
         )
         self.assertAlmostEqual(valence, 0.0)
         self.assertAlmostEqual(arousal, 0.4)
+
+    def test_same_valence_but_different_channel_mixtures_produce_distinct_self_texture(self):
+        binder = PhenomenalBinder.__new__(PhenomenalBinder)
+        curiosity_profile = {"channels": {
+            "curiosity": {"value": 0.70, "baseline": 0.30, "deviation": 0.40},
+            "anxiety": {"value": 0.30, "baseline": 0.30, "deviation": 0.0},
+        }}
+        mixed_profile = {"channels": {
+            "curiosity": {"value": 0.30, "baseline": 0.30, "deviation": 0.0},
+            "anxiety": {"value": 0.70, "baseline": 0.30, "deviation": 0.40},
+        }}
+
+        curiosity_texture = binder._derive_qualia_tone(0.0, 0.5, {
+            "affect_profile": curiosity_profile,
+        })
+        mixed_texture = binder._derive_qualia_tone(0.0, 0.5, {
+            "affect_profile": mixed_profile,
+        })
+
+        self.assertNotEqual(curiosity_texture, mixed_texture)
+        self.assertIn("curiosity +0.40", curiosity_texture)
+        self.assertIn("anxiety +0.40", mixed_texture)
+        self.assertGreater(affect_profile_change(curiosity_profile, mixed_profile), 0.39)
 
     def test_event_provenance_and_affect_mix_reach_experiential_prompt(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -87,6 +87,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
+from cognition.affect_composition import (
+    affect_channel_deviations,
+    describe_affect_configuration,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -108,22 +113,6 @@ ERROR_SIGNIFICANT         = 0.35   # per-turn error above → triggers revision
 ERROR_MINOR               = 0.15   # below → no revision this turn
 
 VALUE_REVISION_RATE       = 0.004  # weight shift per significant error turn
-
-# Qualia vocabulary — what the self can drift toward
-# Each is a (keyword_in_actual_emotion, qualia_phrase) pair
-QUALIA_ANCHORS: List[Tuple[str, str]] = [
-    ("warmth",       "a warm, open quality — reaching toward the other"),
-    ("curiosity",    "alert curiosity — something draws me forward"),
-    ("anxiety",      "a taut, vigilant quality — monitoring and uncertain"),
-    ("enthusiasm",   "a rising brightness — energised, leaning in"),
-    ("melancholy",   "a quiet weight — reflective, slightly inward"),
-    ("satisfaction", "a settled completeness — things fitting together"),
-    ("wonder",       "wide-open attention — held by something larger"),
-    ("care",         "a soft, attending warmth — oriented toward the other"),
-    ("frustration",  "a blocked quality — something not resolving"),
-    ("peace",        "stillness — no strong pull in any direction"),
-]
-
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
 
@@ -322,20 +311,37 @@ class SelfRevisionEngine:
         error_level:   float,
     ) -> Optional[RevisionEvent]:
         """
-        When what was actually expressed consistently differs from the current
-        qualia_tone, drift the qualia toward what the self actually produced.
-
-        Requires QUALIA_ACCUMULATION_TURNS of consistent evidence.
+        Repeatedly observed affect mixtures can revise the persistent affect
+        configuration. The intent's words do not classify or name the state.
         """
         if error_level < ERROR_MINOR:
             # Low error — qualia is appropriate, no drift
             self.state.qualia_accumulator.clear()
             return None
 
-        # Read actual dominant emotion post-response
-        actual_qualia_key = self._detect_qualia_from_intent(actual_intent, organism)
-        if not actual_qualia_key:
+        del actual_intent  # revision uses the measured state, not utterance words
+        try:
+            affect_manager = getattr(
+                getattr(organism, "ai_system", None), "emotional_state", None,
+            )
+            snapshot_fn = getattr(affect_manager, "get_self_model_snapshot", None)
+            profile = snapshot_fn(event_limit=4) if callable(snapshot_fn) else {}
+        except Exception:
+            profile = {}
+        deviations = affect_channel_deviations(profile)
+        salient = sorted(
+            ((abs(delta), name, delta) for name, delta in deviations.items()
+             if abs(delta) >= 0.08),
+            reverse=True,
+        )[:4]
+        if not salient:
+            self.state.qualia_accumulator.clear()
             return None
+        # Quantization absorbs minor float jitter while preserving which
+        # dimensions coexist and the direction/magnitude of their changes.
+        signature = "|".join(
+            f"{name}:{round(delta / 0.1):+d}" for _, name, delta in salient
+        )
 
         smm = getattr(getattr(organism, "self_moment", None), "current", None)
         if smm is None:
@@ -344,19 +350,14 @@ class SelfRevisionEngine:
         # Accumulate evidence
         acc = self.state.qualia_accumulator
         for key in list(acc.keys()):
-            if key != actual_qualia_key:
+            if key != signature:
                 acc[key] = max(0, acc[key] - 1)
-        acc[actual_qualia_key] = acc.get(actual_qualia_key, 0) + 1
+        acc[signature] = acc.get(signature, 0) + 1
 
-        if acc[actual_qualia_key] < QUALIA_ACCUMULATION_TURNS:
+        if acc[signature] < QUALIA_ACCUMULATION_TURNS:
             return None   # not enough consistent evidence yet
 
-        # Find the new qualia phrase
-        new_qualia = None
-        for keyword, phrase in QUALIA_ANCHORS:
-            if keyword == actual_qualia_key:
-                new_qualia = phrase
-                break
+        new_qualia = describe_affect_configuration(profile, limit=6)
 
         if not new_qualia or new_qualia == smm.qualia_tone:
             return None
@@ -374,37 +375,11 @@ class SelfRevisionEngine:
         return RevisionEvent(
             revision_type = "qualia",
             magnitude     = QUALIA_SHIFT_MAGNITUDE,
-            trigger       = f"actual_qualia='{actual_qualia_key}' × {QUALIA_ACCUMULATION_TURNS} turns",
+            trigger       = f"affect_configuration repeated across {QUALIA_ACCUMULATION_TURNS} turns",
             prior_value   = prior_qualia[:60],
             new_value     = new_qualia[:60],
             error_level   = error_level,
         )
-
-    def _detect_qualia_from_intent(self, actual_intent: str, organism: Any) -> Optional[str]:
-        """
-        Infer the dominant qualia keyword from actual intent + current emotion.
-        Returns the first matching keyword from QUALIA_ANCHORS, or None.
-        """
-        # Prefer reading directly from emotional state
-        try:
-            emo_vals = organism._get_emotion_values()
-            if emo_vals:
-                dominant_emo = max(emo_vals, key=emo_vals.get)
-                dominant_val = emo_vals[dominant_emo]
-                if dominant_val > 0.50:
-                    for keyword, _ in QUALIA_ANCHORS:
-                        if keyword in dominant_emo.lower():
-                            return keyword
-        except Exception:
-            pass
-
-        # Fallback: intent text matching
-        intent_lower = (actual_intent or "").lower()
-        for keyword, _ in QUALIA_ANCHORS:
-            if keyword in intent_lower:
-                return keyword
-
-        return None
 
     # ── Value revision ────────────────────────────────────────────────────────
 

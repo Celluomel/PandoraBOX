@@ -9,6 +9,7 @@ from cognition.ai_system import EnhancedAISystem
 from cognition.ai_system import generate_semantic_hash
 from cognition.persona_bridge import (
     PersonaBridge,
+    _affect_prompt_delivery_status,
     _is_factual_self_report_turn,
     _should_schedule_semantic_review_post_response,
     _prior_assistant_evidence_detail,
@@ -1504,6 +1505,105 @@ def test_profile_context_budget_omission_is_not_reported_as_empty():
     assert omitted["source_available"] is True
     assert omitted["budget_reason"] == "category_full"
     assert omitted["budget_tokens"] == 75
+
+
+def test_affect_prompt_delivery_distinguishes_missing_context_from_budget_loss():
+    assert _affect_prompt_delivery_status("", "", {}) == "context_missing_before_budget"
+    affect_block = "AFFECT SELF-REPORT EVIDENCE: channel profile"
+    assert _affect_prompt_delivery_status(
+        affect_block, affect_block, {"protected_tail_preserved": True},
+    ) == "retained_in_final_prompt"
+    assert _affect_prompt_delivery_status(
+        affect_block, "short prompt", {"protected_tail_requested": True},
+    ) == "omitted_by_prompt_budget"
+    assert _affect_prompt_delivery_status(
+        affect_block, "short prompt", {},
+    ) == "protection_not_requested"
+
+
+def test_affect_evidence_capture_precedes_optional_runtime_router():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    prompt_builder = next(
+        node for node in bridge.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_build_prompt_and_cache"
+    )
+    affect_assignment = next(
+        node for node in ast.walk(prompt_builder)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "_affect_self_report"
+                for target in node.targets)
+    )
+    optional_router_call = next(
+        node for node in ast.walk(prompt_builder)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "runtime_api_surface_context"
+    )
+    assert affect_assignment.lineno < optional_router_call.lineno
+
+
+def test_affect_integration_route_crosses_prompt_worker_boundary():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    prompt_builder = next(
+        node for node in bridge.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_build_prompt_and_cache"
+    )
+    builder_params = {arg.arg for arg in prompt_builder.args.args}
+    assert "affect_self_integration_query" in builder_params
+    assert "audit_turn_id" in builder_params
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "_audit_turn_id"
+        for node in ast.walk(prompt_builder)
+    )
+    assert any(
+        isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "_affect_self_integration_query"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "bool"
+        and any(
+            isinstance(arg, ast.Name) and arg.id == "affect_self_integration_query"
+            for arg in node.value.args
+        )
+        for node in ast.walk(prompt_builder)
+    )
+
+    caller = next(
+        node for node in bridge.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_stream_with_full_lifecycle"
+    )
+    builder_call = next(
+        node for node in ast.walk(caller)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "to_thread"
+        and node.args
+        and isinstance(node.args[0], ast.Attribute)
+        and node.args[0].attr == "_build_prompt_and_cache"
+    )
+    route_arg = next(
+        keyword.value for keyword in builder_call.keywords
+        if keyword.arg == "affect_self_integration_query"
+    )
+    assert isinstance(route_arg, ast.Name)
+    assert route_arg.id == "_affect_self_integration_query"
 
 
 def test_affect_advisory_receipt_proves_injection_without_exposing_description():

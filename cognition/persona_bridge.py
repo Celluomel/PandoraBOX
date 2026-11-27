@@ -282,6 +282,22 @@ def _prompt_assembly_dependencies(stages: dict[str, Any]) -> tuple[str, ...]:
     return tuple(dependencies)
 
 
+def _affect_prompt_delivery_status(
+    affect_prompt: str, final_prompt: str, budget_receipt: dict[str, Any],
+) -> str:
+    """Separate missing upstream affect context from actual budget omission."""
+    if not affect_prompt:
+        return "context_missing_before_budget"
+    if (
+        affect_prompt in final_prompt
+        and budget_receipt.get("protected_tail_preserved") is True
+    ):
+        return "retained_in_final_prompt"
+    if not budget_receipt.get("protected_tail_requested"):
+        return "protection_not_requested"
+    return "omitted_by_prompt_budget"
+
+
 def _prompt_source_provenance(stages: dict[str, Any]) -> dict[str, Any]:
     """Describe which source contexts were actually included in this prompt."""
     dependencies = set(_prompt_assembly_dependencies(stages))
@@ -1364,6 +1380,7 @@ class PersonaBridge:
             "unavailable_count", "affect_source", "affect_profile",
             "affect_description", "affect_event_type", "affect_event_source",
             "affect_event_age_seconds", "affect_event_context",
+            "affect_history_count", "affect_history_turn_ids",
             "affect_recent_events",
             "source_cycle", "age_seconds", "age_cycles", "thread_id",
             "source_evidence_ref", "focus_type", "focus_score", "focus_ref",
@@ -1390,6 +1407,11 @@ class PersonaBridge:
                     re.sub(r"[^A-Za-z0-9_.:-]", "", str(item or ""))[:96]
                     for item in value[:64]
                     if item
+                ]
+            elif key == "affect_history_turn_ids" and isinstance(value, (list, tuple)):
+                safe_metadata[key] = [
+                    re.sub(r"[^A-Za-z0-9_-]", "_", str(item or ""))[:96]
+                    for item in value[:5] if item
                 ]
             elif key == "context_source_names" and isinstance(value, (list, tuple)):
                 safe_metadata[key] = [
@@ -4176,6 +4198,7 @@ class PersonaBridge:
             api_route_intent=_api_route_intent,
             api_route_query=_api_route_query,
             architecture_context_query=_architecture_context_query,
+            affect_self_integration_query=_affect_self_integration_query,
         )
         if _explicit_memory_recall and not peer_name:
             _recent_recall_result = recent_dialogue_recall_source_result(
@@ -5590,10 +5613,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         and _protected_affect_prompt in system_prompt
                         and _prompt_budget_receipt.get("protected_tail_preserved") is True
                     )
+                    _affect_delivery_status = _affect_prompt_delivery_status(
+                        _protected_affect_prompt,
+                        system_prompt,
+                        _prompt_budget_receipt,
+                    )
                     self._record_turn_stage(
                         "affect_self_integration_prompt_delivery",
-                        "retained_in_final_prompt" if _affect_prompt_retained else "omitted_by_prompt_budget",
-                        "Checks whether the affect/self integration evidence survived the final context budget sent to inference.",
+                        _affect_delivery_status,
+                        "Checks whether affect/self evidence was created, protected, and retained in the final prompt sent to inference.",
                         output={
                             "marker_retained": _affect_prompt_retained,
                             "full_affect_block_retained": _affect_prompt_retained,
@@ -6810,6 +6838,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         api_route_intent: dict[str, Any] | None = None,
         api_route_query: bool = False,
         architecture_context_query: bool = False,
+        affect_self_integration_query: bool = False,
     ) -> tuple[str, dict, dict, float | None, dict | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -6827,6 +6856,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         _api_route_intent = api_route_intent or {"status": "router_unavailable", "route": False}
         _api_route_query = bool(api_route_query)
         _architecture_context_query = bool(architecture_context_query)
+        _affect_self_integration_query = bool(affect_self_integration_query)
         # Set the fail-closed default before any prompt assembly can raise.
         # The recovery block below also inspects this local.
         _architecture_query = bool(architecture_context_query)
@@ -7504,12 +7534,178 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 s.emotional_state.get_response_modifiers,
             )
             _affect_profile = mods.get("affective_profile", {})
-            _affect_self_report = False
+            _latest_affect = mods.get("latest_affect_event") or {}
+            _affect_self_model_snapshot: dict[str, Any] = {}
+            _snapshot_reader = getattr(s.emotional_state, "get_self_model_snapshot", None)
+            if callable(_snapshot_reader):
+                try:
+                    _snapshot_candidate = _measure_prompt_context(
+                        "affective_self_model_snapshot",
+                        lambda: _snapshot_reader(event_limit=5),
+                    )
+                    if isinstance(_snapshot_candidate, dict):
+                        _affect_self_model_snapshot = _snapshot_candidate
+                        _snapshot_channels = _snapshot_candidate.get("channels")
+                        if isinstance(_snapshot_channels, dict):
+                            _affect_profile = {
+                                name: float(channel["value"])
+                                for name, channel in _snapshot_channels.items()
+                                if isinstance(channel, dict)
+                                and isinstance(channel.get("value"), (int, float))
+                                and math.isfinite(float(channel["value"]))
+                            }
+                except Exception as _affect_snapshot_error:
+                    logger.debug(
+                        "Affective self-model snapshot unavailable: %s",
+                        type(_affect_snapshot_error).__name__,
+                    )
+            # Capture the affect evidence before the optional architecture
+            # and internal-query context block below. That block contains
+            # independent classifiers and may fail; it must not suppress a
+            # route that has already selected affective self-integration.
+            _affect_self_report = bool(
+                not peer_name and (
+                    debug_introspection
+                    or _affect_self_integration_query
+                    or _affect_self_report_query
+                )
+            )
+            _recent_affect_events = []
+            _safe_affect_events = []
+            _historical_self_affect_traces = []
+            _affect_report_latest_event = _latest_affect
+            if _affect_self_report:
+                try:
+                    from cognition.self_description import sanitize_affect_event_receipts
+                    if _affect_self_integration_query:
+                        _historical_reader = getattr(
+                            getattr(s, "emotional_memory", None),
+                            "recent_self_affect_traces", None,
+                        )
+                        if callable(_historical_reader):
+                            _historical_self_affect_traces = _historical_reader(limit=3)
+                    _recent_affect_events = (
+                        _affect_self_model_snapshot.get("recent_causes", [])
+                        if isinstance(_affect_self_model_snapshot.get("recent_causes"), list)
+                        else s.emotional_state.get_recent_affect_events(5)
+                    )
+                    _safe_affect_events = sanitize_affect_event_receipts(_recent_affect_events)
+                    if _affect_self_integration_query:
+                        _safe_affect_events = [
+                            event for event in _safe_affect_events
+                            if event.get("event_type") not in {
+                                "time_decay", "baseline_recalibration", "self_influence",
+                            }
+                            and any(
+                                abs(float(delta)) >= 0.00005
+                                for delta in event.get("changes", {}).values()
+                                if isinstance(delta, (int, float))
+                                and math.isfinite(float(delta))
+                            )
+                        ]
+                    _affect_report_latest_event = _latest_affect
+                    if _affect_self_integration_query:
+                        _affect_report_latest_event = (
+                            _safe_affect_events[-1] if _safe_affect_events else None
+                        )
+                    self._record_turn_context_source(
+                        "affective_state",
+                        "injected",
+                        turn_id=audit_turn_id,
+                        affect_source="EmotionalStateManager.get_response_modifiers().affective_profile",
+                        affect_profile=_affect_profile,
+                        affect_self_model_snapshot=_affect_self_model_snapshot,
+                        affect_description=mods.get("state_description", ""),
+                        affect_event_type=(
+                            _affect_report_latest_event.get("event_type", "")
+                            if _affect_report_latest_event else ""
+                        ),
+                        affect_event_source=(
+                            _affect_report_latest_event.get("source", "")
+                            if _affect_report_latest_event else ""
+                        ),
+                        affect_event_age_seconds=(
+                            _affect_report_latest_event.get("age_seconds")
+                            if _affect_report_latest_event else None
+                        ),
+                        affect_event_context=(
+                            _affect_report_latest_event.get("cause_context", {})
+                            if _affect_report_latest_event else {}
+                        ),
+                        affect_history_count=len(_historical_self_affect_traces),
+                        affect_history_turn_ids=[
+                            str(trace.get("turn_id") or "")[:96]
+                            for trace in _historical_self_affect_traces
+                            if isinstance(trace, dict) and trace.get("turn_id")
+                        ],
+                        affect_recent_events=_safe_affect_events,
+                    )
+                    self._record_turn_stage(
+                        "affective_state", "captured",
+                        "Current modeled affect channels and latest appraisal metadata captured from the emotional state manager.",
+                        output={
+                            "source": "EmotionalStateManager.get_response_modifiers().affective_profile",
+                            "affect_profile": _affect_profile,
+                            "self_model_snapshot": _affect_self_model_snapshot,
+                            "description": mods.get("state_description", ""),
+                            "recent_events": _safe_affect_events,
+                            "latest_event": {
+                                "event_type": (
+                                    _affect_report_latest_event.get("event_type", "")
+                                    if _affect_report_latest_event else ""
+                                ),
+                                "source": (
+                                    _affect_report_latest_event.get("source", "")
+                                    if _affect_report_latest_event else ""
+                                ),
+                                "age_seconds": (
+                                    _affect_report_latest_event.get("age_seconds")
+                                    if _affect_report_latest_event else None
+                                ),
+                            },
+                        },
+                        consumes=("turn_input",),
+                        turn_id=audit_turn_id,
+                    )
+                    if _affect_self_integration_query:
+                        self._record_turn_stage(
+                            "affect_self_integration_profile", "captured",
+                            "Current affect channels and turn-linked appraisal receipts captured for self-integration reasoning.",
+                            output={
+                                "source": "EmotionalStateManager plus persistent SelfModelMoment in cognitive prompt",
+                                "channel_count": len(_affect_profile) if isinstance(_affect_profile, dict) else 0,
+                                "baseline_deviation_channel_count": sum(
+                                    1 for channel in _affect_self_model_snapshot.get("channels", {}).values()
+                                    if isinstance(channel, dict)
+                                    and isinstance(channel.get("deviation"), (int, float))
+                                ) if isinstance(_affect_self_model_snapshot.get("channels"), dict) else 0,
+                                "slow_mood_present": all(
+                                    isinstance(_affect_self_model_snapshot.get(key), (int, float))
+                                    for key in ("mood_valence", "mood_arousal")
+                                ),
+                                "recent_event_count": len(_safe_affect_events),
+                                "historical_self_affect_trace_count": len(_historical_self_affect_traces),
+                                "historical_turn_ids": [
+                                    str(trace.get("turn_id") or "")[:96]
+                                    for trace in _historical_self_affect_traces
+                                    if isinstance(trace, dict) and trace.get("turn_id")
+                                ],
+                                "self_model_moment_in_prompt": True,
+                            },
+                            consumes=("turn_evidence_routing", "affective_state"),
+                            turn_id=audit_turn_id,
+                        )
+                except Exception as _affect_capture_error:
+                    logger.debug("Affective self evidence capture failed: %s", type(_affect_capture_error).__name__)
+                    self._record_turn_stage(
+                        "affective_state", "failed",
+                        error_type=type(_affect_capture_error).__name__,
+                        turn_id=audit_turn_id,
+                    )
             _affect_profile_text = ", ".join(
                 f"{name}={float(value):.2f}"
                 for name, value in sorted(_affect_profile.items())
             ) or "unavailable"
-            _latest_affect = mods.get("latest_affect_event") or {}
             _affect_cause_text = (
                 f"{_latest_affect.get('event_type')} from {_latest_affect.get('source')} "
                 f"({_latest_affect.get('age_seconds')} s ago, intensity {_latest_affect.get('intensity')})"
@@ -7631,60 +7827,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     or _explicit_recall_query
                     or _api_route_query
                 )
-                _affect_self_report = bool(
-                    not peer_name and (
-                        debug_introspection
-                        or _affect_self_integration_query
-                        or _affect_self_report_query
-                    )
-                )
-                if _affect_self_report:
-                    from cognition.self_description import sanitize_affect_event_receipts
-                    _recent_affect_events = s.emotional_state.get_recent_affect_events(5)
-                    _safe_affect_events = sanitize_affect_event_receipts(_recent_affect_events)
-                    self._record_turn_context_source(
-                        "affective_state",
-                        "injected",
-                        turn_id=audit_turn_id,
-                        affect_source="EmotionalStateManager.get_response_modifiers().affective_profile",
-                        affect_profile=_affect_profile,
-                        affect_description=mods.get("state_description", ""),
-                        affect_event_type=_latest_affect.get("event_type", "") if _latest_affect else "",
-                        affect_event_source=_latest_affect.get("source", "") if _latest_affect else "",
-                        affect_event_age_seconds=_latest_affect.get("age_seconds") if _latest_affect else None,
-                        affect_event_context=_latest_affect.get("cause_context", {}) if _latest_affect else {},
-                        affect_recent_events=_safe_affect_events,
-                    )
-                    self._record_turn_stage(
-                        "affective_state", "captured",
-                        "Current modeled affect channels and latest appraisal metadata captured from the emotional state manager.",
-                        output={
-                            "source": "EmotionalStateManager.get_response_modifiers().affective_profile",
-                            "affect_profile": _affect_profile,
-                            "description": mods.get("state_description", ""),
-                            "recent_events": _safe_affect_events,
-                            "latest_event": {
-                                "event_type": _latest_affect.get("event_type", "") if _latest_affect else "",
-                                "source": _latest_affect.get("source", "") if _latest_affect else "",
-                                "age_seconds": _latest_affect.get("age_seconds") if _latest_affect else None,
-                            },
-                        },
-                        consumes=("turn_input",),
-                        turn_id=audit_turn_id,
-                    )
-                    if _affect_self_integration_query:
-                        self._record_turn_stage(
-                            "affect_self_integration_profile", "captured",
-                            "Current affect channels and turn-linked appraisal receipts captured for self-integration reasoning.",
-                            output={
-                                "source": "EmotionalStateManager plus persistent SelfModelMoment in cognitive prompt",
-                                "channel_count": len(_affect_profile) if isinstance(_affect_profile, dict) else 0,
-                                "recent_event_count": len(_safe_affect_events),
-                                "self_model_moment_in_prompt": True,
-                            },
-                            consumes=("turn_evidence_routing", "affective_state"),
-                            turn_id=audit_turn_id,
-                        )
                 _module_tick_snapshot = None
                 _module_entries = []
                 if (
@@ -8524,9 +8666,11 @@ Memory honesty — two distinct cases:
                 _affect_prompt_context = affect_self_report_context(
                     _affect_profile,
                     mods.get("state_description", ""),
-                    _latest_affect,
+                    _affect_report_latest_event,
                     _recent_affect_events,
                     integration_mode=_affect_self_integration_query,
+                    self_model_snapshot=_affect_self_model_snapshot,
+                    historical_traces=_historical_self_affect_traces,
                 )
                 system_prompt += "\n\n" + _affect_prompt_context
                 if _affect_self_integration_query:
@@ -8537,6 +8681,15 @@ Memory honesty — two distinct cases:
                             "source": "affective_state plus cognitive_prompt_context",
                             "channel_count": len(_affect_profile) if isinstance(_affect_profile, dict) else 0,
                             "recent_event_count": len(_recent_affect_events),
+                            "historical_self_affect_trace_count": len(_historical_self_affect_traces),
+                            "baseline_values_present": bool(
+                                isinstance(_affect_self_model_snapshot.get("channels"), dict)
+                                and _affect_self_model_snapshot.get("channels")
+                            ),
+                            "slow_mood_present": all(
+                                isinstance(_affect_self_model_snapshot.get(key), (int, float))
+                                for key in ("mood_valence", "mood_arousal")
+                            ),
                             "context_chars": len(_affect_prompt_context),
                             "context_sha256": hashlib.sha256(
                                 _affect_prompt_context.encode("utf-8", errors="replace")

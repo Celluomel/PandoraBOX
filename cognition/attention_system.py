@@ -182,23 +182,11 @@ class AttentionSystem:
                 # High variance = attention concentrated = less integration
                 _phi_delta = 0.015 * (0.25 - _variance) * 4   # normalised: 0.25 is max variance for 4 channels
 
-                # Qualia vote based on dominant channel
-                _dominant  = self._state.dominant
-                _qualia_map = {
-                    "curiosity": ("curiosity", 0.012),
-                    "user":      ("warmth",    0.012),
-                    "identity":  ("uncertain", 0.010),
-                    "memory":    ("melancholy",0.008),
-                }
-                _qkey, _qweight = _qualia_map.get(_dominant, ("", 0.0))
-
                 _smm = getattr(getattr(self, "_organism", None), "self_moment", None)
                 if _smm is not None:
                     _smm.current.micro_update(
                         source          = "attention",
                         coherence_delta = _phi_delta,
-                        qualia_key      = _qkey,
-                        qualia_weight   = _qweight,
                     )
             except Exception:
                 pass

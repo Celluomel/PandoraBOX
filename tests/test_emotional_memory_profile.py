@@ -71,6 +71,38 @@ class EmotionalMemoryProfileTests(unittest.TestCase):
         self.assertGreater(after["anxiety"], before["anxiety"])
         self.assertNotIn("melancholy", after)
 
+    def test_recent_self_affect_history_is_structured_and_excludes_user_trace_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = EmotionalMemorySystem(
+                SimpleNamespace(), str(Path(directory) / "emotional_memory.json"),
+            )
+            profile = {
+                "channels": {
+                    "curiosity": {"value": 0.82, "baseline": 0.30, "deviation": 0.52},
+                    "anxiety": {"value": 0.61, "baseline": 0.20, "deviation": 0.41},
+                },
+                "valence": 0.1,
+                "arousal": 0.7,
+            }
+            memory.record_if_significant(
+                valence=0.1, arousal=0.9, affect_profile=profile,
+                perspective="organism", description="private internal prose",
+                turn_id="self-turn-1",
+            )
+            memory.record_if_significant(
+                valence=-0.3, arousal=0.9, affect_profile=profile,
+                perspective="user", description="user said something private",
+                turn_id="user-turn-2",
+            )
+
+            traces = memory.recent_self_affect_traces()
+
+        self.assertEqual(len(traces), 1)
+        self.assertEqual(traces[0]["turn_id"], "self-turn-1")
+        self.assertIn("curiosity", traces[0]["affect_profile"]["channels"])
+        self.assertNotIn("description", traces[0])
+        self.assertNotIn("private", str(traces))
+
 
 if __name__ == "__main__":
     unittest.main()

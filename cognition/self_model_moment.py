@@ -62,6 +62,11 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from cognition.affect_composition import (
+    affect_profile_change,
+    describe_affect_configuration,
+)
+
 
 def _truncate_at_word(text: str, limit: int) -> str:
     """
@@ -89,7 +94,6 @@ RESTING_QUALIA       = "a quiet, settled presence — at rest between encounters
 
 # Micro-update bounds — each subsystem delta is small by design
 MICRO_PHI_MAX_PER_SOURCE    = 0.025   # max phi change any one subsystem can apply
-MICRO_QUALIA_MAX_PER_SOURCE = 0.018   # max qualia weight any one subsystem can shift
 MICRO_TOTAL_CAP             = 0.06    # cumulative phi change capped per turn
 
 # Shared with SelfRevisionEngine — kept here to avoid circular import
@@ -120,7 +124,7 @@ class SelfModelMoment:
     # Capability stance (from SelfModel)
     capability_stance: str   = ""
 
-    # Emotional ground (dominant emotion + direction)
+    # Backward-compatible compact emotional ground.
     emotional_ground: str    = ""
 
     # Full affect profile and recent causal receipts. Kept separately from the
@@ -170,15 +174,14 @@ class SelfModelMoment:
         ----------
         source          : name of the calling subsystem (for diagnostics)
         coherence_delta : signed phi nudge, clamped to ±MICRO_PHI_MAX_PER_SOURCE
-        qualia_key      : qualia keyword to nudge toward (e.g. "warmth", "curiosity")
-        qualia_weight   : weight of this qualia suggestion (0–1)
+        qualia_key/weight: accepted for compatibility with existing callers;
+                          affect configuration is derived from the measured profile
         """
         coherence_delta = max(
             -MICRO_PHI_MAX_PER_SOURCE,
             min(MICRO_PHI_MAX_PER_SOURCE, coherence_delta)
         )
-        qualia_weight = max(0.0, min(MICRO_QUALIA_MAX_PER_SOURCE, qualia_weight))
-        self._pending_deltas.append((source, coherence_delta, qualia_key, qualia_weight))
+        self._pending_deltas.append((source, coherence_delta))
 
     def flush_deltas(self) -> dict:
         """
@@ -196,33 +199,10 @@ class SelfModelMoment:
         total_phi_delta = sum(d[1] for d in self._pending_deltas)
         total_phi_delta = max(-MICRO_TOTAL_CAP, min(MICRO_TOTAL_CAP, total_phi_delta))
 
-        # Aggregate qualia votes — the keyword with the highest total weight wins
-        qualia_votes: dict = {}
-        for _, _, qkey, qweight in self._pending_deltas:
-            if qkey:
-                qualia_votes[qkey] = qualia_votes.get(qkey, 0.0) + qweight
-
         # Apply phi delta
         old_phi = self.phi
         new_phi = max(PHI_FLOOR, min(PHI_CEILING, self.phi + total_phi_delta))
         object.__setattr__(self, "phi", round(new_phi, 3))
-
-        # Apply winning qualia vote only if it achieved meaningful weight
-        qualia_applied = ""
-        if qualia_votes:
-            best_key, best_weight = max(qualia_votes.items(), key=lambda x: x[1])
-            if best_weight >= 0.012:   # threshold: at least two subsystems agreeing
-                # Find the matching qualia anchor phrase (lazy import avoids circular dep)
-                try:
-                    from cognition.self_revision_engine import QUALIA_ANCHORS as _QA
-                except Exception:
-                    _QA = []
-                for keyword, phrase in _QA:
-                    if keyword == best_key:
-                        if phrase != self.qualia_tone:
-                            object.__setattr__(self, "qualia_tone", phrase)
-                            qualia_applied = best_key
-                        break
 
         applied = len(self._pending_deltas)
         self._pending_deltas.clear()
@@ -232,7 +212,9 @@ class SelfModelMoment:
             "phi_delta":     round(total_phi_delta, 4),
             "phi_old":       round(old_phi, 3),
             "phi_new":       round(self.phi, 3),
-            "qualia_applied": qualia_applied,
+            # Affect configuration is derived from the continuous profile at
+            # bind/update time; subsystem keyword votes cannot replace it.
+            "qualia_applied": "",
         }
 
     def prompt_fragment(self) -> str:
@@ -273,7 +255,7 @@ class SelfModelMoment:
         if deviations:
             channel_text = ", ".join(
                 f"{name}={value:.2f} ({delta:+.2f} vs baseline)"
-                for _, name, value, delta in deviations[:4]
+                for _, name, value, delta in deviations[:6]
             )
             try:
                 valence = float(profile.get("valence"))
@@ -295,6 +277,7 @@ class SelfModelMoment:
                 ]
                 if causal_labels:
                     parts.append(f"recent affect causes={', '.join(causal_labels)}")
+            parts.append(describe_affect_configuration(profile, limit=6))
 
         if self.capability_stance:
             parts.append(f"capability={_short(self.capability_stance, 96)}")
@@ -434,9 +417,18 @@ class SelfModelMomentManager:
                 + (1 - MOMENT_INERTIA) * fresh_phi
             )
 
-            # Qualia: carry prior unless phi shifted enough to warrant change
+            # Keep the affect configuration continuous, but let a changed
+            # channel mixture update it even when scalar valence and phi stay
+            # almost unchanged.
             phi_delta = abs(blended_phi - prior.phi)
-            if phi_delta < 0.12 and prior.qualia_tone != RESTING_QUALIA:
+            affect_delta = affect_profile_change(
+                prior.emotional_profile, fresh_emotional_profile,
+            )
+            if (
+                phi_delta < 0.12
+                and affect_delta < 0.05
+                and prior.qualia_tone != RESTING_QUALIA
+            ):
                 blended_qualia = prior.qualia_tone
             else:
                 blended_qualia = fresh_qualia

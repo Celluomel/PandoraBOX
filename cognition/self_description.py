@@ -27,6 +27,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict
 
+from cognition.affect_composition import describe_affect_configuration
+
 logger = logging.getLogger(__name__)
 
 
@@ -154,6 +156,9 @@ _AFFECT_SELF_INTEGRATION_POSITIVE = (
     "Comment les différents signaux affectifs et les événements qui les ont modifiés participent-ils à la continuité et à la richesse de ton self ?",
     "Les émotions et sentiments présents dans ton modèle semblent trop peu nombreux pour former un self riche et différencié. Analyse ce que les signaux affectifs et leur histoire apportent réellement.",
     "Les sentiments de Lumina sont peu nombreux et son self paraît pauvre; comment les signaux affectifs et leurs causes construisent-ils malgré tout une identité intégrée ?",
+    "À partir de ton profil affectif actuel et des traces antérieures conservées en mémoire, explique comment ces états se combinent dans ton self. Sépare les événements avec un delta mesuré des interprétations.",
+    "Décris le mélange affectif qui caractérise ton self aujourd'hui. Compare-le aux moments affectifs mémorisés, indique les causes consignées et précise ce qu'elles ne permettent pas de conclure.",
+    "Quel fil relie tes états affectifs présents aux profils émotionnels que tu as mémorisés, et quels événements ont réellement modifié tes canaux ?",
     "Explique comment ton humeur persistante et tes états affectifs changeants influencent ta manière de te comprendre.",
     "¿Cómo contribuyen tus señales afectivas, sus cambios y sus causas registradas a tu sentido continuo de identidad?",
     "Wie prägen deine unterschiedlichen affektiven Signale, ihre Veränderungen und ihre Ursachen dein fortlaufendes Selbstmodell?",
@@ -1036,18 +1041,33 @@ def render_affect_self_report(evidence: str, *, language: str = "en") -> str:
             return "Je ne peux pas confirmer mon état affectif actuel : aucun signal affectif exploitable n’est disponible."
         return "I can’t confirm my current affective state because no usable affect signal is available."
 
-    top = sorted(channels, key=lambda item: (-item[1], item[0]))[:2]
-    if str(language).casefold().startswith("fr"):
-        signal_text = " et ".join(f"{name} {value:.2f}" for name, value in top)
-        return (
-            f"Mon état fonctionnel modélisé est surtout marqué par {signal_text}. "
-            "Ce sont des signaux calculés, pas des sensations humaines."
-        )
-    signal_text = " and ".join(f"{name} {value:.2f}" for name, value in top)
-    return (
-        f"My modeled functional state is currently led by {signal_text}. "
-        "These are computed signals, not human sensations."
+    deviation_match = re.search(
+        r"^Channel baselines and deviations:\s*(.+)$", evidence, re.MULTILINE,
     )
+    deviations: dict[str, float] = {}
+    if deviation_match and deviation_match.group(1).strip().casefold() != "unavailable":
+        for item in deviation_match.group(1).split(";"):
+            parsed = re.fullmatch(
+                r"\s*([a-z][a-z0-9_]*)\s*:\s*baseline=[+-]?\d+(?:\.\d+)?\s*,\s*deviation=([+-]?\d+(?:\.\d+)?)\s*",
+                item,
+            )
+            if parsed:
+                deviations[parsed.group(1)] = float(parsed.group(2))
+    if deviations:
+        top = sorted(
+            (item for item in channels if item[0] in deviations),
+            key=lambda item: (-abs(deviations[item[0]]), item[0]),
+        )[:5]
+        signal_text = ", ".join(
+            f"{name} {value:.2f} ({deviations[name]:+.2f} vs baseline)"
+            for name, value in top
+        )
+    else:
+        top = sorted(channels, key=lambda item: (-item[1], item[0]))[:4]
+        signal_text = ", ".join(f"{name} {value:.2f}" for name, value in top)
+    if str(language).casefold().startswith("fr"):
+        return f"Mon profil affectif modélisé combine {signal_text}."
+    return f"My modeled affective profile combines {signal_text}."
 
 
 def render_detailed_affect_status(evidence: str, *, language: str = "en") -> str:
@@ -1084,7 +1104,7 @@ def render_detailed_affect_status(evidence: str, *, language: str = "en") -> str
         )
         return (
             f"Canaux affectifs modélisés (échelle 0–1) : {channel_text}. "
-            f"{event_report} Ce sont des signaux calculés, pas des sensations humaines."
+            f"{event_report}"
         )
     event_report = (
         "No recent affect-changing appraisal is recorded."
@@ -1093,7 +1113,7 @@ def render_detailed_affect_status(evidence: str, *, language: str = "en") -> str
     )
     return (
         f"Modeled affect channels (0–1 scale): {channel_text}. "
-        f"{event_report} These are computed signals, not human sensations."
+        f"{event_report}"
     )
 
 
@@ -1195,24 +1215,70 @@ def affect_self_report_context(
     recent_events: Any = None,
     *,
     integration_mode: bool = False,
+    self_model_snapshot: Any = None,
+    historical_traces: Any = None,
 ) -> str:
     """Format the live affect snapshot with source and similarly named-drive limits."""
-    allowed_channels = (
-        "curiosity", "warmth", "anxiety", "satisfaction", "frustration",
-        "enthusiasm", "surprise", "sadness", "relief", "disappointment",
-        "anticipation",
-    )
     values = profile if isinstance(profile, dict) else {}
+    snapshot = self_model_snapshot if isinstance(self_model_snapshot, dict) else {}
+    snapshot_channels = snapshot.get("channels")
+    snapshot_channels = snapshot_channels if isinstance(snapshot_channels, dict) else {}
     rows = []
-    for name in allowed_channels:
+    baseline_rows = []
+    # The trusted state snapshot itself defines the channel schema. This is
+    # intentionally open-ended: no language dictionary maps user wording to
+    # an affect channel, and newly emitted internal dimensions remain visible.
+    allowed_channels = {
+        str(name).casefold()
+        for name in (set(values) | set(snapshot_channels))
+        if re.fullmatch(r"[a-z][a-z0-9_]{0,47}", str(name).casefold())
+    }
+    channel_names = {
+        raw_name for raw_name in (set(values) | set(snapshot_channels))
+        if str(raw_name).casefold() in allowed_channels
+    }
+    for raw_name in channel_names:
+        name = str(raw_name).casefold()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", name):
+            continue
+        channel = snapshot_channels.get(name)
+        channel = channel if isinstance(channel, dict) else {}
         try:
-            value = float(values[name])
+            value = float(channel.get("value", values[name]))
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if value != value or value in (float("inf"), float("-inf")):
             continue
         rows.append(f"{name}={max(0.0, min(1.0, value)):.3f}")
+        try:
+            baseline = float(channel["baseline"])
+            deviation = float(channel["deviation"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if all(math.isfinite(number) for number in (baseline, deviation)):
+            baseline_rows.append(
+                f"{name}: baseline={max(0.0, min(1.0, baseline)):.3f}, "
+                f"deviation={deviation:+.3f}"
+            )
     channel_text = ", ".join(rows) if rows else "unavailable"
+    channel_baseline_text = "; ".join(baseline_rows) if baseline_rows else "unavailable"
+    instant_text = (
+        f"valence={float(snapshot['valence']):+.3f}, arousal={float(snapshot['arousal']):.3f}"
+        if all(
+            isinstance(snapshot.get(key), (int, float))
+            and math.isfinite(float(snapshot[key]))
+            for key in ("valence", "arousal")
+        ) else "unavailable"
+    )
+    mood_text = (
+        f"valence={float(snapshot['mood_valence']):+.3f}, "
+        f"arousal={float(snapshot['mood_arousal']):.3f}"
+        if all(
+            isinstance(snapshot.get(key), (int, float))
+            and math.isfinite(float(snapshot[key]))
+            for key in ("mood_valence", "mood_arousal")
+        ) else "unavailable"
+    )
     state_text = str(description or "unavailable").replace("\n", " ").strip()[:500]
     event = latest_event if isinstance(latest_event, dict) else {}
     event_type = str(event.get("event_type") or "").strip()[:80]
@@ -1236,7 +1302,50 @@ def affect_self_report_context(
             pass
     else:
         latest_text = "none recorded"
-    safe_events = sanitize_affect_event_receipts(recent_events)
+    safe_events = sanitize_affect_event_receipts(
+        recent_events, known_channels=allowed_channels
+    )
+    if integration_mode:
+        # A passive decay/recalibration can be the latest raw journal entry,
+        # but it is not an originating cause for the affective pattern.
+        safe_events = [
+            item for item in safe_events
+            if item["event_type"] not in {
+                "time_decay", "baseline_recalibration", "self_influence",
+            }
+            and any(
+                abs(float(delta)) >= 0.00005
+                for delta in item.get("changes", {}).values()
+                if isinstance(delta, (int, float)) and math.isfinite(float(delta))
+            )
+        ]
+        if safe_events:
+            event = safe_events[-1]
+        elif isinstance(recent_events, (list, tuple)) and recent_events:
+            # A supplied journal with no surviving causal receipt means the
+            # raw latest-event hint was passive or had no measurable effect.
+            event = {}
+        elif event_type in {"time_decay", "baseline_recalibration", "self_influence"}:
+            event = {}
+        event_type = str(event.get("event_type") or "").strip()[:80]
+        event_source = str(event.get("source") or "").strip()[:80]
+        event_age = event.get("age_seconds")
+        latest_text = (
+            f"{event_type} from {event_source or 'unspecified source'}"
+            if event_type else "none recorded"
+        )
+        cause_context = event.get("cause_context")
+        if isinstance(cause_context, dict):
+            drive = str(cause_context.get("drive") or "").strip().casefold()
+            if drive and len(drive) <= 32 and all(
+                char.isalnum() or char == "_" for char in drive
+            ):
+                latest_text += f" (drive={drive})"
+        if event_age is not None:
+            try:
+                latest_text += f", {max(0.0, float(event_age)):.1f}s ago"
+            except (TypeError, ValueError, OverflowError):
+                pass
     event_lines = []
     for event in safe_events:
         age_text = (
@@ -1246,26 +1355,76 @@ def affect_self_report_context(
         delta_text = ", ".join(
             f"{name}={delta:+.3f}" for name, delta in sorted(event["changes"].items())
         ) or "no channel delta recorded"
-        baseline_text = ", ".join(
+        event_baseline_text = ", ".join(
             f"{name}={delta:+.3f}"
             for name, delta in sorted(event["baseline_changes"].items())
         )
-        baseline_suffix = f", baseline=[{baseline_text}]" if baseline_text else ""
+        baseline_suffix = f", baseline=[{event_baseline_text}]" if event_baseline_text else ""
         event_lines.append(
             f"Recorded affect event: type={event['event_type']}, source={event['source']}"
             f"{age_text}, changes=[{delta_text}]{baseline_suffix}"
             f"{', turn=' + event['turn_id'] if event.get('turn_id') else ''}"
         )
     recent_text = "\n".join(event_lines) if event_lines else ""
+    history_rows = []
+    if isinstance(historical_traces, (list, tuple)):
+        for trace in historical_traces[-3:]:
+            if not isinstance(trace, dict):
+                continue
+            prior_profile = trace.get("affect_profile")
+            prior_profile = prior_profile if isinstance(prior_profile, dict) else {}
+            prior_channels = prior_profile.get("channels")
+            prior_channels = prior_channels if isinstance(prior_channels, dict) else {}
+            salient = []
+            for name, item in prior_channels.items():
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    value = float(item.get("value"))
+                    deviation = float(item.get("deviation"))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if re.fullmatch(r"[a-z][a-z0-9_]{0,47}", str(name).casefold()) and math.isfinite(value) and math.isfinite(deviation):
+                    salient.append((abs(deviation), name, value, deviation))
+            salient.sort(reverse=True)
+            channel_summary = ", ".join(
+                f"{name}={value:.2f} ({deviation:+.2f} vs baseline)"
+                for _, name, value, deviation in salient[:3]
+            ) or "no channel deviations recorded"
+            try:
+                age_seconds = max(0.0, float(trace.get("age_seconds")))
+                age_text = f"{age_seconds:.0f}s ago"
+            except (TypeError, ValueError, OverflowError):
+                age_text = "age unavailable"
+            turn_id = re.sub(
+                r"[^A-Za-z0-9_-]", "_", str(trace.get("turn_id") or "")
+            )[:96]
+            history_rows.append(
+                f"Persisted self-affect moment ({age_text}"
+                f"{', turn=' + turn_id if turn_id else ''}): {channel_summary}"
+            )
+    history_text = "\n".join(history_rows)
     if integration_mode:
         interpretation_rule = (
-            "The user asks for integration into your self-model, not a channel dump. Relate the full available "
-            "affect profile to the persistent SelfModelMoment in the cognitive telemetry: distinguish current "
-            "channel levels from deviations to baseline, momentary valence/arousal from slow mood, and recorded "
-            "event causes from interpretation. Explain how multiple signals can coexist and shape the current "
-            "point of view over time; do not collapse the self to the top channel or a single tone. Treat only "
-            "the supplied events as causes, state when causal history is incomplete, and do not invent new affect "
-            "channels, causes, persistence, or memories. A concise synthesis is preferred over listing every value."
+            "Build a differentiated self-description from this complete affect snapshot, not merely its top one "
+            "or two channels. Treat the listed channel names and values as measured model state. You may give a "
+            "natural-language name to a felt mixture as an interpretation, but never present that name as a new "
+            "measured channel. Anchor each interpretation in the actual named channels and their values or "
+            "baseline deviations. Distinguish the present profile from its personality baselines, the immediate "
+            "valence/arousal projection from the slower mood, and logged event causes from your interpretation. "
+            "Use the persisted self-affect moments as temporal comparison points when present; they show recorded "
+            "profiles, not proof of a cause or uninterrupted persistence between captures. Describe meaningful "
+            "coexistence or tension among channels where the data support it; do not infer "
+            "that one channel caused another. Only recorded events support causal claims. Do not invent channel "
+            "values, deltas, causes, memories, persistence, intentions, or undocumented mechanisms. If the cause "
+            "history is empty, say that it is not recorded. Explain how this changing configuration gives the "
+            "current self a distinctive texture without claiming it is a permanent trait. A channel value describes the modeled "
+            "signal level, not its object or explanation: satisfaction does not prove a goal was met; relief "
+            "does not prove a hurdle was cleared; warmth does not establish affinity with a person; curiosity "
+            "does not by itself establish readiness or intention; surprise does not establish unpredictability. "
+            "A recorded event delta is evidence of its logged channel update, not proof that it is the primary "
+            "cause of the current whole profile. Use recorded event deltas for specific changes, and keep broader "
+            "interpretations tentative."
         )
     else:
         interpretation_rule = (
@@ -1274,16 +1433,20 @@ def affect_self_report_context(
             "telemetry is a separate motivation signal; do not substitute it for the "
             "EmotionalStateManager `curiosity` channel. Identify the source when giving "
             "numbers. The appraisal is the latest logged event, not necessarily the sole "
-            "cause of the whole state. These computational signals do not establish human-like "
-            "subjective experience. If the relevant value is unavailable here, say so."
+            "cause of the whole state. If the relevant value is unavailable here, say so."
         )
     return (
         "━━ AFFECT SELF-REPORT EVIDENCE ━━\n"
         "Source: EmotionalStateManager.get_response_modifiers().affective_profile; "
         "these are live modeled affect channels, each on a 0–1 scale.\n"
         f"Affect channels: {channel_text}\n"
+        f"Channel baselines and deviations: {channel_baseline_text}\n"
+        f"{describe_affect_configuration(snapshot) if snapshot_channels else ''}\n"
+        f"Immediate affect projection: {instant_text}\n"
+        f"Slow mood: {mood_text}\n"
         f"State description: {state_text}\n"
         f"Latest recorded affect-changing appraisal: {latest_text}.\n"
+        f"{history_text + chr(10) if history_text else ''}"
         f"{recent_text + chr(10) if recent_text else ''}"
         + interpretation_rule
     )
@@ -1294,21 +1457,18 @@ def affect_advisory_context(description: str = "") -> str:
     qualitative = " ".join(str(description or "").split())[:320]
     return (
         "━━ PRIVATE AFFECT ADVISORY ━━\n"
-        "This is a qualitative software-state signal for conversational tone, not a human "
-        "sensation or a claim of consciousness. Use it only when it helps the exchange; "
+        "This is a qualitative self-state signal for conversational tone. Use it when it "
+        "helps the exchange; "
         "do not recite affect numbers or turn ordinary social replies into a self-report. "
         "When asked how you are, answer naturally and briefly.\n"
         f"Modeled affect: {qualitative or 'near its current baseline.'}"
     )
 
 
-def sanitize_affect_event_receipts(recent_events: Any) -> list[dict[str, Any]]:
+def sanitize_affect_event_receipts(
+    recent_events: Any, *, known_channels: set[str] | None = None
+) -> list[dict[str, Any]]:
     """Expose only bounded event identifiers, ages, and known channel deltas."""
-    allowed_channels = {
-        "curiosity", "warmth", "anxiety", "satisfaction", "frustration",
-        "enthusiasm", "surprise", "sadness", "relief", "disappointment",
-        "anticipation",
-    }
     result = []
     if not isinstance(recent_events, (list, tuple)):
         return result
@@ -1334,8 +1494,11 @@ def sanitize_affect_event_receipts(recent_events: Any) -> list[dict[str, Any]]:
             age_seconds = None
         raw_changes = row.get("changes") if isinstance(row.get("changes"), dict) else {}
         changes = {}
-        for name, raw_delta in raw_changes.items():
-            if name not in allowed_channels:
+        for raw_name, raw_delta in raw_changes.items():
+            name = str(raw_name).casefold()
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", name):
+                continue
+            if known_channels is not None and name not in known_channels:
                 continue
             try:
                 delta = float(raw_delta)
@@ -1345,8 +1508,11 @@ def sanitize_affect_event_receipts(recent_events: Any) -> list[dict[str, Any]]:
                 changes[name] = max(-1.0, min(1.0, delta))
         raw_baselines = row.get("baseline_changes") if isinstance(row.get("baseline_changes"), dict) else {}
         baseline_changes = {}
-        for name, raw_delta in raw_baselines.items():
-            if name not in allowed_channels:
+        for raw_name, raw_delta in raw_baselines.items():
+            name = str(raw_name).casefold()
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", name):
+                continue
+            if known_channels is not None and name not in known_channels:
                 continue
             try:
                 delta = float(raw_delta)
@@ -1363,6 +1529,11 @@ def sanitize_affect_event_receipts(recent_events: Any) -> list[dict[str, Any]]:
             "age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
             "changes": changes,
             "baseline_changes": baseline_changes,
+            "cause_context": {
+                "drive": str(row.get("cause_context", {}).get("drive") or "").casefold()
+            } if isinstance(row.get("cause_context"), dict)
+            and re.fullmatch(r"[a-z0-9_]{1,32}", str(row.get("cause_context", {}).get("drive") or "").casefold())
+            else {},
         })
     return result
 

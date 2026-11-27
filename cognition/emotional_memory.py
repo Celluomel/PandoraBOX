@@ -284,6 +284,48 @@ class EmotionalMemorySystem:
             result["recent_causes"] = safe_causes
         return result
 
+    def recent_self_affect_traces(self, limit: int = 3) -> List[Dict[str, Any]]:
+        """Read a bounded history of significant, persisted self-affect profiles.
+
+        Self-integration needs temporal evidence as well as a current snapshot.
+        Return structured organism-state traces only; omit user-perspective
+        traces and free-text descriptions so the model cannot confuse another
+        person's affect or quoted content with its own history.
+        """
+        count = max(0, min(5, int(limit)))
+        if count == 0:
+            return []
+        now = time.time()
+        with self._lock:
+            traces = list(self._state.traces)
+
+        result: List[Dict[str, Any]] = []
+        for raw in reversed(traces):
+            if not isinstance(raw, dict) or raw.get("perspective", "organism") != "organism":
+                continue
+            try:
+                timestamp = float(raw.get("timestamp", 0.0))
+                significance = float(raw.get("significance", 0.0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(timestamp) or not math.isfinite(significance):
+                continue
+            profile = self._compact_affect_profile(raw.get("affect_profile"))
+            if not profile.get("channels"):
+                continue
+            result.append({
+                "timestamp": timestamp,
+                "age_seconds": round(max(0.0, now - timestamp), 1),
+                "turn_id": str(raw.get("turn_id") or "")[:120],
+                "category": str(raw.get("category") or "")[:32],
+                "significance": round(max(0.0, min(1.0, significance)), 3),
+                "affect_profile": profile,
+            })
+            if len(result) >= count:
+                break
+        result.reverse()
+        return result
+
     def compute_residue(self) -> EmotionalResidueVector:
         """
         Aggregate all active traces into a residue vector.
@@ -359,6 +401,50 @@ class EmotionalMemorySystem:
             dominant_category= dominant_category,
             channel_deviations=channel_deviations,
         )
+
+    def recent_self_affect_traces(self, limit: int = 3) -> List[Dict[str, Any]]:
+        """Return bounded, structured history of significant organism affect.
+
+        This is a read path for self-integration prompts. It deliberately
+        excludes user-perspective traces and free-text descriptions: historical
+        continuity should come from persisted affect profiles, not quoted user
+        content or a dominant-emotion label.
+        """
+        count = max(0, min(5, int(limit)))
+        if not count:
+            return []
+        now = time.time()
+        with self._lock:
+            traces = list(self._state.traces)
+
+        result: List[Dict[str, Any]] = []
+        for raw in reversed(traces):
+            if not isinstance(raw, dict) or raw.get("perspective", "organism") != "organism":
+                continue
+            try:
+                timestamp = float(raw.get("timestamp", 0.0))
+                age = max(0.0, now - timestamp)
+                significance = float(raw.get("significance", 0.0))
+                if not math.isfinite(timestamp) or not math.isfinite(significance):
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue
+            profile = self._compact_affect_profile(raw.get("affect_profile"))
+            channels = profile.get("channels", {})
+            if not channels:
+                continue
+            result.append({
+                "timestamp": timestamp,
+                "age_seconds": round(age, 1),
+                "turn_id": str(raw.get("turn_id") or "")[:120],
+                "category": str(raw.get("category") or "")[:32],
+                "significance": round(max(0.0, min(1.0, significance)), 3),
+                "affect_profile": profile,
+            })
+            if len(result) >= count:
+                break
+        result.reverse()
+        return result
 
     def apply_residue_to_emotional_state(
         self,

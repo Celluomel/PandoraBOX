@@ -81,25 +81,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from cognition.affect_composition import (
+    affect_profile_change,
+    describe_affect_configuration,
+)
+
 logger = logging.getLogger(__name__)
 
-
-# ── Qualia tone vocabulary ────────────────────────────────────────────────────
-# Maps (valence_band, arousal_band) → phenomenal character descriptor.
-# valence: negative=-1, neutral=0, positive=+1
-# arousal: low=0, medium=1, high=2
-
-_QUALIA_MAP: Dict[Tuple[int, int], str] = {
-    (-1, 0): "a still, melancholic undercurrent — present but not pressing",
-    (-1, 1): "a tense, unsettled quality — something unresolved pulling at the edges",
-    (-1, 2): "a sharp, urgent dissonance — difficult to ignore, demanding response",
-    ( 0, 0): "a quiet, unfocused neutrality — like the pause between thoughts",
-    ( 0, 1): "a calm, ready alertness — open without expectation",
-    ( 0, 2): "a heightened, electric clarity — fully awake, scanning",
-    ( 1, 0): "a warm, diffuse contentment — settled and unhurried",
-    ( 1, 1): "a bright, engaged curiosity — leaning forward into what comes next",
-    ( 1, 2): "an intense, expansive aliveness — ideas and feeling moving fast",
-}
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
@@ -144,7 +132,7 @@ class ExperientialMoment:
     def phenomenal_prompt(self) -> str:
         """
         Serialize this moment's derived state compactly for the LLM context.
-        Keep derived values distinguishable from human feelings.
+        Preserve the current affect mixture and its changing dimensions.
         """
         def _short(value: str, limit: int = 96) -> str:
             value = " ".join(str(value or "").split())
@@ -157,7 +145,7 @@ class ExperientialMoment:
             f"coherence={self.coherence_trend}",
         ]
         if self.qualia_tone:
-            parts.append(f"qualia_label={_short(self.qualia_tone, 64)}")
+            parts.append(f"affect_configuration={_short(self.qualia_tone, 180)}")
         if self.foreground:
             parts.append(f"focus={_short(self.foreground, 100)}")
         if self.penumbra and self.penumbra != self.foreground:
@@ -236,8 +224,8 @@ class PhenomenalBinder:
       valence      : 0.40  — emotions shift but not abruptly
       arousal      : 0.30  — arousal is more reactive, lower inertia
       self_presence: 0.45  — self-awareness changes at medium pace
-      qualia_tone  : switches only when phi diverges > PHI_SWITCH_THRESHOLD
-                     or valence diverges > VALENCE_SWITCH_THRESHOLD
+      affect configuration: changes when the mixture, arousal, valence, or phi
+                     moves materially; equal valence does not imply equal state
 
     The foreground carries forward its *direction* when the topic is similar
     (Jaccard > 0.3), framed as movement rather than substitution: "continuing
@@ -263,6 +251,8 @@ class PhenomenalBinder:
     # Qualia tone switches only when both these thresholds are exceeded
     PHI_SWITCH_THRESHOLD     = 0.15
     VALENCE_SWITCH_THRESHOLD = 0.28
+    AROUSAL_SWITCH_THRESHOLD = 0.10
+    AFFECT_MIX_SWITCH_THRESHOLD = 0.05
 
     def __init__(self) -> None:
         self._history:         List[ExperientialMoment] = []
@@ -321,8 +311,18 @@ class PhenomenalBinder:
         if prior is not None:
             phi_delta     = abs(phi - prior.phi_proxy)
             valence_delta = abs(valence - prior.valence)
-            if phi_delta < self.PHI_SWITCH_THRESHOLD and valence_delta < self.VALENCE_SWITCH_THRESHOLD:
-                # Carry prior qualia tone — the felt quality is continuous
+            mix_delta = affect_profile_change(
+                prior.affect_profile, signals.get("affect_profile", {}),
+            )
+            arousal_delta = abs(arousal - prior.arousal)
+            if (
+                phi_delta < self.PHI_SWITCH_THRESHOLD
+                and valence_delta < self.VALENCE_SWITCH_THRESHOLD
+                and arousal_delta < self.AROUSAL_SWITCH_THRESHOLD
+                and mix_delta < self.AFFECT_MIX_SWITCH_THRESHOLD
+            ):
+                # Preserve continuity only when the underlying mixture also
+                # remains similar; a different mix can share the same valence.
                 qualia_tone = prior.qualia_tone
             else:
                 qualia_tone = self._derive_qualia_tone(valence, arousal, signals)
@@ -749,35 +749,18 @@ class PhenomenalBinder:
         signals: Dict,
     ) -> str:
         """
-        Map the (valence, arousal) vector to a phenomenal character description.
-        Discretize to the 9-cell _QUALIA_MAP.
+        Preserve the input-driven affect mixture instead of collapsing it to
+        one of nine valence/arousal phrases.
         """
-        # Discretize valence: < -0.2 = negative, > 0.2 = positive, else neutral
-        if valence < -0.2:
-            v_band = -1
-        elif valence > 0.2:
-            v_band = 1
-        else:
-            v_band = 0
-
-        # Discretize arousal: < 0.35 = low, > 0.65 = high, else medium
-        if arousal < 0.35:
-            a_band = 0
-        elif arousal > 0.65:
-            a_band = 2
-        else:
-            a_band = 1
-
-        base_tone = _QUALIA_MAP.get((v_band, a_band), "a present, attending quality")
-
-        # Modulate with energy
-        energy_mode = signals.get("energy_mode", "normal")
-        if energy_mode == "low":
-            base_tone += " — slightly muted by fatigue"
-        elif energy_mode == "high":
-            base_tone += " — sharpened by good cognitive energy"
-
-        return base_tone
+        profile = signals.get("affect_profile", {})
+        if not isinstance(profile, dict):
+            profile = {}
+        derived = dict(profile)
+        derived.setdefault("valence", valence)
+        derived.setdefault("arousal", arousal)
+        configuration = describe_affect_configuration(derived)
+        energy_mode = str(signals.get("energy_mode", "normal") or "normal")
+        return f"{configuration}; energy_mode={energy_mode}"
 
     # ── Embodiment ────────────────────────────────────────────────────────────
 
