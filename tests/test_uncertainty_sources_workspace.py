@@ -14,7 +14,11 @@ from cognition.cognitive_organism import (
     _compress_workspace_source_refs,
     _common_workspace_text_prefix,
 )
-from cognition.persona_bridge import _workspace_prompt_uncertainty_receipt
+from cognition.persona_bridge import (
+    _render_global_workspace_snapshot,
+    _workspace_prompt_uncertainty_receipt,
+)
+from cognition.turn_context_evidence import audit_safe_turn_summary
 from cognition.prompt_context_budget import PromptContextBudget
 from core.cognitive_event_bus import (
     CognitiveEventBus,
@@ -352,6 +356,59 @@ def test_workspace_context_receipt_uses_the_exact_assembled_prompt_snapshot():
     }
     assert omitted["status"] == "omitted_by_prompt_budget"
     assert omitted["context_contributions_included"] is False
+
+
+def test_global_workspace_audit_snapshot_keeps_three_surfaces_separate():
+    workspace = GlobalWorkspace()
+    workspace.update_state(
+        "vision",
+        focus="inspect_scene",
+        context={"nearest_object": {"label": "chair"}},
+    )
+    workspace.broadcast("radar", "person target at 1.8 m", priority=0.8)
+    workspace.record_uncertainty(
+        source_type="user_exchange:query_about_ongoing_state",
+        source_module="dialogue",
+        question="Is the person target currently confirmed?",
+        uncertainty_id="uncertainty:test-state-snapshot",
+    )
+
+    snapshot = workspace.audit_snapshot(recent_limit=3)
+    assert snapshot["structured_state"]["focus"] == "inspect_scene"
+    assert snapshot["structured_state"]["context_source_fields"] == {
+        "vision": ["nearest_object"],
+    }
+    assert snapshot["broadcast_buffer"]["source_names"] == ["radar"]
+    assert snapshot["broadcast_buffer"]["item_count"] == 1
+    assert snapshot["uncertainty_ledger"]["open_count"] == 1
+    assert snapshot["uncertainty_ledger"]["records"][0]["uncertainty_id"] == (
+        "uncertainty:test-state-snapshot"
+    )
+
+    answer = _render_global_workspace_snapshot(snapshot, french=False)
+    assert "Structured contributions by source/field: vision: nearest_object" in answer
+    assert "Broadcast buffer: 1/32 items; sources=radar" in answer
+    assert "Uncertainty ledger: 1 open, 0 resolved" in answer
+    assert "Focus is attentional selection; it does not resolve other entries." in answer
+
+    receipt = audit_safe_turn_summary({
+        "type": "global_workspace_state_snapshot_receipt",
+        "capture_status": "captured",
+        "focus_present": True,
+        "intention_present": False,
+        "context_source_names": ["vision"],
+        "broadcast_item_count": 1,
+        "broadcast_capacity": 32,
+        "broadcast_source_names": ["radar"],
+        "recent_broadcast_count": 1,
+        "uncertainty_total_count": 1,
+        "uncertainty_open_count": 1,
+        "uncertainty_resolved_count": 0,
+        "snapshot_fingerprint": "a" * 64,
+        "untrusted_text": "must not survive sanitization",
+    })
+    assert receipt["broadcast_source_names"] == ["radar"]
+    assert "untrusted_text" not in receipt
 
 
 def test_prompt_uses_current_workspace_sources_not_stale_slow_cycle_snapshot():

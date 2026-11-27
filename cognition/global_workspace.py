@@ -743,3 +743,94 @@ class GlobalWorkspace:
                 for i in sorted(items[-10:], key=lambda x: x.priority, reverse=True)[:3]
             ],
         }
+
+    def audit_snapshot(self, *, recent_limit: int = 5) -> Dict:
+        """Return a bounded, source-aware snapshot of all Workspace surfaces.
+
+        The structured state, bounded broadcast buffer, and uncertainty ledger
+        are separate channels. Capture them under their respective locks and
+        label each explicitly so a consumer cannot mistake an empty
+        ``context_by_source`` map for an empty Workspace.
+        """
+        limit = max(0, min(10, int(recent_limit)))
+        with self._lock, self._state_lock:
+            items = list(self._buffer)
+            anchor = self._self_anchor
+            blocked_total = int(self._blocked_count)
+            capacity = int(self._capacity)
+            recent_items = [
+                item.to_dict()
+                for item in sorted(items[-10:], key=lambda item: item.priority, reverse=True)[:limit]
+            ]
+            buffer_sources = sorted({str(item.source) for item in items})
+            anchor_content = str(anchor.content)[:160] if anchor else None
+            recent_sources = {item.source for item in items[-10:]}
+            diversity = round(len(recent_sources) / max(1, min(10, len(items))), 3) if items else 0.0
+            structured = self._state.to_dict()
+            captured_at = time.time()
+        uncertainty_records = structured.get("uncertainty_sources", [])
+        open_records = [
+            item for item in uncertainty_records
+            if isinstance(item, dict) and item.get("status") == "open"
+        ]
+        resolved_records = [
+            item for item in uncertainty_records
+            if isinstance(item, dict) and item.get("status") == "resolved"
+        ]
+        context_by_source = structured.get("context_by_source", {})
+        context_fields = {
+            str(source): sorted(str(key) for key in fields)
+            for source, fields in context_by_source.items()
+            if isinstance(fields, dict) and fields
+        } if isinstance(context_by_source, dict) else {}
+        uncertainty_by_source = {}
+        for item in open_records:
+            key = f"{item.get('source_module') or 'unknown'}:{item.get('source_type') or 'unknown'}"
+            uncertainty_by_source[key] = uncertainty_by_source.get(key, 0) + 1
+        return {
+            "captured_at": captured_at,
+            "structured_state": {
+                "focus": structured.get("focus"),
+                "intention": structured.get("intention"),
+                "hypothesis_count": len(structured.get("active_hypotheses") or []),
+                "hypotheses": [
+                    str(item.get("label") or item.get("name") or "")[:120]
+                    for item in (structured.get("active_hypotheses") or [])[:5]
+                    if isinstance(item, dict)
+                ],
+                "context_source_fields": context_fields,
+                "updated_by": [
+                    str(item.get("source") or "")[:120]
+                    for item in (structured.get("updated_by") or [])[-10:]
+                    if isinstance(item, dict)
+                ],
+                "last_updated": structured.get("last_updated"),
+            },
+            "broadcast_buffer": {
+                "item_count": len(items),
+                "capacity": capacity,
+                "source_names": buffer_sources,
+                "diversity": diversity,
+                "blocked_total": blocked_total,
+                "self_anchor": anchor_content,
+                "recent_items": recent_items,
+                "recent_items_limit": limit,
+            },
+            "uncertainty_ledger": {
+                "total_count": len(uncertainty_records),
+                "open_count": len(open_records),
+                "resolved_count": len(resolved_records),
+                "open_by_source": uncertainty_by_source,
+                "records": [
+                    {
+                        "uncertainty_id": str(item.get("uncertainty_id") or "")[:96],
+                        "source_type": str(item.get("source_type") or "")[:64],
+                        "source_module": str(item.get("source_module") or "")[:96],
+                        "status": "open",
+                        "question": str(item.get("question") or "")[:180],
+                    }
+                    for item in open_records[:5]
+                ],
+                "records_truncated": len(open_records) > 5,
+            },
+        }

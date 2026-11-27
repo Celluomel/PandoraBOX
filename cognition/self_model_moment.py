@@ -123,6 +123,10 @@ class SelfModelMoment:
     # Emotional ground (dominant emotion + direction)
     emotional_ground: str    = ""
 
+    # Full affect profile and recent causal receipts. Kept separately from the
+    # compact legacy ground so self-description does not collapse to one label.
+    emotional_profile: Dict[str, Any] = field(default_factory=dict)
+
     # Active moral values (from EthicalReasoningEngine, if present)
     top_values:       str    = ""
 
@@ -252,6 +256,46 @@ class SelfModelMoment:
         if self.emotional_ground:
             parts.append(f"affect={_short(self.emotional_ground, 64)}")
 
+        profile = self.emotional_profile if isinstance(self.emotional_profile, dict) else {}
+        channels = profile.get("channels") if isinstance(profile.get("channels"), dict) else {}
+        deviations = []
+        for name, item in channels.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                value = float(item.get("value"))
+                delta = float(item.get("deviation"))
+            except (TypeError, ValueError):
+                continue
+            if abs(delta) >= 0.015:
+                deviations.append((abs(delta), str(name), value, delta))
+        deviations.sort(reverse=True)
+        if deviations:
+            channel_text = ", ".join(
+                f"{name}={value:.2f} ({delta:+.2f} vs baseline)"
+                for _, name, value, delta in deviations[:4]
+            )
+            try:
+                valence = float(profile.get("valence"))
+                arousal = float(profile.get("arousal"))
+                mood_valence = float(profile.get("mood_valence"))
+                mood_arousal = float(profile.get("mood_arousal"))
+                parts.append(
+                    f"affect profile=[{channel_text}; moment valence={valence:+.2f}/arousal={arousal:.2f}; "
+                    f"slow mood={mood_valence:+.2f}/{mood_arousal:.2f}]"
+                )
+            except (TypeError, ValueError):
+                parts.append(f"affect profile=[{channel_text}]")
+            causes = profile.get("recent_causes")
+            if isinstance(causes, list):
+                causal_labels = [
+                    str(event.get("event_type") or "")
+                    for event in causes[-2:]
+                    if isinstance(event, dict) and event.get("event_type")
+                ]
+                if causal_labels:
+                    parts.append(f"recent affect causes={', '.join(causal_labels)}")
+
         if self.capability_stance:
             parts.append(f"capability={_short(self.capability_stance, 96)}")
 
@@ -334,21 +378,43 @@ class SelfModelMomentManager:
 
             # ── Pull emotional ground ─────────────────────────────────────
             fresh_emotional = ""
+            fresh_emotional_profile: Dict[str, Any] = {}
             try:
-                emo_vals = organism._get_emotion_values()
-                if emo_vals:
-                    dominant = max(emo_vals, key=emo_vals.get)
-                    dom_val  = emo_vals[dominant]
-                    # Determine direction of movement vs prior
-                    if prior.emotional_ground and dominant in prior.emotional_ground:
-                        direction = "holding"
-                    elif dom_val > 0.6:
-                        direction = "rising into"
-                    else:
-                        direction = "resting in"
-                    fresh_emotional = f"{direction} {dominant} ({dom_val:.0%})"
+                ai_system = getattr(organism, "ai_system", None)
+                affect_manager = getattr(ai_system, "emotional_state", None)
+                snapshot_fn = getattr(affect_manager, "get_self_model_snapshot", None)
+                if callable(snapshot_fn):
+                    candidate = snapshot_fn(event_limit=4)
+                    if isinstance(candidate, dict):
+                        fresh_emotional_profile = candidate
+                if not fresh_emotional_profile:
+                    emo_vals = organism._get_emotion_values()
+                    if emo_vals:
+                        fresh_emotional_profile = {
+                            "channels": {
+                                str(name): {
+                                    "value": float(value), "baseline": float(value),
+                                    "deviation": 0.0,
+                                }
+                                for name, value in emo_vals.items()
+                            },
+                        }
+                profile_channels = fresh_emotional_profile.get("channels", {})
+                meaningful = sorted(
+                    (
+                        (abs(float(item.get("deviation", 0.0))), str(name), float(item.get("deviation", 0.0)))
+                        for name, item in profile_channels.items()
+                        if isinstance(item, dict)
+                    ),
+                    reverse=True,
+                )
+                fresh_emotional = "; ".join(
+                    f"{name} {delta:+.2f} vs baseline"
+                    for _, name, delta in meaningful[:3] if abs(delta) >= 0.015
+                )
             except Exception:
                 fresh_emotional = prior.emotional_ground
+                fresh_emotional_profile = prior.emotional_profile
 
             # ── Pull top moral values ─────────────────────────────────────
             fresh_values = ""
@@ -382,6 +448,7 @@ class SelfModelMomentManager:
                 narrative_thread  = fresh_narrative or prior.narrative_thread,
                 capability_stance = fresh_capability or prior.capability_stance,
                 emotional_ground  = fresh_emotional  or prior.emotional_ground,
+                emotional_profile = fresh_emotional_profile or prior.emotional_profile,
                 top_values        = fresh_values      or prior.top_values,
                 last_updated      = now,
                 session_count     = prior.session_count + 1,
@@ -427,6 +494,7 @@ class SelfModelMomentManager:
                 narrative_thread  = self.current.narrative_thread,   # preserved
                 capability_stance = self.current.capability_stance,  # preserved
                 emotional_ground  = "",   # cleared — emotional state resets
+                emotional_profile = {},
                 top_values        = self.current.top_values,         # preserved
                 last_updated      = self.current.last_updated,       # preserve original
                 session_count     = self.current.session_count,
@@ -450,6 +518,10 @@ class SelfModelMomentManager:
                     narrative_thread  = data.get("narrative_thread",  ""),
                     capability_stance = data.get("capability_stance", ""),
                     emotional_ground  = data.get("emotional_ground",  ""),
+                    emotional_profile = (
+                        data.get("emotional_profile", {})
+                        if isinstance(data.get("emotional_profile", {}), dict) else {}
+                    ),
                     top_values        = data.get("top_values",        ""),
                     last_updated      = data.get("last_updated",      time.time()),
                     session_count     = data.get("session_count",     0),

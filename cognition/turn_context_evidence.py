@@ -58,6 +58,7 @@ def deterministic_reasoning_dependencies(
     api_route_answer: bool = False,
     named_profile_facts: bool = False,
     source_provenance_report: bool = False,
+    workspace_state_report: bool = False,
 ) -> tuple[str, ...]:
     """Return only the recorded inputs that actually support a direct answer."""
     if not selected:
@@ -77,6 +78,8 @@ def deterministic_reasoning_dependencies(
         sources.append("explicit_profile_facts_answer")
     if source_provenance_report:
         sources.append("turn_source_provenance_answer")
+    if workspace_state_report:
+        sources.append("global_workspace_state_answer")
     return tuple(sources)
 
 
@@ -435,6 +438,41 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "uncertainty_source_types": source_types,
         }
 
+    if value.get("type") == "global_workspace_state_snapshot_receipt":
+        def _safe_names(raw: Any, limit: int = 32) -> list[str]:
+            if not isinstance(raw, (list, tuple)):
+                return []
+            return [
+                re.sub(r"[^A-Za-z0-9_.:-]", "", str(item or ""))[:120]
+                for item in raw[:limit] if item
+            ]
+
+        def _safe_count(raw: Any) -> int:
+            try:
+                return max(0, min(100000, int(raw)))
+            except (TypeError, ValueError, OverflowError):
+                return 0
+
+        snapshot = {
+            "type": "global_workspace_state_snapshot_receipt",
+            "quality": "present",
+            "capture_status": str(value.get("capture_status") or "unverified")[:32],
+            "focus_present": bool(value.get("focus_present")),
+            "intention_present": bool(value.get("intention_present")),
+            "context_source_names": _safe_names(value.get("context_source_names")),
+            "broadcast_item_count": _safe_count(value.get("broadcast_item_count")),
+            "broadcast_capacity": _safe_count(value.get("broadcast_capacity")),
+            "broadcast_source_names": _safe_names(value.get("broadcast_source_names")),
+            "recent_broadcast_count": _safe_count(value.get("recent_broadcast_count")),
+            "uncertainty_total_count": _safe_count(value.get("uncertainty_total_count")),
+            "uncertainty_open_count": _safe_count(value.get("uncertainty_open_count")),
+            "uncertainty_resolved_count": _safe_count(value.get("uncertainty_resolved_count")),
+            "snapshot_fingerprint": re.sub(
+                r"[^A-Fa-f0-9]", "", str(value.get("snapshot_fingerprint") or "")
+            )[:64],
+        }
+        return snapshot
+
     if value.get("type") == "body_source_sufficiency_receipt":
         availability = str(value.get("source_availability") or "unavailable")
         if availability not in {
@@ -686,6 +724,30 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         }
         if isinstance(value.get("software_architecture_query"), bool):
             receipt["software_architecture_query"] = value["software_architecture_query"]
+        if isinstance(value.get("global_workspace_state_query"), bool):
+            receipt["global_workspace_state_query"] = value["global_workspace_state_query"]
+        workspace_state_status = str(value.get("global_workspace_state_intent_status") or "")
+        if workspace_state_status in {
+            "global_workspace_state_intent", "not_global_workspace_state_intent",
+            "workspace_state_intent_uncertain", "router_unavailable", "empty_input",
+            "not_checked",
+        }:
+            receipt["global_workspace_state_intent_status"] = workspace_state_status
+        for key in (
+            "global_workspace_state_positive_similarity",
+            "global_workspace_state_negative_similarity",
+            "global_workspace_state_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        workspace_state_reason = str(value.get("global_workspace_state_reason") or "")
+        if workspace_state_reason in {
+            "cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input",
+        }:
+            receipt["global_workspace_state_reason"] = workspace_state_reason
         provenance_status = str(
             value.get("prompt_source_provenance_intent_status") or ""
         )

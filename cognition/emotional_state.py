@@ -449,6 +449,41 @@ class EmotionalStateManager:
             count = max(0, min(20, int(limit)))
             return [dict(event) for event in self._recent_affect_events[-count:]] if count else []
 
+    def get_self_model_snapshot(self, *, event_limit: int = 4) -> Dict[str, Any]:
+        """Return the affect dimensions, baselines, mood and causal receipts together.
+
+        The self model needs more than valence/arousal or the single largest
+        channel. Capture under one lock so the prompt's affect profile is a
+        coherent view of the same state and its recent causes.
+        """
+        with self._lock:
+            values = self.get_current_values()
+            baselines = {name: float(emo.baseline) for name, emo in self.emotions.items()}
+            valence, arousal = self.calculate_valence_arousal(values, baselines)
+            limit = max(0, min(8, int(event_limit)))
+            causes = [
+                dict(event) for event in self._recent_affect_events
+                if event.get("event_type") not in {
+                    "time_decay", "baseline_recalibration", "self_influence",
+                }
+            ][-limit:] if limit else []
+            return {
+                "captured_at": time.time(),
+                "channels": {
+                    name: {
+                        "value": round(float(values.get(name, emo.value)), 4),
+                        "baseline": round(float(emo.baseline), 4),
+                        "deviation": round(float(values.get(name, emo.value) - emo.baseline), 4),
+                    }
+                    for name, emo in self.emotions.items()
+                },
+                "valence": valence,
+                "arousal": arousal,
+                "mood_valence": round(float(self._mood_valence), 4),
+                "mood_arousal": round(float(self._mood_arousal), 4),
+                "recent_causes": causes,
+            }
+
     def update_from_feedback(self, positive: bool) -> None:
         """
         External feedback (thumbs up/down) has a direct emotional impact.

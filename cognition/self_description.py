@@ -111,6 +111,27 @@ _SOFTWARE_ARCHITECTURE_NEGATIVE = (
     "How should I organize my physical workspace for a project?",
     "What did the live Global Workspace contain on this exact turn? Report its current records, not the architecture.",
 )
+_GLOBAL_WORKSPACE_STATE_POSITIVE = (
+    "Give me a factual snapshot of what is in your Global Workspace right now: current focus, source-attributed contributions, broadcast items, and open uncertainties.",
+    "What do you currently see in your global workspace? Report the actual active records and their sources, and distinguish the focus from unresolved entries.",
+    "What does your Global Workspace currently contain, based on its live state snapshot? Distinguish the selected focus, source contributions, broadcasts, and other open records.",
+    "Which source contributions, broadcast entries, and uncertainty records are present in the current shared cognitive workspace?",
+    "Which cognitive contributions are currently retained in the Global Workspace, and does selecting one focus resolve the others? Answer from the current state.",
+    "Que contient actuellement ton espace de travail global ? Rapporte l'état présent, les contributions avec leur origine, les broadcasts et les incertitudes ouvertes.",
+    "Quelles contributions sont présentes dans l'état actuel du Global Workspace, et lesquelles restent des incertitudes ouvertes ?",
+    "Que voit-on dans l'instantané actuel du Global Workspace ? Distingue le focus choisi, les contributions par source, les broadcasts et les autres entrées ouvertes.",
+    "¿Qué contiene ahora mismo tu espacio de trabajo global? Describe el estado registrado, las contribuciones por origen y las incertidumbres abiertas.",
+    "Was ist aktuell in deinem globalen Arbeitsbereich enthalten? Nenne den tatsächlichen Zustand, Beiträge nach Quelle und offene Unsicherheiten.",
+    "現在のグローバルワークスペースの状態、出所別の寄稿、ブロードキャスト項目、未解決の不確実性を報告してください。",
+)
+_GLOBAL_WORKSPACE_STATE_NEGATIVE = (
+    "Which information sources were included in the language model prompt for the last response?",
+    "Explain the software architecture and general purpose of Global Workspace Theory.",
+    "What information should ideally be stored in a cognitive workspace? This is a design question, not a request for its current contents.",
+    "Quelles sources ont été insérées dans le prompt pour produire la dernière réponse ?",
+    "Describe what the robot sensed in the physical environment using its sensors.",
+    "What are my personal goals and user profile facts?",
+)
 ARCHITECTURE_ANSWER_CONTRACT = (
     "Answer questions about this software's cognitive architecture directly and concisely. "
     "Separate implemented facts from inference. For the Global Workspace, distinguish "
@@ -126,7 +147,7 @@ ARCHITECTURE_ANSWER_CONTRACT = (
     "fan-out: consumers must read the relevant Workspace API; listeners receive broadcast items "
     "only when explicitly registered."
 )
-_PROMPT_PROVENANCE_CENTROIDS: dict[str, tuple[Any, Any, Any, Any]] = {}
+_PROMPT_PROVENANCE_CENTROIDS: dict[str, tuple[Any, Any, Any, Any, Any, Any]] = {}
 _PROMPT_PROVENANCE_CENTROIDS_LOCK = Lock()
 
 # Semantic intent prototypes, not trigger phrases. This distinguishes requests
@@ -628,13 +649,15 @@ def classify_prompt_source_provenance_intent(
             vectors, actual_space = encoder([
                 *_PROMPT_PROVENANCE_POSITIVE, *_PROMPT_PROVENANCE_NEGATIVE,
                 *_SOFTWARE_ARCHITECTURE_POSITIVE, *_SOFTWARE_ARCHITECTURE_NEGATIVE,
+                *_GLOBAL_WORKSPACE_STATE_POSITIVE, *_GLOBAL_WORKSPACE_STATE_NEGATIVE,
                 value,
             ])
             import numpy as np
             matrix = np.asarray(vectors, dtype="float64")
             provenance_rows = len(_PROMPT_PROVENANCE_POSITIVE) + len(_PROMPT_PROVENANCE_NEGATIVE)
             architecture_rows = len(_SOFTWARE_ARCHITECTURE_POSITIVE) + len(_SOFTWARE_ARCHITECTURE_NEGATIVE)
-            expected_rows = provenance_rows + architecture_rows + 1
+            workspace_rows = len(_GLOBAL_WORKSPACE_STATE_POSITIVE) + len(_GLOBAL_WORKSPACE_STATE_NEGATIVE)
+            expected_rows = provenance_rows + architecture_rows + workspace_rows + 1
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("prompt provenance router received invalid embeddings")
             normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
@@ -642,24 +665,34 @@ def classify_prompt_source_provenance_intent(
             provenance_negative_end = provenance_rows
             architecture_positive_end = provenance_rows + len(_SOFTWARE_ARCHITECTURE_POSITIVE)
             architecture_negative_end = provenance_rows + architecture_rows
+            workspace_positive_end = architecture_negative_end + len(_GLOBAL_WORKSPACE_STATE_POSITIVE)
+            workspace_negative_end = architecture_negative_end + workspace_rows
             positive = normalized[:provenance_positive_end].mean(axis=0)
             negative = normalized[provenance_positive_end:provenance_negative_end].mean(axis=0)
             architecture_positive = normalized[provenance_negative_end:architecture_positive_end].mean(axis=0)
             architecture_negative = normalized[architecture_positive_end:architecture_negative_end].mean(axis=0)
+            workspace_positive = normalized[architecture_negative_end:workspace_positive_end].mean(axis=0)
+            workspace_negative = normalized[workspace_positive_end:workspace_negative_end].mean(axis=0)
             positive /= max(float(np.linalg.norm(positive)), 1e-12)
             negative /= max(float(np.linalg.norm(negative)), 1e-12)
             architecture_positive /= max(float(np.linalg.norm(architecture_positive)), 1e-12)
             architecture_negative /= max(float(np.linalg.norm(architecture_negative)), 1e-12)
+            workspace_positive /= max(float(np.linalg.norm(workspace_positive)), 1e-12)
+            workspace_negative /= max(float(np.linalg.norm(workspace_negative)), 1e-12)
             actual_space = str(actual_space)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("prompt provenance routing requires Nomic v1.5")
             with _PROMPT_PROVENANCE_CENTROIDS_LOCK:
                 _PROMPT_PROVENANCE_CENTROIDS[actual_space] = (
                     positive, negative, architecture_positive, architecture_negative,
+                    workspace_positive, workspace_negative,
                 )
             query = normalized[-1]
         else:
-            positive, negative, architecture_positive, architecture_negative = cached
+            (
+                positive, negative, architecture_positive, architecture_negative,
+                workspace_positive, workspace_negative,
+            ) = cached
             vectors, actual_space = encoder(value)
             import numpy as np
             query = np.asarray(vectors, dtype="float64").reshape(-1)
@@ -685,6 +718,15 @@ def classify_prompt_source_provenance_intent(
             architecture_status, architecture_route = "not_software_architecture_intent", False
         else:
             architecture_status, architecture_route = "architecture_intent_uncertain", False
+        workspace_positive_score = float(query @ workspace_positive)
+        workspace_negative_score = float(query @ workspace_negative)
+        workspace_margin = workspace_positive_score - workspace_negative_score
+        if workspace_positive_score >= 0.70 and workspace_margin >= 0.05:
+            workspace_status, workspace_route = "global_workspace_state_intent", True
+        elif workspace_positive_score < 0.64 or workspace_margin < 0.0:
+            workspace_status, workspace_route = "not_global_workspace_state_intent", False
+        else:
+            workspace_status, workspace_route = "workspace_state_intent_uncertain", False
         return {
             "status": status,
             "route": route,
@@ -700,6 +742,12 @@ def classify_prompt_source_provenance_intent(
             "software_architecture_negative_similarity": round(architecture_negative_score, 4),
             "software_architecture_margin": round(architecture_margin, 4),
             "software_architecture_reason_code": "cross_lingual_semantic_centroid_margin",
+            "global_workspace_state_status": workspace_status,
+            "global_workspace_state_route": workspace_route,
+            "global_workspace_state_positive_similarity": round(workspace_positive_score, 4),
+            "global_workspace_state_negative_similarity": round(workspace_negative_score, 4),
+            "global_workspace_state_margin": round(workspace_margin, 4),
+            "global_workspace_state_reason_code": "cross_lingual_semantic_centroid_margin",
         }
     except Exception as exc:
         return {
@@ -710,6 +758,9 @@ def classify_prompt_source_provenance_intent(
             "software_architecture_status": "router_unavailable",
             "software_architecture_route": False,
             "software_architecture_reason_code": type(exc).__name__,
+            "global_workspace_state_status": "router_unavailable",
+            "global_workspace_state_route": False,
+            "global_workspace_state_reason_code": type(exc).__name__,
         }
 
 

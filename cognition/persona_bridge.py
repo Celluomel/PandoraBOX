@@ -462,6 +462,93 @@ def _render_prompt_source_provenance_answer(
     return " ".join(line for line in lines if line)
 
 
+def _render_global_workspace_snapshot(snapshot: dict[str, Any], *, french: bool) -> str:
+    """Render a current Workspace answer only from its captured data snapshot."""
+    structured = snapshot.get("structured_state") or {}
+    broadcast = snapshot.get("broadcast_buffer") or {}
+    uncertainty = snapshot.get("uncertainty_ledger") or {}
+    if not isinstance(structured, dict) or not isinstance(broadcast, dict) or not isinstance(uncertainty, dict):
+        return "The Global Workspace snapshot is incomplete; I cannot report its current contents." if not french else (
+            "L’instantané du Global Workspace est incomplet; je ne peux pas en rapporter le contenu actuel."
+        )
+
+    context_fields = structured.get("context_source_fields") or {}
+    context_text = "; ".join(
+        f"{source}: {', '.join(fields)}" if fields else str(source)
+        for source, fields in sorted(context_fields.items())
+        if isinstance(fields, (list, tuple))
+    ) or ("none recorded" if not french else "aucune enregistrée")
+    buffer_sources = ", ".join(broadcast.get("source_names") or []) or (
+        "none" if not french else "aucune"
+    )
+    open_by_source = uncertainty.get("open_by_source") or {}
+    uncertainty_sources = "; ".join(
+        f"{source}={count}" for source, count in sorted(open_by_source.items())
+    ) or ("none" if not french else "aucune")
+    try:
+        captured_at = _dt.datetime.fromtimestamp(
+            float(snapshot.get("captured_at")), tz=_dt.timezone.utc,
+        ).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OverflowError, OSError):
+        captured_at = "unavailable"
+    focus = structured.get("focus") or ("unset" if not french else "non défini")
+    intention = structured.get("intention") or ("unset" if not french else "non définie")
+    recent = broadcast.get("recent_items") or []
+    if french:
+        lines = [
+            f"Instantané du Global Workspace capturé à {captured_at} UTC :",
+            f"État structuré : focus={focus}; intention={intention}; producteurs ayant publié récemment={', '.join(structured.get('updated_by') or []) or 'aucun' }.",
+            f"Contributions structurées par origine/champs : {context_text}.",
+            f"Buffer de broadcasts : {broadcast.get('item_count', 0)}/{broadcast.get('capacity', 0)} éléments; sources={buffer_sources}; diversité={broadcast.get('diversity', 0)}; bloqués cumulés={broadcast.get('blocked_total', 0)}.",
+            f"Registre d’incertitudes : {uncertainty.get('open_count', 0)} ouvertes, {uncertainty.get('resolved_count', 0)} résolues sur {uncertainty.get('total_count', 0)}; ouvertes par origine={uncertainty_sources}.",
+        ]
+        if recent:
+            lines.append("Éléments de broadcast les plus saillants du snapshot :")
+            lines.extend(
+                f"- {item.get('source', 'source inconnue')} (priorité {item.get('priority', 0)}): {item.get('content', '')}"
+                for item in recent if isinstance(item, dict)
+            )
+        if uncertainty.get("records"):
+            lines.append("Exemples d’incertitudes encore ouvertes :")
+            lines.extend(
+                f"- {item.get('source_module') or 'source inconnue'} / {item.get('source_type') or 'type inconnu'} [{item.get('uncertainty_id') or 'sans ID'}] : {item.get('question') or 'question absente'}"
+                for item in uncertainty["records"] if isinstance(item, dict)
+            )
+        if uncertainty.get("records_truncated"):
+            lines.append("La liste d’exemples est tronquée; les compteurs portent sur le registre complet.")
+        lines.append(
+            "Le focus est une sélection attentionnelle; il ne résout pas les autres entrées. "
+            "Ce snapshot décrit les trois surfaces du Workspace, pas les contextes séparément injectés dans le prompt ni leur usage par d’autres modules."
+        )
+    else:
+        lines = [
+            f"Global Workspace snapshot captured at {captured_at} UTC:",
+            f"Structured state: focus={focus}; intention={intention}; recent publishers={', '.join(structured.get('updated_by') or []) or 'none'}.",
+            f"Structured contributions by source/field: {context_text}.",
+            f"Broadcast buffer: {broadcast.get('item_count', 0)}/{broadcast.get('capacity', 0)} items; sources={buffer_sources}; diversity={broadcast.get('diversity', 0)}; cumulative blocked={broadcast.get('blocked_total', 0)}.",
+            f"Uncertainty ledger: {uncertainty.get('open_count', 0)} open, {uncertainty.get('resolved_count', 0)} resolved of {uncertainty.get('total_count', 0)}; open by origin={uncertainty_sources}.",
+        ]
+        if recent:
+            lines.append("Most salient broadcast items in the snapshot:")
+            lines.extend(
+                f"- {item.get('source', 'unknown source')} (priority {item.get('priority', 0)}): {item.get('content', '')}"
+                for item in recent if isinstance(item, dict)
+            )
+        if uncertainty.get("records"):
+            lines.append("Examples of still-open uncertainties:")
+            lines.extend(
+                f"- {item.get('source_module') or 'unknown source'} / {item.get('source_type') or 'unknown type'} [{item.get('uncertainty_id') or 'no ID'}]: {item.get('question') or 'question missing'}"
+                for item in uncertainty["records"] if isinstance(item, dict)
+            )
+        if uncertainty.get("records_truncated"):
+            lines.append("Examples are truncated; the counts cover the full ledger.")
+        lines.append(
+            "Focus is attentional selection; it does not resolve other entries. "
+            "This snapshot describes the three Workspace surfaces, not separate prompt contexts or whether other modules consumed them."
+        )
+    return "\n".join(str(line) for line in lines)
+
+
 def _is_factual_self_report_turn(
     factual_plan_query: bool,
     system_prompt: str,
@@ -3353,6 +3440,11 @@ class PersonaBridge:
             "software_architecture_route": False,
         }
         _software_architecture_query = False
+        _global_workspace_state_query = False
+        _global_workspace_state_intent: dict[str, Any] = {
+            "global_workspace_state_status": "not_checked",
+            "global_workspace_state_route": False,
+        }
         _api_route_query = False
         _architecture_context_query = False
         _api_route_intent: dict[str, Any] = {"status": "not_checked", "route": False}
@@ -3389,6 +3481,10 @@ class PersonaBridge:
             _software_architecture_query = bool(
                 _software_architecture_intent.get("software_architecture_route") is True
             )
+            _global_workspace_state_intent = _prompt_source_provenance_intent
+            _global_workspace_state_query = bool(
+                _global_workspace_state_intent.get("global_workspace_state_route") is True
+            )
             _architecture_context_query = (
                 is_architecture_query(effective_input, api_route_intent=_api_route_query)
                 or _software_architecture_query
@@ -3417,6 +3513,7 @@ class PersonaBridge:
                 or _explicit_memory_recall
                 or _explicit_named_profile_query
                 or _prompt_source_provenance_query
+                or _global_workspace_state_query
                 or _api_route_query
                 or _software_architecture_query
             )
@@ -3431,6 +3528,7 @@ class PersonaBridge:
                 or _explicit_named_profile_query
                 or _api_route_query
                 or _software_architecture_query
+                or _global_workspace_state_query
             )
             self._record_turn_stage(
                 "turn_evidence_routing", "classified",
@@ -3470,6 +3568,22 @@ class PersonaBridge:
                     ),
                     "software_architecture_reason": str(
                         _software_architecture_intent.get("software_architecture_reason_code") or "unavailable"
+                    ),
+                    "global_workspace_state_query": _global_workspace_state_query,
+                    "global_workspace_state_intent_status": str(
+                        _global_workspace_state_intent.get("global_workspace_state_status") or "unavailable"
+                    ),
+                    "global_workspace_state_positive_similarity": _global_workspace_state_intent.get(
+                        "global_workspace_state_positive_similarity"
+                    ),
+                    "global_workspace_state_negative_similarity": _global_workspace_state_intent.get(
+                        "global_workspace_state_negative_similarity"
+                    ),
+                    "global_workspace_state_margin": _global_workspace_state_intent.get(
+                        "global_workspace_state_margin"
+                    ),
+                    "global_workspace_state_reason": str(
+                        _global_workspace_state_intent.get("global_workspace_state_reason_code") or "unavailable"
                     ),
                     "api_route_query": bool(_api_route_query),
                     "api_route_intent_status": str(_api_route_intent.get("status") or "unavailable"),
@@ -3553,6 +3667,7 @@ class PersonaBridge:
             _explicit_named_profile_query = False
             _prompt_source_provenance_query = False
             _software_architecture_query = False
+            _global_workspace_state_query = False
             _software_architecture_intent = {
                 "software_architecture_status": "router_unavailable",
                 "software_architecture_route": False,
@@ -3561,6 +3676,11 @@ class PersonaBridge:
             _prompt_source_provenance_intent = {
                 "status": "router_unavailable", "route": False,
                 "reason_code": type(_architecture_query_error).__name__,
+            }
+            _global_workspace_state_intent = {
+                "global_workspace_state_status": "router_unavailable",
+                "global_workspace_state_route": False,
+                "global_workspace_state_reason_code": type(_architecture_query_error).__name__,
             }
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
             self._record_turn_stage(
@@ -4831,6 +4951,89 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     consumes=("body_source_sufficiency_gate", "body_observation_context", "turn_input"),
                     turn_id=_audit_turn_id,
                 )
+        if _global_workspace_state_query and not _explicit_memory_recall:
+            _workspace = getattr(self._organism, "workspace", None) if self._organism else None
+            _snapshot_fn = getattr(_workspace, "audit_snapshot", None)
+            _workspace_snapshot = None
+            try:
+                if callable(_snapshot_fn):
+                    _workspace_snapshot = _snapshot_fn(recent_limit=5)
+                if isinstance(_workspace_snapshot, dict):
+                    _snapshot_bytes = json.dumps(
+                        _workspace_snapshot, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"), default=str,
+                    ).encode("utf-8", errors="replace")
+                    _snapshot_hash = hashlib.sha256(_snapshot_bytes).hexdigest()
+                    _snapshot_structured = _workspace_snapshot.get("structured_state") or {}
+                    _snapshot_broadcast = _workspace_snapshot.get("broadcast_buffer") or {}
+                    _snapshot_uncertainty = _workspace_snapshot.get("uncertainty_ledger") or {}
+                    _snapshot_context_fields = _snapshot_structured.get("context_source_fields") or {}
+                    _snapshot_receipt = {
+                        "type": "global_workspace_state_snapshot_receipt",
+                        "capture_status": "captured",
+                        "focus_present": bool(_snapshot_structured.get("focus")),
+                        "intention_present": bool(_snapshot_structured.get("intention")),
+                        "context_source_names": sorted(_snapshot_context_fields),
+                        "broadcast_item_count": _snapshot_broadcast.get("item_count", 0),
+                        "broadcast_capacity": _snapshot_broadcast.get("capacity", 0),
+                        "broadcast_source_names": _snapshot_broadcast.get("source_names", []),
+                        "recent_broadcast_count": len(_snapshot_broadcast.get("recent_items") or []),
+                        "uncertainty_total_count": _snapshot_uncertainty.get("total_count", 0),
+                        "uncertainty_open_count": _snapshot_uncertainty.get("open_count", 0),
+                        "uncertainty_resolved_count": _snapshot_uncertainty.get("resolved_count", 0),
+                        "snapshot_fingerprint": _snapshot_hash,
+                    }
+                    self._record_turn_stage(
+                        "global_workspace_state_snapshot", "captured",
+                        output=_snapshot_receipt,
+                        consumes=("turn_input",),
+                        turn_id=_audit_turn_id,
+                    )
+                    _workspace_answer_is_french = bool(re.search(
+                        r"\b(?:que|quoi|quel|quelle|quels|quelles|actuellement|maintenant|"
+                        r"espace de travail|contributions|incertitudes|état|etat)\b",
+                        effective_input, re.IGNORECASE,
+                    ))
+                    _deterministic_response = _render_global_workspace_snapshot(
+                        _workspace_snapshot, french=_workspace_answer_is_french,
+                    )
+                    self._record_turn_stage(
+                        "global_workspace_state_answer", "rendered_from_snapshot",
+                        output={
+                            "response_sha256": hashlib.sha256(
+                                _deterministic_response.encode("utf-8", errors="replace")
+                            ).hexdigest(),
+                            "snapshot_fingerprint": _snapshot_hash,
+                            "surface_count": 3,
+                        },
+                        consumes=("global_workspace_state_snapshot", "turn_input"),
+                        turn_id=_audit_turn_id,
+                    )
+                else:
+                    raise RuntimeError("workspace_snapshot_unavailable")
+            except Exception as _workspace_snapshot_error:
+                _deterministic_response = (
+                    "I cannot verify the current Global Workspace snapshot."
+                    if not re.search(r"\b(?:que|quoi|quel|quelle|quels|quelles|actuellement|maintenant|état|etat)\b", effective_input, re.IGNORECASE)
+                    else "Je ne peux pas vérifier l’instantané actuel du Global Workspace."
+                )
+                self._record_turn_stage(
+                    "global_workspace_state_snapshot", "unavailable",
+                    error_type=type(_workspace_snapshot_error).__name__,
+                    output={"type": "global_workspace_state_snapshot_receipt", "capture_status": "unavailable"},
+                    consumes=("turn_input",),
+                    turn_id=_audit_turn_id,
+                )
+                self._record_turn_stage(
+                    "global_workspace_state_answer", "rendered_from_missing_snapshot",
+                    output={
+                        "response_sha256": hashlib.sha256(
+                            _deterministic_response.encode("utf-8", errors="replace")
+                        ).hexdigest(),
+                    },
+                    consumes=("global_workspace_state_snapshot", "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
         self._record_turn_stage(
             "deterministic_reasoning",
             "selected" if _deterministic_response else "not_selected",
@@ -4847,6 +5050,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     ),
                     source_provenance_report=bool(
                         _prompt_source_provenance_query and _deterministic_response
+                    ),
+                    workspace_state_report=bool(
+                        _global_workspace_state_query and _deterministic_response
                     ),
                 ),
                 *(('body_observation_answer',) if _body_source_gate_applied else ()),
