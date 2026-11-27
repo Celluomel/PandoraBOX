@@ -106,6 +106,17 @@ _SOFTWARE_ARCHITECTURE_NEGATIVE = (
     "How should I organize my physical workspace for a project?",
     "What did the live Global Workspace contain on this exact turn? Report its current records, not the architecture.",
 )
+ARCHITECTURE_ANSWER_CONTRACT = (
+    "Answer questions about this software's cognitive architecture directly and concisely. "
+    "Separate implemented facts from inference. For the Global Workspace, distinguish "
+    "structured update_state/context, the bounded broadcast buffer, the uncertainty ledger, "
+    "and WorkspaceCompetition's focus/hypotheses. merge_context records a writer per context "
+    "key; a broadcast records source/content/priority and does not imply a calibrated confidence. "
+    "Only outputs explicitly published, admitted, and read by a consumer are shared with that "
+    "consumer. Do not claim universal module access, that every module publishes, or that "
+    "arbitration resolves/erases other sources. Do not invent module names, sensor values, or "
+    "live examples; label any constructed example as hypothetical."
+)
 _PROMPT_PROVENANCE_CENTROIDS: dict[str, tuple[Any, Any, Any, Any]] = {}
 _PROMPT_PROVENANCE_CENTROIDS_LOCK = Lock()
 

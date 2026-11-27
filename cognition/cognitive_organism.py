@@ -189,11 +189,65 @@ def _global_workspace_uncertainty_fragment(workspace_state: Any) -> str:
             lineage = _compress_workspace_source_refs(refs)
             question = issue[len(question_prefix):] if compact_questions else issue
             rendered.append(f"  {question} [{lineage}]")
-    return (
+    detailed_fragment = (
         f"[Open Workspace uncertainty: {len(open_sources)} records, "
         f"{question_group_count} questions, {len(grouped_sources)} origins; "
         "preserve refs and keep all sources open.]\n"
         "Sources: " + " | ".join(rendered)
+    )
+    # Keep exact refs in the prompt when they fit. With repeated internal
+    # records, refs can crowd out the entire shared summary under the hard
+    # epistemic-context cap. The canonical Workspace and its turn receipt keep
+    # every ref; the compact prompt view retains every origin, count and
+    # distinct question while explicitly keeping each record open.
+    try:
+        from cognition.prompt_context_budget import CATEGORY_BUDGETS, CHARS_PER_TOKEN
+        category_cap = CATEGORY_BUDGETS.get("epistemic_context", (240, 1))[0]
+        max_chars = max(0, int(category_cap * CHARS_PER_TOKEN) - 24)
+    except Exception:
+        max_chars = 936
+    if len(detailed_fragment) <= max_chars:
+        return detailed_fragment
+
+    compact_origins: list[str] = []
+    for (source, module), questions in grouped_sources.items():
+        record_count = sum(max(1, len(refs)) for refs in questions.values())
+        question_values = list(questions)
+        question_prefix = _common_workspace_text_prefix(question_values)
+        if len(question_values) > 1 and len(question_prefix) >= 16:
+            question_values = [question[len(question_prefix):] for question in question_values]
+            question_text = (
+                f"shared prefix {json.dumps(question_prefix, ensure_ascii=False)}; "
+                + " / ".join(json.dumps(question, ensure_ascii=False) for question in question_values)
+            )
+        else:
+            question_text = " / ".join(
+                json.dumps(question, ensure_ascii=False) for question in question_values
+            )
+        compact_origins.append(
+            f"- {source}/{module}×{record_count}; questions: {question_text}"
+        )
+    compact_fragment = (
+        f"[Open Workspace uncertainty: {len(open_sources)} independent records, "
+        f"{question_group_count} questions, {len(grouped_sources)} origins; "
+        "all remain open. Exact refs remain in the canonical ledger and turn receipt.]\n"
+        "Origins: " + " | ".join(compact_origins)
+    )
+    if len(compact_fragment) <= max_chars:
+        return compact_fragment
+
+    # When even distinct question text cannot fit, preserve every origin and
+    # record count in the prompt. Questions and exact refs remain recoverable
+    # from the canonical ledger; no record is resolved or discarded.
+    origin_counts = " | ".join(
+        f"{source}/{module}×{sum(max(1, len(refs)) for refs in questions.values())}"
+        for (source, module), questions in grouped_sources.items()
+    )
+    return (
+        f"[Open Workspace uncertainty: {len(open_sources)} independent records, "
+        f"{question_group_count} questions, {len(grouped_sources)} origins; "
+        "all remain open. Question text and exact refs remain in the canonical ledger and turn receipt.]\n"
+        "Origins: " + origin_counts
     )
 
 

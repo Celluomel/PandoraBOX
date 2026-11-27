@@ -7318,6 +7318,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 _architecture_refresh_receipt = {}
 
                 def _build_architecture_context():
+                    from cognition.self_description import ARCHITECTURE_ANSWER_CONTRACT
                     _description = get_self_description()
                     _tick_snapshot = (
                         _module_tick_snapshot if _module_entries else None
@@ -7331,7 +7332,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _block = _description.prompt_context(
                             module_tick_snapshot=_tick_snapshot,
                         )
-                    return f"{_block}\n\n{_api_surface_block}"
+                    return "\n\n".join(
+                        section for section in (
+                            ARCHITECTURE_ANSWER_CONTRACT if _architecture_context_query else "",
+                            _block,
+                            _api_surface_block,
+                        ) if section
+                    )
 
                 _architecture_block = _measure_prompt_context(
                     "architecture_prompt_context", _build_architecture_context,

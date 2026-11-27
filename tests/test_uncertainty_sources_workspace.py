@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -431,6 +432,74 @@ def test_workspace_synthesis_groups_repeated_questions_without_dropping_source_r
     assert "c? [refs=episode-c:uncertainty:{0,1,2}]" in fragment
     assert "turn-user" in fragment
     assert selection["selected"] is True
+
+
+def test_large_workspace_uncertainty_compacts_without_resolving_or_hiding_origins():
+    workspace = GlobalWorkspace()
+    topics = (
+        "relational understanding", "cognitive architecture", "reasoning coherence",
+        "knowledge integration", "capability development", "memory continuity",
+        "semantic grounding",
+    )
+    for episode, topic in enumerate(topics):
+        for index in range(3):
+            workspace.record_uncertainty(
+                source_type="decision_reasoning_limit",
+                source_module="intention_reasoner",
+                source_ref=f"reason-{hashlib.sha256(f'{episode}/{index}'.encode()).hexdigest()[:24]}",
+                question=f"Which sequence is most likely to make grounded progress on: {topic}?",
+                evidence=f"open limitation {index}",
+                salience=0.65,
+            )
+    workspace.record_uncertainty(
+        source_type="user_exchange:query_about_ongoing_state",
+        source_module="semantic_extractor",
+        source_ref="turn-user-source",
+        turn_id="turn-user-source",
+        question="What uncertainties are being tracked?",
+        salience=0.9,
+    )
+
+    state = workspace.get_state()
+    fragment = _global_workspace_uncertainty_fragment(state)
+    budget = PromptContextBudget(path="unused-test-large-uncertainty.json")
+    budget.add("self_evidence", "grounded_identity", "i" * (76 * 4))
+    budget.add("epistemic_context", "global_workspace_uncertainty", fragment)
+    # Mirror the live turn's current selection pressure. Lower-priority
+    # context may yield, but both the focus and the source synthesis must fit.
+    budget.add("self_state", "self_model", "s" * (169 * 4))
+    budget.add("self_correction", "self_correction", "c" * (77 * 4))
+    budget.add("identity", "identity", "n" * (181 * 4))
+    budget.add("cognitive_pressure", "energy_and_arbitration", "p" * (72 * 4))
+    budget.add("cognitive_pressure", "global_workspace", "w" * (46 * 4))
+    budget.add("attention", "attention", "a" * (77 * 4))
+    budget.add("memory_active", "inner_monologue", "m" * (87 * 4))
+    budget.add("skills", "skill_registry", "k" * (52 * 4))
+    budget.assemble()
+
+    uncertainty_receipt = budget.selection_receipt(
+        "epistemic_context", "global_workspace_uncertainty",
+    )
+    focus_receipt = budget.selection_receipt("cognitive_pressure", "global_workspace")
+    all_refs = {item["source_ref"] for item in state.uncertainty_sources if item["status"] == "open"}
+
+    assert len(state.uncertainty_sources) == 22
+    assert "22 independent records, 8 questions, 2 origins" in fragment
+    assert "decision_reasoning_limit/intention_reasoner×21" in fragment
+    assert "user_exchange:query_about_ongoing_state/semantic_extractor×1" in fragment
+    assert "cognitive architecture" in fragment
+    assert "all remain open" in fragment
+    assert "Exact refs remain in the canonical ledger and turn receipt" in fragment
+    assert all(
+        item["source_ref"] not in fragment
+        for item in state.uncertainty_sources
+        if item["source_type"] == "decision_reasoning_limit"
+    )
+    assert "turn-user-source" in all_refs
+    assert uncertainty_receipt["selected"] is True
+    assert uncertainty_receipt["reason"] == "budget_ok"
+    assert focus_receipt["selected"] is True
+    assert budget._total_used <= 900
 
 
 def test_workspace_uncertainty_synthesis_survives_full_prompt_budget_pressure():
