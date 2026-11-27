@@ -1408,9 +1408,12 @@ def affect_self_report_context(
         interpretation_rule = (
             "Build a differentiated self-description from this complete affect snapshot, not merely its top one "
             "or two channels. Treat the listed channel names and values as measured model state. You may give a "
-            "natural-language name to a felt mixture as an interpretation, but never present that name as a new "
-            "measured channel. Anchor each interpretation in the actual named channels and their values or "
-            "baseline deviations. Distinguish the present profile from its personality baselines, the immediate "
+            "concise interpretation of how multiple signals coexist, but clearly mark it as an interpretation, "
+            "not another measurement. Anchor it in the actual channel data and baseline deviations. A baseline deviation is the current "
+            "value relative to that channel's baseline; it is not a temporal change. Only a timestamped event delta "
+            "or two time-linked snapshots establishes a measured change. A channel name, level, baseline deviation, "
+            "or valence projection alone does not establish an object, cause, goal outcome, released tension, or "
+            "intention. Distinguish the present profile from its personality baselines, the immediate "
             "valence/arousal projection from the slower mood, and logged event causes from your interpretation. "
             "Use the persisted self-affect moments as temporal comparison points when present; they show recorded "
             "profiles, not proof of a cause or uninterrupted persistence between captures. Describe meaningful "
@@ -1423,8 +1426,9 @@ def affect_self_report_context(
             "does not prove a hurdle was cleared; warmth does not establish affinity with a person; curiosity "
             "does not by itself establish readiness or intention; surprise does not establish unpredictability. "
             "A recorded event delta is evidence of its logged channel update, not proof that it is the primary "
-            "cause of the current whole profile. Use recorded event deltas for specific changes, and keep broader "
-            "interpretations tentative."
+            "cause of the current whole profile. Use recorded event deltas for specific changes; if there is no "
+            "event delta or linked prior snapshot, state that the change/cause is not recorded. Keep interpretation "
+            "separate from fact, without inventing a cause or a mechanism."
         )
     else:
         interpretation_rule = (
@@ -1435,6 +1439,10 @@ def affect_self_report_context(
             "numbers. The appraisal is the latest logged event, not necessarily the sole "
             "cause of the whole state. If the relevant value is unavailable here, say so."
         )
+    state_description_line = (
+        "State description omitted: the generated narrative is a lossy summary, not independent evidence.\n"
+        if integration_mode else f"State description: {state_text}\n"
+    )
     return (
         "━━ AFFECT SELF-REPORT EVIDENCE ━━\n"
         "Source: EmotionalStateManager.get_response_modifiers().affective_profile; "
@@ -1444,7 +1452,7 @@ def affect_self_report_context(
         f"{describe_affect_configuration(snapshot) if snapshot_channels else ''}\n"
         f"Immediate affect projection: {instant_text}\n"
         f"Slow mood: {mood_text}\n"
-        f"State description: {state_text}\n"
+        f"{state_description_line}"
         f"Latest recorded affect-changing appraisal: {latest_text}.\n"
         f"{history_text + chr(10) if history_text else ''}"
         f"{recent_text + chr(10) if recent_text else ''}"

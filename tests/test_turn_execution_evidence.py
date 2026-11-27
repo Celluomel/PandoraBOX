@@ -1606,6 +1606,38 @@ def test_affect_integration_route_crosses_prompt_worker_boundary():
     assert route_arg.id == "_affect_self_integration_query"
 
 
+def test_structured_affect_integration_skips_lossy_advisory_summary():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    prompt_builder = next(
+        node for node in bridge.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_build_prompt_and_cache"
+    )
+    advisory_guard = next(
+        node for node in ast.walk(prompt_builder)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "affect_advisory_context"
+            for child in ast.walk(node)
+        )
+    )
+    guard_names = {node.id for node in ast.walk(advisory_guard.test) if isinstance(node, ast.Name)}
+    assert "peer_name" in guard_names
+    assert "_affect_self_integration_query" in guard_names
+    assert any(
+        isinstance(node, ast.Constant)
+        and node.value == "skipped_integrated_affect_evidence"
+        for node in ast.walk(prompt_builder)
+    )
+
+
 def test_affect_advisory_receipt_proves_injection_without_exposing_description():
     bridge = _bridge()
     bridge._record_turn_stage("turn_input", "received", output="How are you doing?")

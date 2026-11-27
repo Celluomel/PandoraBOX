@@ -8628,7 +8628,7 @@ Memory honesty — two distinct cases:
                 "A Body camera source such as `remote:body:body_camera_yolox_midas` is exclusively Body evidence. "
                 "It cannot establish what the Brain-PC camera sees. If the Brain-PC status above is disabled, inactive, or stale, answer that its current view is unavailable; do not substitute the Body feed."
             )
-            if not peer_name:
+            if not peer_name and not _affect_self_integration_query:
                 _description = str(mods.get("state_description", "") or "").strip()
                 try:
                     from cognition.self_description import affect_advisory_context
@@ -8661,6 +8661,23 @@ Memory honesty — two distinct cases:
                         error_type=type(_affect_advisory_error).__name__,
                         turn_id=audit_turn_id,
                     )
+            elif not peer_name and _affect_self_integration_query:
+                # The qualitative advisory is a lossy, label-based summary of
+                # the affect manager. An integration turn already receives
+                # the structured profile, baselines, mood, event receipts and
+                # self history below; injecting both summaries primes the LLM
+                # with unsupported narrative and conflates evidence sources.
+                self._record_turn_stage(
+                    "affect_advisory_context", "skipped_integrated_affect_evidence",
+                    "Omitted the lossy affect narrative; structured affect evidence is injected separately.",
+                    output={
+                        "type": "affect_advisory_context_receipt",
+                        "status": "skipped_integrated_affect_evidence",
+                        "reason": "structured_affect_context_supersedes_qualitative_summary",
+                    },
+                    consumes=("turn_evidence_routing", "affective_state"),
+                    turn_id=audit_turn_id,
+                )
             if _affect_self_report:
                 from cognition.self_description import affect_self_report_context
                 _affect_prompt_context = affect_self_report_context(

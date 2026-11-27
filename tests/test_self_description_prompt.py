@@ -659,6 +659,10 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("slower mood", context)
         self.assertIn("distinctive texture", context)
         self.assertIn("tension_released from internal_loop", context)
+        self.assertIn("State description omitted", context)
+        self.assertNotIn("modeled state", context)
+        self.assertIn("baseline deviation is the current value relative to that channel's baseline", context)
+        self.assertIn("it is not a temporal change", context)
 
     def test_affect_self_integration_includes_baseline_mood_and_allows_grounded_mixtures(self):
         context = affect_self_report_context(
@@ -681,7 +685,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("anxiety: baseline=0.200, deviation=+0.220", context)
         self.assertIn("Immediate affect projection: valence=+0.180, arousal=0.640", context)
         self.assertIn("Slow mood: valence=+0.110, arousal=0.390", context)
-        self.assertIn("natural-language name to a felt mixture as an interpretation", context)
+        self.assertIn("mark it as an interpretation, not another measurement", context)
         self.assertIn("do not infer that one channel caused another", context)
         self.assertIn("satisfaction does not prove a goal was met", context)
         self.assertIn("warmth does not establish affinity with a person", context)
