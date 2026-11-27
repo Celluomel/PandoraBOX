@@ -53,6 +53,7 @@ response = organism.respond(user_input, user_id="alice")
 
 import logging
 import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Optional, Any, Dict
@@ -155,36 +156,74 @@ def _global_workspace_uncertainty_fragment(workspace_state: Any) -> str:
             "it with chat history, profile, goals, or inferred internal state."
         )
 
-    source_counts: dict[str, int] = {}
-    module_counts: dict[str, int] = {}
+    grouped_sources: dict[tuple[str, str], dict[str, list[str]]] = {}
+    rendered: list[str] = []
     peak_salience = 0.0
-    rendered = []
     for item in open_sources:
         source = str(item.get("source_type") or "unspecified")[:64]
         module = str(item.get("source_module") or "unknown")[:48]
-        source_counts[source] = source_counts.get(source, 0) + 1
-        module_counts[module] = module_counts.get(module, 0) + 1
         try:
             peak_salience = max(peak_salience, min(1.0, max(0.0, float(item.get("salience", 0.0)))))
         except (TypeError, ValueError):
             pass
         issue = str(item.get("question") or "")[:140]
         source_ref = str(item.get("source_ref") or item.get("uncertainty_id") or "")[:64]
-        rendered.append(f"{source} via {module}: {issue} (ref={source_ref})")
-    source_summary = ", ".join(
-        f"{source}×{count}" for source, count in sorted(source_counts.items())
-    )
-    module_summary = ", ".join(sorted(module_counts))
+        group_key = (source, module)
+        questions = grouped_sources.setdefault(group_key, {})
+        refs = questions.setdefault(issue, [])
+        if source_ref and source_ref not in refs:
+            refs.append(source_ref)
+    question_group_count = sum(len(questions) for questions in grouped_sources.values())
+    for (source, module), questions in grouped_sources.items():
+        record_count = sum(max(1, len(refs)) for refs in questions.values())
+        question_prefix = _common_workspace_text_prefix(list(questions))
+        compact_questions = len(questions) > 1 and len(question_prefix) >= 16
+        rendered.append(
+            f"- {source}/{module}×{record_count}:"
+            + (
+                f" shared question prefix={json.dumps(question_prefix, ensure_ascii=False)}"
+                if compact_questions else ""
+            )
+        )
+        for issue, refs in questions.items():
+            lineage = _compress_workspace_source_refs(refs)
+            question = issue[len(question_prefix):] if compact_questions else issue
+            rendered.append(f"  {question} [{lineage}]")
     return (
-        f"[Open uncertainty synthesis] {len(open_sources)} independent open "
-        f"source record(s), peak salience={peak_salience:.2f}; "
-        f"source types: {source_summary}; contributing modules: {module_summary}. "
-        "Keep origins distinct; do not discard an alternative or resolve a record without evidence.\n"
-        "For questions about the current Global Workspace, summarize every listed "
-        "open record from this snapshot and retain its source type, module, and "
-        "reference. Do not substitute chat history, profile, goals, or inferred state.\n"
-        "[Open uncertainty sources] " + " | ".join(rendered)
+        f"[Open Workspace uncertainty: {len(open_sources)} records, "
+        f"{question_group_count} questions, {len(grouped_sources)} origins; "
+        "preserve refs and keep all sources open.]\n"
+        "Sources: " + " | ".join(rendered)
     )
+
+
+def _compress_workspace_source_refs(refs: list[str]) -> str:
+    """Serialize references compactly without losing their exact values."""
+    unique = list(dict.fromkeys(str(ref) for ref in refs if str(ref)))
+    if not unique:
+        return "refs=unavailable"
+    if len(unique) > 1:
+        prefix = unique[0]
+        for ref in unique[1:]:
+            while prefix and not ref.startswith(prefix):
+                prefix = prefix[:-1]
+        suffixes = [ref[len(prefix):] for ref in unique]
+        if len(prefix) >= 8 and all(suffixes) and len(set(suffixes)) == len(suffixes):
+            return f"refs={prefix}{{{','.join(suffixes)}}}"
+    return f"refs={','.join(unique)}"
+
+
+def _common_workspace_text_prefix(values: list[str]) -> str:
+    """Return an exact shared prefix so repeated source questions can be encoded losslessly."""
+    if len(values) < 2:
+        return ""
+    prefix = values[0]
+    for value in values[1:]:
+        while prefix and not value.startswith(prefix):
+            prefix = prefix[:-1]
+        if not prefix:
+            break
+    return prefix
 
 
 def _global_workspace_prompt_fragment(

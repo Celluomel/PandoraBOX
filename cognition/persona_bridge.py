@@ -636,6 +636,7 @@ def _workspace_prompt_uncertainty_receipt(organism: Any, prompt_block: str) -> d
         "open_uncertainty_source_count": len(records),
         "uncertainty_synthesis_included": bool(
             "[Open uncertainty synthesis]" in str(prompt_block or "")
+            or "[Open Workspace uncertainty:" in str(prompt_block or "")
         ),
         "uncertainty_source_refs": refs,
         "uncertainty_source_turn_ids": sorted({
@@ -6527,7 +6528,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         marker in organism_block
                         for marker in (
                             "[Global workspace]", "[DOMINANT FOCUS]",
-                            "[Open uncertainty synthesis]",
+                            "[Open uncertainty synthesis]", "[Open Workspace uncertainty:",
                         )
                     )
                     _workspace_type = ""

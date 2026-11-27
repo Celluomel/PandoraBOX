@@ -9,6 +9,8 @@ from cognition.cognitive_organism import (
     _global_workspace_uncertainty_fragment,
     _global_workspace_prompt_fragment,
     _workspace_state_for_prompt,
+    _compress_workspace_source_refs,
+    _common_workspace_text_prefix,
 )
 from cognition.persona_bridge import _workspace_prompt_uncertainty_receipt
 from cognition.prompt_context_budget import PromptContextBudget
@@ -280,11 +282,9 @@ def test_workspace_prompt_surfaces_open_uncertainty_without_flattening_source():
     assert all(ref in fragment for ref in (
         "turn-3", "contradiction-4", "event-5", "episode-6", "turn-7",
     ))
-    assert "5 independent open source record(s)" in fragment
-    assert "peak salience=0.90" in fragment
-    assert "contributing modules" in fragment
-    assert "summarize every listed open record from this snapshot" in fragment
-    assert "retain its source type, module, and reference" in fragment
+    assert "5 records, 5 questions, 5 origins" in fragment
+    assert "user_exchange:open_question/semantic_extractor" in fragment
+    assert "preserve refs and keep all sources open" in fragment
 
 
 def test_workspace_prompt_explicitly_reports_zero_open_uncertainty_sources():
@@ -297,8 +297,8 @@ def test_workspace_prompt_explicitly_reports_zero_open_uncertainty_sources():
 
     assert "0 independent uncertainty source records" in fragment
     assert "do not invent an internal source" in fragment
-    assert "answer from this snapshot" in fragment
-    assert "do not replace it with chat history" in fragment
+    assert "do not invent an internal source" in fragment
+    assert "state that no open source is registered" in fragment
     assert "[Open uncertainty synthesis]" in full_prompt
     assert receipt["open_uncertainty_source_count"] == 0
     assert receipt["uncertainty_synthesis_included"] is True
@@ -324,7 +324,7 @@ def test_prompt_uses_current_workspace_sources_not_stale_slow_cycle_snapshot():
 
     assert selected.uncertainty_sources[0]["uncertainty_id"] == record["uncertainty_id"]
     assert "Which source remains unresolved?" in fragment
-    assert "ref=turn-current" in fragment
+    assert "refs=turn-current" in fragment
     assert "Several possible sources remain open." not in fragment
 
 
@@ -398,6 +398,58 @@ def test_uncertainty_synthesis_has_reserved_prompt_budget_ahead_of_pressure_bloc
     assert uncertainty in assembled
     assert legacy_workspace_selection["selected"] is False
     assert legacy_workspace_selection["reason"] == "category_full"
+
+
+def test_workspace_synthesis_groups_repeated_questions_without_dropping_source_refs():
+    workspace = GlobalWorkspace()
+    for episode in ("episode-a", "episode-b", "episode-c"):
+        for index, limitation in enumerate(("measurement missing", "priors unvalidated", "score uncalibrated")):
+            workspace.record_uncertainty(
+                source_type="decision_reasoning_limit",
+                source_module="intention_reasoner",
+                source_ref=f"{episode}:uncertainty:{index}",
+                question=f"Which sequence advances {episode}?",
+                evidence=limitation,
+                salience=0.65,
+            )
+    workspace.record_uncertainty(
+        source_type="user_exchange:open_question",
+        source_module="semantic_extractor", source_ref="turn-user",
+        turn_id="turn-user", question="What remains unresolved?", salience=0.9,
+    )
+    fragment = _global_workspace_uncertainty_fragment(workspace.get_state())
+    budget = PromptContextBudget(path="unused-test-grouped-budget.json")
+    budget.add("epistemic_context", "global_workspace_uncertainty", fragment)
+    budget.assemble()
+    selection = budget.selection_receipt("epistemic_context", "global_workspace_uncertainty")
+
+    assert "10 records, 4 questions, 2 origins" in fragment
+    assert "decision_reasoning_limit/intention_reasoner×9" in fragment
+    assert 'shared question prefix="Which sequence advances episode-"' in fragment
+    assert "a? [refs=episode-a:uncertainty:{0,1,2}]" in fragment
+    assert "b? [refs=episode-b:uncertainty:{0,1,2}]" in fragment
+    assert "c? [refs=episode-c:uncertainty:{0,1,2}]" in fragment
+    assert "turn-user" in fragment
+    assert selection["selected"] is True
+
+
+def test_workspace_reference_prefix_compression_is_lossless():
+    refs = [f"reason-abc123:uncertainty:{i}" for i in range(3)]
+    compact = _compress_workspace_source_refs(refs)
+    assert compact == "refs=reason-abc123:uncertainty:{0,1,2}"
+    prefix, suffixes = compact.removeprefix("refs=").split("{", 1)
+    expanded = [prefix + suffix for suffix in suffixes.rstrip("}").split(",")]
+    assert expanded == refs
+
+
+def test_workspace_question_prefix_compression_is_exact_and_language_agnostic():
+    questions = [
+        "Welche Quelle ist fuer den Plan: Erinnerung?",
+        "Welche Quelle ist fuer den Plan: Absicht?",
+    ]
+    prefix = _common_workspace_text_prefix(questions)
+    assert prefix == "Welche Quelle ist fuer den Plan: "
+    assert [prefix + value[len(prefix):] for value in questions] == questions
 
 
 def test_intention_reasoning_limits_enter_workspace_as_separate_evidence(tmp_path):
