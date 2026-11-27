@@ -54,6 +54,7 @@ response = organism.respond(user_input, user_id="alice")
 import logging
 import hashlib
 import json
+import copy
 import time
 from pathlib import Path
 from typing import Optional, Any, Dict
@@ -344,6 +345,38 @@ def _global_workspace_prompt_fragment(
     except Exception:
         pass
     return fragment
+
+
+def _workspace_context_contribution_receipt(
+    context_by_source: Any, prompt_text: str, selection: dict[str, Any],
+) -> dict[str, Any]:
+    """Attribute prompt inclusion to the exact source-scoped snapshot used."""
+    source_map = context_by_source if isinstance(context_by_source, dict) else {}
+    names = sorted(
+        str(source)[:120] for source, fields in source_map.items()
+        if isinstance(fields, dict) and fields
+    )
+    field_map = {
+        str(source)[:120]: sorted(str(key)[:120] for key in fields)
+        for source, fields in source_map.items()
+        if isinstance(fields, dict) and fields
+    }
+    text = str(prompt_text or "")
+    marker_present = "[Workspace contributions by source; preserve distinct origins]" in text
+    included = bool(
+        selection.get("selected") and marker_present
+        and all(name in text for name in names)
+    )
+    return {
+        "stage": "global_workspace_context_contributions",
+        "status": "injected" if included else "omitted_by_prompt_budget" if names else "empty",
+        "context_source_count": len(names),
+        "context_source_names": names,
+        "context_source_fields": field_map,
+        "context_contributions_included": included,
+        "budget_reason": selection.get("reason"),
+        "budget_tokens": _safe_profile_count(selection.get("tokens")),
+    }
 
 
 def _workspace_state_for_prompt(organism: Any) -> Any:
@@ -919,9 +952,13 @@ class CognitiveOrganism:
         # slow arbitration cycles. The published winner still supplies focus,
         # while the canonical workspace snapshot supplies recent source records.
         # Do not synchronously recompute the attention/arbitration chain here.
+        _workspace_context_by_source: dict[str, dict[str, Any]] = {}
         try:
             _ws_state = _workspace_state_for_prompt(self)
             if _ws_state is not None:
+                _workspace_context_by_source = copy.deepcopy(
+                    getattr(_ws_state, "context_by_source", None) or {}
+                )
                 _published_winner = getattr(self, "_v32_workspace_winner", None)
                 _published_focus = None
                 if isinstance(_published_winner, dict) and _published_winner.get("type") != "no_winner":
@@ -1329,6 +1366,12 @@ class CognitiveOrganism:
         _log.getLogger(__name__).debug(budget.budget_report())
         budget.save()
         if source_receipts is not None:
+            _workspace_selection = budget.selection_receipt(
+                "cognitive_pressure", "global_workspace",
+            )
+            source_receipts.append(_workspace_context_contribution_receipt(
+                _workspace_context_by_source, result, _workspace_selection,
+            ))
             workspace_selection = budget.selection_receipt(
                 "epistemic_context", "global_workspace_uncertainty",
             )

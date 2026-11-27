@@ -9,6 +9,7 @@ from cognition.intention_reasoner import IntentionReasoner
 from cognition.cognitive_organism import (
     _global_workspace_uncertainty_fragment,
     _global_workspace_prompt_fragment,
+    _workspace_context_contribution_receipt,
     _workspace_state_for_prompt,
     _compress_workspace_source_refs,
     _common_workspace_text_prefix,
@@ -327,6 +328,30 @@ def test_workspace_prompt_exposes_context_contributions_with_each_origin():
         "vision": ["nearest_object"],
     }
     assert receipt["context_contributions_included"] is True
+
+
+def test_workspace_context_receipt_uses_the_exact_assembled_prompt_snapshot():
+    source_map = {
+        "vision": {"nearest_object": {"label": "chair"}},
+        "radar": {"nearest_object": {"range_m": 1.8}},
+    }
+    marker = "[Workspace contributions by source; preserve distinct origins]"
+    included = _workspace_context_contribution_receipt(
+        source_map, marker + ' [{"source":"vision"},{"source":"radar"}]',
+        {"selected": True, "reason": "selected", "tokens": 25},
+    )
+    omitted = _workspace_context_contribution_receipt(
+        source_map, "[Global workspace] focus: vision",
+        {"selected": True, "reason": "truncated", "tokens": 1},
+    )
+
+    assert included["context_contributions_included"] is True
+    assert included["context_source_names"] == ["radar", "vision"]
+    assert included["context_source_fields"] == {
+        "radar": ["nearest_object"], "vision": ["nearest_object"],
+    }
+    assert omitted["status"] == "omitted_by_prompt_budget"
+    assert omitted["context_contributions_included"] is False
 
 
 def test_prompt_uses_current_workspace_sources_not_stale_slow_cycle_snapshot():

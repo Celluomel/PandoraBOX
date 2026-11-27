@@ -6629,10 +6629,19 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         source_receipts=_prompt_source_receipts,
                     )
                     _workspace_budget_receipt = {}
+                    _workspace_context_receipt = {}
                     for _source_receipt in _prompt_source_receipts:
                         _source_stage = str(_source_receipt.pop("stage", ""))
                         if _source_stage == "global_workspace_uncertainty_context":
                             _workspace_budget_receipt = dict(_source_receipt)
+                            self._record_turn_stage(
+                                _source_stage,
+                                str(_source_receipt.get("status") or "unverified"),
+                                output=_source_receipt,
+                                turn_id=audit_turn_id,
+                            )
+                        elif _source_stage == "global_workspace_context_contributions":
+                            _workspace_context_receipt = dict(_source_receipt)
                             self._record_turn_stage(
                                 _source_stage,
                                 str(_source_receipt.get("status") or "unverified"),
@@ -6731,6 +6740,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "focus_ref": _workspace_focus_ref,
                         "context_included": _workspace_included,
                         **_uncertainty_receipt,
+                        **_workspace_context_receipt,
                         "uncertainty_budget": _workspace_budget_receipt,
                         **_workspace_state_provenance,
                     }
