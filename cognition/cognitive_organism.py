@@ -129,8 +129,50 @@ def _safe_profile_count(value: Any) -> int:
     return max(0, min(1_000_000, count))
 
 
+def _global_workspace_uncertainty_fragment(workspace_state: Any) -> str:
+    """Render all open uncertainty origins as a compact shared synthesis."""
+    if workspace_state is None:
+        return ""
+    sources = getattr(workspace_state, "uncertainty_sources", None) or []
+    open_sources = [
+        item for item in sources
+        if isinstance(item, dict) and item.get("status", "open") == "open"
+    ]
+    if not open_sources:
+        return ""
+
+    source_counts: dict[str, int] = {}
+    module_counts: dict[str, int] = {}
+    peak_salience = 0.0
+    rendered = []
+    for item in open_sources:
+        source = str(item.get("source_type") or "unspecified")[:64]
+        module = str(item.get("source_module") or "unknown")[:48]
+        source_counts[source] = source_counts.get(source, 0) + 1
+        module_counts[module] = module_counts.get(module, 0) + 1
+        try:
+            peak_salience = max(peak_salience, min(1.0, max(0.0, float(item.get("salience", 0.0)))))
+        except (TypeError, ValueError):
+            pass
+        issue = str(item.get("question") or "")[:140]
+        source_ref = str(item.get("source_ref") or item.get("uncertainty_id") or "")[:64]
+        rendered.append(f"{source} via {module}: {issue} (ref={source_ref})")
+    source_summary = ", ".join(
+        f"{source}×{count}" for source, count in sorted(source_counts.items())
+    )
+    module_summary = ", ".join(sorted(module_counts))
+    return (
+        f"[Open uncertainty synthesis] {len(open_sources)} independent open "
+        f"source record(s), peak salience={peak_salience:.2f}; "
+        f"source types: {source_summary}; contributing modules: {module_summary}. "
+        "Keep origins distinct; do not discard an alternative or resolve a record without evidence.\n"
+        "[Open uncertainty sources] " + " | ".join(rendered)
+    )
+
+
 def _global_workspace_prompt_fragment(
     workspace_state: Any, *, published_focus: str | None = None,
+    include_uncertainties: bool = True,
 ) -> str:
     """Render the current Global Workspace focus and supporting context.
 
@@ -141,46 +183,19 @@ def _global_workspace_prompt_fragment(
         return ""
     hypotheses = getattr(workspace_state, "active_hypotheses", None) or []
     policy = getattr(workspace_state, "executive_policy", None) or {}
-    uncertainty_sources = getattr(workspace_state, "uncertainty_sources", None) or []
-    open_uncertainties = [
-        item for item in uncertainty_sources
-        if isinstance(item, dict) and item.get("status", "open") == "open"
-    ]
+    uncertainty_fragment = (
+        _global_workspace_uncertainty_fragment(workspace_state)
+        if include_uncertainties else ""
+    )
     # The post-arbitration winner on the organism is the canonical published
     # focus. The shared WorkspaceState snapshot can lag that publication.
     focus = published_focus or getattr(workspace_state, "focus", None)
-    if not (hypotheses or policy or focus or open_uncertainties):
+    if not (hypotheses or policy or focus or uncertainty_fragment):
         return ""
 
     fragment = f"[Global workspace] focus: {focus or 'unset'}"
-    if open_uncertainties:
-        source_counts: dict[str, int] = {}
-        module_counts: dict[str, int] = {}
-        peak_salience = 0.0
-        rendered = []
-        for item in open_uncertainties:
-            source = str(item.get("source_type") or "unspecified")[:64]
-            module = str(item.get("source_module") or "unknown")[:48]
-            source_counts[source] = source_counts.get(source, 0) + 1
-            module_counts[module] = module_counts.get(module, 0) + 1
-            try:
-                peak_salience = max(peak_salience, min(1.0, max(0.0, float(item.get("salience", 0.0)))))
-            except (TypeError, ValueError):
-                pass
-            issue = str(item.get("question") or "")[:140]
-            source_ref = str(item.get("source_ref") or item.get("uncertainty_id") or "")[:64]
-            rendered.append(f"{source} via {module}: {issue} (ref={source_ref})")
-        source_summary = ", ".join(
-            f"{source}×{count}" for source, count in sorted(source_counts.items())
-        )
-        module_summary = ", ".join(sorted(module_counts))
-        fragment += (
-            f"\n[Open uncertainty synthesis] {len(open_uncertainties)} independent open "
-            f"source record(s), peak salience={peak_salience:.2f}; "
-            f"source types: {source_summary}; contributing modules: {module_summary}. "
-            "Keep origins distinct; an unresolved record remains open unless explicitly resolved."
-        )
-        fragment += "\n[Open uncertainty sources] " + " | ".join(rendered)
+    if uncertainty_fragment:
+        fragment += "\n" + uncertainty_fragment
     alternatives = ", ".join(
         item.get("label", item.get("name", "?"))
         for item in hypotheses[1:3]
@@ -788,9 +803,16 @@ class CognitiveOrganism:
                     ).strip() or None
                 _gw_frag = _global_workspace_prompt_fragment(
                     _ws_state, published_focus=_published_focus,
+                    include_uncertainties=False,
                 )
                 if _gw_frag:
                     budget.add("cognitive_pressure", "global_workspace", _gw_frag)
+                _uncertainty_frag = _global_workspace_uncertainty_fragment(_ws_state)
+                if _uncertainty_frag:
+                    budget.add(
+                        "epistemic_context", "global_workspace_uncertainty",
+                        _uncertainty_frag,
+                    )
         except Exception as _gw_err:
             import logging as _log
             _log.getLogger(__name__).debug(f"[CognitiveOrganism] workspace state fragment error (non-fatal): {_gw_err}")
@@ -1180,6 +1202,19 @@ class CognitiveOrganism:
         _log.getLogger(__name__).debug(budget.budget_report())
         budget.save()
         if source_receipts is not None:
+            workspace_selection = budget.selection_receipt(
+                "epistemic_context", "global_workspace_uncertainty",
+            )
+            source_receipts.append({
+                "stage": "global_workspace_uncertainty_context",
+                "status": "injected" if workspace_selection["selected"] else (
+                    "omitted_by_prompt_budget" if workspace_selection["registered"]
+                    else "empty"
+                ),
+                "context_included": bool(workspace_selection["selected"]),
+                "budget_reason": workspace_selection["reason"],
+                "budget_tokens": _safe_profile_count(workspace_selection["tokens"]),
+            })
             for candidate in _profile_context_candidates:
                 fragment = str(candidate.pop("fragment", "") or "")
                 source_status = str(candidate.pop("source_status", "unavailable"))

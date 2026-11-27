@@ -5,10 +5,12 @@ from cognition.global_workspace import GlobalWorkspace
 from cognition.semantic_extractor import SemanticExtractor
 from cognition.intention_reasoner import IntentionReasoner
 from cognition.cognitive_organism import (
+    _global_workspace_uncertainty_fragment,
     _global_workspace_prompt_fragment,
     _workspace_state_for_prompt,
 )
 from cognition.persona_bridge import _workspace_prompt_uncertainty_receipt
+from cognition.prompt_context_budget import PromptContextBudget
 from core.cognitive_event_bus import (
     CognitiveEventBus,
     CONTRADICTION_DETECTED,
@@ -287,6 +289,36 @@ def test_prompt_receipt_attributes_all_open_origins_from_canonical_workspace():
     )
     assert remaining["open_uncertainty_source_count"] == 1
     assert remaining["uncertainty_source_refs"] == [prediction["uncertainty_id"]]
+
+
+def test_uncertainty_synthesis_has_reserved_prompt_budget_ahead_of_pressure_blocks():
+    workspace = GlobalWorkspace()
+    workspace.record_uncertainty(
+        source_type="user_exchange:competing_explanations",
+        source_module="semantic_extractor", source_ref="turn-user", turn_id="turn-user",
+        question="Which explanation accounts for the mismatch?",
+        evidence="private evidence", salience=0.7,
+    )
+    state = workspace.get_state()
+    uncertainty = _global_workspace_uncertainty_fragment(state)
+    budget = PromptContextBudget(path="unused-test-budget.json")
+    budget.add("cognitive_pressure", "energy", "e" * 84)  # 21 estimated tokens
+    budget.add("cognitive_pressure", "arbitration", "a" * 204)  # 51 tokens
+    budget.add("cognitive_pressure", "global_workspace", "w" * 820)  # 205 tokens
+    budget.add("epistemic_context", "global_workspace_uncertainty", uncertainty)
+
+    assembled = budget.assemble()
+    uncertainty_selection = budget.selection_receipt(
+        "epistemic_context", "global_workspace_uncertainty",
+    )
+    legacy_workspace_selection = budget.selection_receipt(
+        "cognitive_pressure", "global_workspace",
+    )
+
+    assert uncertainty_selection["selected"] is True
+    assert uncertainty in assembled
+    assert legacy_workspace_selection["selected"] is False
+    assert legacy_workspace_selection["reason"] == "category_full"
 
 
 def test_intention_reasoning_limits_enter_workspace_as_separate_evidence(tmp_path):

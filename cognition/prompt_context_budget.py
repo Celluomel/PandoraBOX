@@ -80,6 +80,10 @@ CATEGORY_BUDGETS: Dict[str, Tuple[int, int]] = {
     # headroom for ordinary changes in active goals and provenance; priority 0
     # reserves it before lower-priority narrative context.
     "factual_telemetry":  (480, 0),
+    # Keep open uncertainty origins independently available to the model. This
+    # gets a reserved category because the former shared cognitive-pressure
+    # slot was routinely exhausted by energy and arbitration before Workspace.
+    "epistemic_context":  (240, 1),
     "self_evidence":      (120, 1),
     # Self-model, experiential signals, interrupts, and temporal context are
     # independent producers. Their compact forms need to coexist; the former
