@@ -160,7 +160,15 @@ class BaseLLMProvider(ABC):
             ctx_limit = max(getattr(_cfg, 'LLM_CTX', 4096), 512)
         except Exception:
             ctx_limit = 4096
-        chars_budget = int((ctx_limit - 800) * 3.5)
+        # Reserve the requested completion budget, not a fixed 800 tokens.
+        # Otherwise a prompt can consume almost the whole window and LM Studio
+        # may terminate with no visible answer when generation begins.
+        try:
+            output_reserve = max(800, int(kwargs.get("max_tokens", 600) or 600))
+        except (TypeError, ValueError):
+            output_reserve = 800
+        output_reserve = min(output_reserve, max(256, ctx_limit - 256))
+        chars_budget = int((ctx_limit - output_reserve) * 3.5)
         fixed_cost = (len(system_prompt) if system_prompt else 0) + len(prompt)
         trimmed = list(history)
         while trimmed and (fixed_cost + sum(len(m.get("content","")) for m in trimmed)) > chars_budget:
@@ -1137,7 +1145,7 @@ class LLMManager:
         record_history: bool = True,
         **kwargs,
     ) -> str:
-        """Regenerate a missing final channel after a reasoning-only stream."""
+        """Regenerate a missing visible answer after an incomplete stream."""
         kwargs.setdefault("max_tokens", 600)
         kwargs.setdefault("temperature", 0.45)
         kwargs.setdefault("model", self.text_model)
@@ -1155,6 +1163,32 @@ class LLMManager:
               "user-facing answer. Do not output planning notes, self-correction, "
               "a final check, private reasoning, or think tags."
         )
+        try:
+            from managers.settings_manager import config as _cfg
+            ctx_limit = max(512, int(getattr(_cfg, "LLM_CTX", 4096) or 4096))
+        except Exception:
+            ctx_limit = 4096
+        from cognition.prompt_context_budget import fit_system_prompt_to_context
+        system_prompt, _budget_receipt = fit_system_prompt_to_context(
+            system_prompt or "",
+            recovery_prompt,
+            context_tokens=ctx_limit,
+            output_tokens=int(kwargs.get("max_tokens", 600) or 600),
+        )
+        try:
+            output_reserve = min(
+                max(800, int(kwargs.get("max_tokens", 600) or 600)),
+                max(256, ctx_limit - 256),
+            )
+        except (TypeError, ValueError):
+            output_reserve = min(800, max(256, ctx_limit - 256))
+        history_budget = int((ctx_limit - output_reserve) * 3.5)
+        while prior_history and (
+            len(system_prompt) + len(recovery_prompt)
+            + sum(len(str(item.get("content") or "")) for item in prior_history)
+            > history_budget
+        ):
+            prior_history = prior_history[2:]
         with self._provider_lock:
             response = self.provider.generate_with_history(
                 recovery_prompt, prior_history, system_prompt, **kwargs

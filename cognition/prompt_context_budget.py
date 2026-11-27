@@ -116,6 +116,65 @@ TOTAL_TOKEN_CAP = 900   # hard ceiling across all categories
 MAX_CONTRIBUTION_LOG = 200
 
 
+def fit_system_prompt_to_context(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    context_tokens: int,
+    output_tokens: int,
+    safety_tokens: int = 800,
+    chars_per_token: float = 3.5,
+    protected_tail: str = "",
+) -> tuple[str, dict[str, int | float | str | bool]]:
+    """Fit a fully assembled system prompt into the model's input budget.
+
+    Preserve the beginning (identity and core instructions) and the ending
+    (latest evidence/route contracts). Any route-specific protected tail is
+    appended after trimming so it cannot be lost to an earlier truncation.
+    The estimate deliberately follows the provider's existing character/token
+    heuristic; it is a budget guard, not tokenizer-exact accounting.
+    """
+    original = str(system_prompt or "")
+    tail = str(protected_tail or "").strip()
+    marker = "\n[… contexte intermédiaire omis pour respecter la fenêtre du modèle …]\n"
+    context_limit = max(512, int(context_tokens or 4096))
+    output_reserve = max(int(safety_tokens), max(0, int(output_tokens or 0)))
+    input_tokens = max(256, context_limit - output_reserve)
+    total_input_chars = max(256, int(input_tokens * max(1.0, float(chars_per_token))))
+    max_chars = max(128, total_input_chars - len(str(user_prompt or "")))
+    base = original
+    if tail:
+        base = base.rstrip() + "\n\n" + tail
+
+    fitted = base
+    compacted = len(base) > max_chars
+    if compacted:
+        available = max(0, max_chars - len(marker))
+        # Preserve a larger prefix for persona/core cognition and a substantial
+        # suffix for current evidence, provenance and final response contracts.
+        prefix_chars = min(len(base), int(available * 0.62))
+        suffix_chars = available - prefix_chars
+        fitted = base[:prefix_chars] + marker + (base[-suffix_chars:] if suffix_chars else "")
+
+    receipt: dict[str, int | str | bool] = {
+        "status": "compacted" if compacted else "within_budget",
+        "original_chars": len(original),
+        "protected_tail_chars": len(tail),
+        "assembled_chars": len(base),
+        "final_chars": len(fitted),
+        "max_chars": max_chars,
+        "user_prompt_chars": len(str(user_prompt or "")),
+        "total_input_char_budget": total_input_chars,
+        "context_tokens": context_limit,
+        "output_reserve_tokens": output_reserve,
+        "safety_tokens": max(0, int(safety_tokens)),
+        "chars_per_token_estimate": float(chars_per_token),
+        "strategy": "preserve_prefix_and_suffix",
+        "protected_tail_preserved": bool(tail and fitted.endswith(tail)),
+    }
+    return fitted, receipt
+
+
 # ── Dataclasses ───────────────────────────────────────────────────────────────
 
 @dataclass

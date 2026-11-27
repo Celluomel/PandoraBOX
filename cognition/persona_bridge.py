@@ -5049,7 +5049,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # it against the turn trace. Declare the closure assignment
             # explicitly; otherwise Python treats the name as local and the
             # stage check below raises UnboundLocalError before generation.
-            nonlocal _deterministic_response, progressive_gate
+            nonlocal _deterministic_response, progressive_gate, system_prompt
             self._chat_stage = 'waiting for provider stream'
             self._record_turn_stage(
                 "primary_generation",
@@ -5240,6 +5240,63 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _max_tokens = 2048
                 if max_tokens_override is not None:
                     _max_tokens = max(64, min(4096, int(max_tokens_override)))
+
+                # Bound the fully assembled prompt after all late contexts have
+                # been added and the output-token reservation is known. The
+                # former early cap was followed by unbounded appends, allowing
+                # the final LM Studio request to exceed its effective window.
+                try:
+                    from managers.settings_manager import config as _prompt_cfg
+                    _prompt_ctx_limit = max(
+                        512, int(getattr(_prompt_cfg, "LLM_CTX", 4096) or 4096)
+                    )
+                except Exception:
+                    _prompt_ctx_limit = 4096
+                _protected_prompt_tail = ""
+                if _architecture_context_query:
+                    try:
+                        from cognition.self_description import ARCHITECTURE_ANSWER_CONTRACT
+                        _protected_prompt_tail = (
+                            "FINAL ARCHITECTURE EVIDENCE CONTRACT\n"
+                            + ARCHITECTURE_ANSWER_CONTRACT
+                        )
+                    except Exception:
+                        _protected_prompt_tail = (
+                            "FINAL ARCHITECTURE EVIDENCE CONTRACT: distinguish implemented facts "
+                            "from inference; do not claim universal module access or collapse sources."
+                        )
+                from cognition.prompt_context_budget import fit_system_prompt_to_context
+                system_prompt, _prompt_budget_receipt = fit_system_prompt_to_context(
+                    system_prompt,
+                    _generation_input,
+                    context_tokens=_prompt_ctx_limit,
+                    output_tokens=_max_tokens,
+                    protected_tail=_protected_prompt_tail,
+                )
+                self._record_turn_stage(
+                    "prompt_context_budget",
+                    str(_prompt_budget_receipt.get("status") or "unknown"),
+                    "Final system prompt bounded after all context and output-token reservation.",
+                    output=_prompt_budget_receipt,
+                    consumes=("prompt_assembly", "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
+                self._record_turn_stage(
+                    "prompt_assembly", "completed",
+                    f"{len(system_prompt)} chars after final context budget",
+                    output=system_prompt,
+                    consumes=_prompt_assembly_dependencies(
+                        self._last_turn_trace.get("stages", {})
+                    ),
+                    turn_id=_audit_turn_id,
+                )
+                self._record_turn_stage(
+                    "generation_request", "prepared",
+                    "Final budgeted prompt delivered to provider route.",
+                    output={"user_input": _generation_input, "system_prompt": system_prompt},
+                    consumes=("turn_input", "prompt_assembly"),
+                    turn_id=_audit_turn_id,
+                )
                 _validate_before_display = bool(
                     _quantitative_analysis is not None
                     or _architecture_query
@@ -5633,13 +5690,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             accumulated.clear()
             raw_response = ""
 
-        if not raw_response.strip() and (
-            _reasoning_seen or _meta_only or _finish_reason == "length"
-        ):
+        # An empty stream with a clean `stop` is still an incomplete answer.
+        # Previously recovery ran only for reasoning-only output or a length
+        # cutoff, so provider-completed/zero-content turns went straight to a
+        # generic retry notice despite an available one-shot recovery path.
+        if not raw_response.strip():
             _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
             _recover_fn = getattr(_llm_manager, "recover_final_response", None)
             if callable(_recover_fn):
-                self._chat_stage = 'recovering final answer'
+                self._chat_stage = 'recovering missing final answer'
                 _final_only_system = re.sub(
                     r"\[Inner process[^\]]*\].*?\[End inner process guidance\]\s*",
                     "",
@@ -7860,16 +7919,6 @@ Memory honesty — two distinct cases:
                 "direction, and a new factual question must be answered on its own terms. Repetition means redundant "
                 "wording, not a reason to refuse, evade, or repeat an obsolete answer."
             )
-
-            # ── Hard-cap system prompt to fit context window ─────────────
-            try:
-                from managers.settings_manager import config as _cfg
-                ctx_limit = max(getattr(_cfg, 'LLM_CTX', 4096), 512)
-            except Exception:
-                ctx_limit = 4096
-            sys_char_cap = int(ctx_limit * 3.5 * 0.50)
-            if len(system_prompt) > sys_char_cap:
-                system_prompt = system_prompt[:sys_char_cap] + "\n[...truncated to fit context...]"
 
             # ── Smart web search injection ────────────────────────────────
             # WEB_SEARCH_MODE: "off"    → never search

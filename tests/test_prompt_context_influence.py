@@ -4,11 +4,43 @@ from pathlib import Path
 
 from cognition.arbitration import ArbitrationDecision
 from cognition.phenomenal_binder import ExperientialMoment
-from cognition.prompt_context_budget import PromptContextBudget, TOTAL_TOKEN_CAP
+from cognition.prompt_context_budget import (
+    PromptContextBudget,
+    TOTAL_TOKEN_CAP,
+    fit_system_prompt_to_context,
+)
 from cognition.self_model_moment import SelfModelMoment
 
 
 class PromptContextInfluenceTests(unittest.TestCase):
+    def test_final_prompt_budget_preserves_core_and_route_tail(self):
+        core = "CORE_IDENTITY\n" + ("middle-context " * 5000)
+        route = "ARCHITECTURE_CONTRACT: preserve workspace source distinctions."
+        fitted, receipt = fit_system_prompt_to_context(
+            core,
+            "What does the Global Workspace do?",
+            context_tokens=4096,
+            output_tokens=2048,
+            protected_tail=route,
+        )
+
+        self.assertTrue(receipt["protected_tail_preserved"])
+        self.assertTrue(fitted.startswith("CORE_IDENTITY"))
+        self.assertTrue(fitted.endswith(route))
+        self.assertLessEqual(
+            len(fitted) + len("What does the Global Workspace do?"),
+            receipt["total_input_char_budget"],
+        )
+        self.assertEqual(receipt["status"], "compacted")
+
+    def test_prompt_budget_leaves_short_prompt_unchanged(self):
+        prompt = "A compact prompt with all its evidence."
+        fitted, receipt = fit_system_prompt_to_context(
+            prompt, "Say hello.", context_tokens=8192, output_tokens=1024,
+        )
+        self.assertEqual(fitted, prompt)
+        self.assertEqual(receipt["status"], "within_budget")
+
     def test_admission_record_keeps_the_cognitive_turn_id(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "contributions.json"

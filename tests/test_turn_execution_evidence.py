@@ -1556,9 +1556,11 @@ def test_prompt_assembly_declares_cognitive_context_as_an_input():
         and isinstance(node.args[0], ast.Constant)
         and node.args[0].value == "prompt_assembly"
     ]
-    assert len(prompt_calls) == 1
+    assert prompt_calls
+    # The final assembly receipt is refreshed after the model-specific context
+    # budget is applied; inspect that receipt, not only the pre-budget build.
     consumes = next(
-        keyword.value for keyword in prompt_calls[0].keywords
+        keyword.value for keyword in prompt_calls[-1].keywords
         if keyword.arg == "consumes"
     )
     assert isinstance(consumes, ast.Call)
@@ -1587,7 +1589,7 @@ def test_prompt_assembly_declares_cognitive_context_as_an_input():
         )
     ]
     assert system_prompt_mutations
-    assert prompt_calls[0].lineno > max(system_prompt_mutations)
+    assert prompt_calls[-1].lineno > max(system_prompt_mutations)
     for stage_name in ("generation_request", "primary_generation_input"):
         stage_call = next(
             node for node in ast.walk(stream)

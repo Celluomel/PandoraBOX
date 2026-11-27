@@ -54,6 +54,37 @@ def test_empty_generation_is_a_failed_turn_and_terminal_error():
     )
 
 
+def test_any_empty_visible_stream_reaches_the_single_recovery_attempt():
+    source = ROOT / "cognition" / "persona_bridge.py"
+    stream = _method(source, "PersonaBridge", "_stream_with_full_lifecycle")
+    recovery_calls = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "callable"
+    ]
+    assert recovery_calls
+    empty_recovery_conditions = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.UnaryOp)
+        and isinstance(node.test.op, ast.Not)
+        and isinstance(node.test.operand, ast.Call)
+        and isinstance(node.test.operand.func, ast.Attribute)
+        and node.test.operand.func.attr == "strip"
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "callable"
+            for child in ast.walk(node)
+        )
+    ]
+    assert empty_recovery_conditions, (
+        "Recovery must be eligible whenever visible output is empty, even when "
+        "the provider reports a clean stop and emitted no reasoning channel."
+    )
+
+
 def test_response_outcome_learning_is_gated_on_real_generation():
     source = ROOT / "cognition" / "persona_bridge.py"
     stream = _method(source, "PersonaBridge", "_stream_with_full_lifecycle")
