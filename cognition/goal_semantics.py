@@ -257,6 +257,8 @@ GOOD_TOPIC_EXEMPLARS = [
     "comprendre l’odométrie et la localisation d’un robot",
     "développer le raisonnement cognitif",
     "analyser les émotions fonctionnelles et leurs causes",
+    "a subject of study such as a natural force or scientific law",
+    "un sujet d'étude comme une force naturelle ou une loi scientifique",
 ]
 NOISE_TOPIC_EXEMPLARS = [
     "something to do",
@@ -289,6 +291,68 @@ NOISE_TOPIC_EXEMPLARS = [
     "an isolated ambiguous word without context or an intended outcome",
     "un mot isolé ambigu sans contexte ni résultat visé",
 ]
+
+# A useful subject can be brief, so word count is not a validity signal.
+# Distinguish subjects from commands using semantic role anchors instead:
+# does the candidate name something that can be understood/developed, or is
+# it only an action with no object or outcome? These are cross-language
+# examples, not a per-language vocabulary or phrase blacklist.
+SUBJECT_TOPIC_EXEMPLARS = [
+    "a named subject, concept, process, or skill that can be studied or improved",
+    "a scientific concept or natural phenomenon that can be investigated",
+    "a field of knowledge or a specific topic with substance",
+    "a creative practice or skill that someone can develop",
+    "a historical or cultural subject that can be researched",
+    "a technical process that can be measured, calibrated, and improved",
+    "a specific engineering problem with an observable outcome",
+    "un sujet, un concept, un processus ou une compétence que l'on peut étudier ou améliorer",
+    "un concept scientifique ou un phénomène naturel que l'on peut examiner",
+    "un domaine de connaissance ou un sujet précis avec un contenu substantiel",
+    "une pratique créative ou une compétence que l'on peut développer",
+    "un sujet historique ou culturel que l'on peut rechercher",
+    "un processus technique que l'on peut mesurer, calibrer et améliorer",
+    "un problème d'ingénierie précis avec un résultat observable",
+]
+INCOMPLETE_COMMAND_EXEMPLARS = [
+    "an imperative action without an object or intended outcome",
+    "an instruction fragment without a referent or intended result",
+    "an incomplete command that does not identify what to act on",
+    "an instruction to recall something that does not identify what should be recalled or why",
+    "un impératif d'action sans objet ni résultat visé",
+    "une consigne incomplète sans référent ni résultat attendu",
+    "un ordre de rappeler quelque chose sans dire quoi ni dans quel but",
+    "una orden incompleta sin objeto ni resultado previsto",
+    "ein unvollständiger Befehl ohne Objekt oder beabsichtigtes Ergebnis",
+]
+MIN_TOPIC_SUBJECT_MARGIN = -0.05
+MIN_TOPIC_SUBJECT_SIMILARITY = 0.55
+
+
+def _topic_quality_from_vectors(
+    topic_vector: np.ndarray,
+    good_vectors: Sequence[np.ndarray],
+    noise_vectors: Sequence[np.ndarray],
+    subject_vectors: Sequence[np.ndarray],
+    command_vectors: Sequence[np.ndarray],
+) -> Tuple[float, float, bool]:
+    """Apply shared topic and subject-completeness semantics to one vector."""
+    good_sim = max_cosine(topic_vector, good_vectors)
+    noise_sim = max_cosine(topic_vector, noise_vectors)
+    subject_sim = max_cosine(topic_vector, subject_vectors)
+    command_sim = max_cosine(topic_vector, command_vectors)
+    accepted = (
+        good_sim - noise_sim > MIN_GOOD_TOPIC_MARGIN
+        and good_sim > 0.10
+        and (
+            subject_sim - command_sim > MIN_TOPIC_SUBJECT_MARGIN
+            # A compact noun/concept can be close to an action about that
+            # concept (e.g. "memory" and "recall"). Strong direct subject
+            # evidence preserves such valid topics without accepting a bare
+            # command whose subject similarity is materially weaker.
+            or subject_sim >= MIN_TOPIC_SUBJECT_SIMILARITY
+        )
+    )
+    return float(good_sim), float(noise_sim), bool(accepted)
 
 
 # ── Public semantic scorers ───────────────────────────────────────────────────
@@ -348,13 +412,9 @@ def batch_topic_quality(
 ) -> Optional[Dict[str, Tuple[float, float, bool]]]:
     """Embedding-based "meaningfulness" score for many topics in ONE batch.
 
-    For each topic, computes:
-        good_sim  = max cosine(topic, GOOD_TOPIC_EXEMPLARS)
-        noise_sim = max cosine(topic, NOISE_TOPIC_EXEMPLARS)
-    A topic is considered goal-worthy (pass=True) when it is meaningfully
-    closer to good exemplars than to noise, and has a minimum meaningfulness:
-        pass = (good_sim - noise_sim) > MIN_GOOD_TOPIC_MARGIN
-               AND good_sim > 0.10
+    A topic must be closer to goal-worthy topics than conversational noise,
+    and must name a subject more closely than an incomplete command. Both
+    comparisons are semantic and permit concise, meaningful subjects.
 
     The positive separation prevents marginal conversational fragments from
     becoming durable goals. The 0.04 margin and a broad knowledge-integration
@@ -369,22 +429,30 @@ def batch_topic_quality(
     if not topics:
         return {}
 
-    texts = list(topics) + GOOD_TOPIC_EXEMPLARS + NOISE_TOPIC_EXEMPLARS
+    texts = (
+        list(topics) + GOOD_TOPIC_EXEMPLARS + NOISE_TOPIC_EXEMPLARS
+        + SUBJECT_TOPIC_EXEMPLARS + INCOMPLETE_COMMAND_EXEMPLARS
+    )
     mat = embed(texts)
     if mat is None:
         return None
 
     n = len(topics)
     topic_vecs = mat[:n]
-    good_vecs = mat[n : n + len(GOOD_TOPIC_EXEMPLARS)]
-    noise_vecs = mat[n + len(GOOD_TOPIC_EXEMPLARS):]
+    cursor = n
+    good_vecs = mat[cursor : cursor + len(GOOD_TOPIC_EXEMPLARS)]
+    cursor += len(GOOD_TOPIC_EXEMPLARS)
+    noise_vecs = mat[cursor : cursor + len(NOISE_TOPIC_EXEMPLARS)]
+    cursor += len(NOISE_TOPIC_EXEMPLARS)
+    subject_vecs = mat[cursor : cursor + len(SUBJECT_TOPIC_EXEMPLARS)]
+    cursor += len(SUBJECT_TOPIC_EXEMPLARS)
+    command_vecs = mat[cursor : cursor + len(INCOMPLETE_COMMAND_EXEMPLARS)]
 
     out: Dict[str, Tuple[float, float, bool]] = {}
     for i, t in enumerate(topics):
-        good_sim = max_cosine(topic_vecs[i], good_vecs)
-        noise_sim = max_cosine(topic_vecs[i], noise_vecs)
-        ok = (good_sim - noise_sim) > MIN_GOOD_TOPIC_MARGIN and good_sim > 0.10
-        out[t] = (float(good_sim), float(noise_sim), bool(ok))
+        out[t] = _topic_quality_from_vectors(
+            topic_vecs[i], good_vecs, noise_vecs, subject_vecs, command_vecs
+        )
     return out
 
 
@@ -417,6 +485,8 @@ def batch_goal_quality_scores(
         + [TENSION_CONCEPTS[key] for key in anchor_keys]
         + GOOD_TOPIC_EXEMPLARS
         + NOISE_TOPIC_EXEMPLARS
+        + SUBJECT_TOPIC_EXEMPLARS
+        + INCOMPLETE_COMMAND_EXEMPLARS
     ))
     vectors = embed(unique_texts)
     if vectors is None:
@@ -440,15 +510,12 @@ def batch_goal_quality_scores(
 
     good_vectors = [vector_by_text[text] for text in GOOD_TOPIC_EXEMPLARS]
     noise_vectors = [vector_by_text[text] for text in NOISE_TOPIC_EXEMPLARS]
+    subject_vectors = [vector_by_text[text] for text in SUBJECT_TOPIC_EXEMPLARS]
+    command_vectors = [vector_by_text[text] for text in INCOMPLETE_COMMAND_EXEMPLARS]
     topic_quality: Dict[str, Tuple[float, float, bool]] = {}
     for name in names:
-        good_similarity = max_cosine(vector_by_text[name], good_vectors)
-        noise_similarity = max_cosine(vector_by_text[name], noise_vectors)
-        accepted = (
-            good_similarity - noise_similarity > MIN_GOOD_TOPIC_MARGIN
-            and good_similarity > 0.10
-        )
-        topic_quality[name] = (
-            float(good_similarity), float(noise_similarity), bool(accepted)
+        topic_quality[name] = _topic_quality_from_vectors(
+            vector_by_text[name], good_vectors, noise_vectors,
+            subject_vectors, command_vectors,
         )
     return tension_alignment, topic_quality

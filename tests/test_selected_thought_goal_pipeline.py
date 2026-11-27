@@ -2,6 +2,7 @@ import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from cognition.goal_engine import GoalEngine
 from cognition.goal_action_executor import GoalActionExecutor
@@ -30,7 +31,11 @@ def test_selected_thought_proposal_is_persisted_with_source_evidence(tmp_path):
         "hypothesis": "If the selected goal is routed directly, action selection will preserve focus.",
     }
 
-    result = engine.commit_selected_thought_proposal(proposal, cycle=12)
+    with patch(
+        "cognition.goal_semantics.batch_topic_quality",
+        return_value={"cognitive execution flow": (0.7, 0.2, True)},
+    ):
+        result = engine.commit_selected_thought_proposal(proposal, cycle=12)
 
     assert result["created"] is True
     assert result["verified"] is True
@@ -56,6 +61,22 @@ def test_rejected_proposal_does_not_become_a_persisted_goal(tmp_path):
 
     assert result["created"] is False
     assert result["verified"] is False
+    assert not persistence_file.exists()
+
+
+def test_selected_thought_legacy_text_fragment_cannot_become_a_goal(tmp_path):
+    persistence_file = tmp_path / "goals.json"
+    engine = GoalEngine(SimpleNamespace(), persistence_file=str(persistence_file))
+
+    result = engine.commit_selected_thought_proposal({
+        "type": "uncertainty",
+        "concept": "rappelle",
+        "origin_thought": "thought-fragment-1",
+        "concept_source": "legacy_text_extraction",
+    }, cycle=3)
+
+    assert result["created"] is False
+    assert result["reason"] == "structured_topic_required"
     assert not persistence_file.exists()
 
 
@@ -176,7 +197,6 @@ def test_enhanced_cycle_can_skip_unconsumed_advisory_plan():
 def test_high_priority_tension_defers_llm_synthesis_until_selected(tmp_path):
     evaluator = SimpleThoughtEvaluator(tmp_path)
     evaluator._classify_thought = lambda _text, _thought: "tension"
-    evaluator._extract_concept = lambda _text: "cognitive execution flow"
     evaluator._compute_priority = lambda _text, _kind: 0.8
     evaluator._compute_actionability = lambda _text, _kind: 0.8
     evaluator._identify_friction = lambda _text, _kind: "execution evidence"
@@ -185,10 +205,30 @@ def test_high_priority_tension_defers_llm_synthesis_until_selected(tmp_path):
         AssertionError("hypothesis synthesis must not run during bulk scoring")
     )
 
-    result = evaluator._evaluate_thought({"content": "a contradiction needs analysis"})
+    result = evaluator._evaluate_thought({
+        "content": "a contradiction needs analysis",
+        "topic": "cognitive execution flow",
+    })
 
     assert result["hypothesis_pending"] is True
     assert result["goal_type"] == "test_hypothesis"
+    assert result["should_create_goal"] is True
+
+
+def test_thought_without_structured_topic_is_not_promoted_from_free_text(tmp_path):
+    evaluator = SimpleThoughtEvaluator(tmp_path)
+    evaluator._classify_thought = lambda _text, _thought: "uncertainty"
+    evaluator._compute_priority = lambda _text, _kind: 0.8
+    evaluator._compute_actionability = lambda _text, _kind: 0.8
+
+    result = evaluator._evaluate_thought({
+        "content": "I should remember to recall the prior discussion",
+    })
+
+    assert result["concept"] == ""
+    assert result["concept_source"] == "missing_structured_topic"
+    assert result["should_create_goal"] is False
+    assert result["goal_proposal_deferred_reason"] == "missing_structured_topic"
 
 
 def test_test_hypothesis_goal_requires_a_persistable_hypothesis(tmp_path):
@@ -201,6 +241,7 @@ def test_test_hypothesis_goal_requires_a_persistable_hypothesis(tmp_path):
             "goal_type": "test_hypothesis",
             "concept": "cognitive_execution_flow",
             "origin_thought": "thought-truncated-hypothesis",
+            "concept_source": "structured_topic",
             "hypothesis": "",
         },
         cycle=13,
@@ -338,7 +379,11 @@ def test_structured_thought_reaches_persisted_workspace_goal_end_to_end(tmp_path
 
     goals_file = persona_dir / "goals.json"
     engine = GoalEngine(SimpleNamespace(), persistence_file=str(goals_file))
-    committed = engine.commit_selected_thought_proposal(selected, cycle=21)
+    with patch(
+        "cognition.goal_semantics.batch_topic_quality",
+        return_value={"cognitive execution flow": (0.7, 0.2, True)},
+    ):
+        committed = engine.commit_selected_thought_proposal(selected, cycle=21)
     assert committed["created"] is True
     assert committed["verified"] is True
 

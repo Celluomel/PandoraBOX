@@ -142,6 +142,17 @@ class SimpleThoughtEvaluator:
             
             if evaluation:
                 stored_proposal = None
+                if (
+                    evaluation.get("should_create_goal")
+                    and evaluation.get("concept_source") != "structured_topic"
+                ):
+                    # Re-check at the proposal writer, not only in the
+                    # evaluator. Stored/legacy evaluation payloads can predate
+                    # the structured-topic contract.
+                    evaluation["should_create_goal"] = False
+                    evaluation["goal_proposal_deferred_reason"] = (
+                        "missing_structured_topic"
+                    )
                 if evaluation['should_create_goal']:
                     if not self._has_existing_goal(goals_data, evaluation['concept']):
                         _concept_key = " ".join(
@@ -155,7 +166,7 @@ class SimpleThoughtEvaluator:
                             'origin_thought_source': str(thought.get('source') or '')[:100],
                             'origin_thought_type': str(thought.get('thought_type') or thought.get('type') or '')[:80],
                             'origin_thought_timestamp': str(thought.get('timestamp') or '')[:80],
-                            'concept_source': evaluation.get('concept_source', 'legacy_text_extraction'),
+                            'concept_source': evaluation.get('concept_source', 'missing_structured_topic'),
                             'origin_content': str(thought.get('content') or thought.get('text') or "")[:1200],
                             'created_at': datetime.now().isoformat(),
                             'conceptual_friction': evaluation.get('friction', ''),
@@ -185,6 +196,9 @@ class SimpleThoughtEvaluator:
                     'priority': evaluation['priority'],
                     'actionability': evaluation.get('actionability', 0.5),
                     'conceptual_friction': evaluation.get('friction', ''),
+                    'goal_proposal_deferred_reason': evaluation.get(
+                        'goal_proposal_deferred_reason', ''
+                    ),
                     **({"goal_proposal": stored_proposal} if stored_proposal else {}),
                 }
                 evaluated_thoughts.append(thought)
@@ -434,22 +448,30 @@ class SimpleThoughtEvaluator:
             return None
         
         # ThoughtStream carries a clean structured topic when its producer
-        # knows the subject. Prefer that over guessing from the first words
-        # of generated prose; retain extraction for legacy thoughts without it.
+        # knows the subject. Free-text extraction is not a reliable substitute
+        # for a structured concept and is language-biased.
         structured_topic = thought.get("topic") or thought.get("concept")
         concept = " ".join(str(structured_topic).replace("_", " ").split()) if structured_topic else ""
-        concept_source = "structured_topic" if concept else "legacy_text_extraction"
-        if not concept:
-            concept = self._extract_concept(text)
+        concept_source = "structured_topic" if concept else "missing_structured_topic"
         priority = self._compute_priority(text, thought_type)
         actionability = self._compute_actionability(text, thought_type)
         friction = self._identify_friction(text, thought_type)
         goal_type = self._determine_goal_type(thought_type)
         
-        should_create_goal = (
+        has_goal_signal = (
             thought_type in ['uncertainty', 'tension', 'opportunity'] and
             priority > 0.4 and
             actionability > 0.3
+        )
+        # A prose fragment is not a concept receipt. Do not manufacture a
+        # durable goal by extracting a few words from free text: that could
+        # turn an imperative such as "rappelle" into an objective. Short,
+        # structured concepts remain eligible for semantic scoring.
+        should_create_goal = has_goal_signal and concept_source == "structured_topic"
+        goal_proposal_deferred_reason = (
+            "missing_structured_topic"
+            if has_goal_signal and concept_source != "structured_topic"
+            else ""
         )
 
         # For high-priority tensions: generate a concrete hypothesis instead of
@@ -471,7 +493,8 @@ class SimpleThoughtEvaluator:
             'goal_type': 'test_hypothesis' if hypothesis_pending else goal_type,
             'hypothesis_pending': hypothesis_pending,
             'concept_source': concept_source,
-            'should_create_goal': should_create_goal
+            'should_create_goal': should_create_goal,
+            'goal_proposal_deferred_reason': goal_proposal_deferred_reason,
         }
     
     # ✅ FIX: added thought parameter
@@ -497,26 +520,6 @@ class SimpleThoughtEvaluator:
             return 'opportunity'
         else:
             return 'mundane'
-    
-    def _extract_concept(self, text: str) -> str:
-        import hashlib, re
-
-        stop_words = {'i','me','my','the','and','but','if','or','because','as'}
-
-        clean = re.sub(r'[^\w\s]', ' ', text.lower())
-        words = clean.split()
-
-        meaningful = [w for w in words if w not in stop_words and len(w) >= 4]
-
-        if meaningful:
-            concept = '_'.join(meaningful[:3])
-        elif words:
-            h = hashlib.md5(text.encode()).hexdigest()[:6]
-            concept = f"thought_{h}"
-        else:
-            concept = f"thought_{hashlib.md5(b'empty').hexdigest()[:6]}"
-
-        return concept
     
     def _compute_priority(self, text: str, thought_type: str) -> float:
         """

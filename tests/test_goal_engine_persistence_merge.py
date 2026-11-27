@@ -310,7 +310,13 @@ def test_tension_source_receipt_survives_goal_engine_persistence(tmp_path):
         }],
     )
 
-    assert engine.add_goal(goal)
+    with patch(
+        "cognition.goal_semantics.batch_topic_quality",
+        return_value={
+            "how does memory consolidation work?": (0.7, 0.2, True),
+        },
+    ):
+        assert engine.add_goal(goal)
     saved = json.loads(path.read_text(encoding="utf-8"))["goals"][goal.id]
     restored = GoalEngine(None, persistence_file=str(path)).get_goal_by_id(goal.id)
 

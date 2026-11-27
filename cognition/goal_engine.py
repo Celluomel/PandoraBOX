@@ -431,7 +431,8 @@ class GoalEngine:
                 if explicit_turn and method == "GoalEngine.create_user_requested_goal" and ref == f"turn:{explicit_turn}":
                     return True, "verified_explicit_user_goal"
             elif kind == "selected_workspace_thought":
-                if thought_id and method and ref == f"thought:{thought_id}":
+                if (thought_id and method == "structured_topic"
+                        and ref == f"thought:{thought_id}"):
                     return True, "verified_workspace_thought"
             elif kind == "autonomous_motivation":
                 if method and ref:
@@ -1421,6 +1422,14 @@ class GoalEngine:
         proposal_type = str(proposal.get("type") or "uncertainty")
         source_thought_id = str(proposal.get("origin_thought") or "").strip()
         hypothesis = " ".join(str(proposal.get("hypothesis") or "").split())[:500]
+        concept_source = str(proposal.get("concept_source") or "").strip()
+        if concept_source != "structured_topic":
+            return {
+                "created": False,
+                "verified": False,
+                "topic": concept,
+                "reason": "structured_topic_required",
+            }
         goal_type = str(proposal.get("goal_type") or proposal_type)
         if goal_type == "test_hypothesis" and not hypothesis:
             return {
@@ -1454,12 +1463,12 @@ class GoalEngine:
             source_thought_source=str(proposal.get("origin_thought_source") or "")[:100],
             source_thought_type=str(proposal.get("origin_thought_type") or "")[:80],
             source_thought_timestamp=str(proposal.get("origin_thought_timestamp") or "")[:80],
-            source_concept_method=str(proposal.get("concept_source") or "legacy_text_extraction")[:80],
+            source_concept_method=concept_source[:80],
             source_concept_kind="selected_workspace_thought",
             source_concept_ref=f"thought:{source_thought_id}"[:240],
             source_provenance_records=[{
                 "kind": "selected_workspace_thought",
-                "method": str(proposal.get("concept_source") or "legacy_text_extraction")[:120],
+                "method": concept_source[:120],
                 "ref": f"thought:{source_thought_id}"[:240],
                 "source_thought_id": source_thought_id,
             }],

@@ -125,12 +125,15 @@ class GoalSemanticsCacheTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(result, np.asarray([[20.0, 2.0], [20.0, 2.0]]))
 
-    def _score_topic(self, good_sim, noise_sim):
+    def _score_topic(self, good_sim, noise_sim, subject_sim=0.50, command_sim=0.40):
         rows = 1 + len(goal_semantics.GOOD_TOPIC_EXEMPLARS) + len(
             goal_semantics.NOISE_TOPIC_EXEMPLARS
+        ) + len(goal_semantics.SUBJECT_TOPIC_EXEMPLARS) + len(
+            goal_semantics.INCOMPLETE_COMMAND_EXEMPLARS
         )
         with patch("cognition.goal_semantics.embed", return_value=np.zeros((rows, 2))), patch(
-            "cognition.goal_semantics.max_cosine", side_effect=[good_sim, noise_sim]
+            "cognition.goal_semantics.max_cosine",
+            side_effect=[good_sim, noise_sim, subject_sim, command_sim],
         ):
             return goal_semantics.batch_topic_quality(["sample topic"])["sample topic"]
 
@@ -150,6 +153,41 @@ class GoalSemanticsCacheTests(unittest.TestCase):
         good, noise, accepted = self._score_topic(0.5054, 0.4551)
         self.assertGreater(good - noise, goal_semantics.MIN_GOOD_TOPIC_MARGIN)
         self.assertTrue(accepted)
+
+    def test_rejects_semantically_incomplete_command_even_if_topic_margin_passes(self):
+        _good, _noise, accepted = self._score_topic(
+            0.66, 0.48, subject_sim=0.51, command_sim=0.68
+        )
+        self.assertFalse(accepted)
+
+    def test_accepts_concise_subject_with_small_subject_margin(self):
+        _good, _noise, accepted = self._score_topic(
+            0.56, 0.48, subject_sim=0.51, command_sim=0.48
+        )
+        self.assertTrue(accepted)
+
+    def test_strong_subject_similarity_preserves_recall_related_concept(self):
+        _good, _noise, accepted = self._score_topic(
+            0.75, 0.55, subject_sim=0.564, command_sim=0.690
+        )
+        self.assertTrue(accepted)
+
+    def test_combined_goal_quality_uses_same_subject_completeness_gate(self):
+        name = "rappelle"
+        rows = len(dict.fromkeys(
+            [name] + goal_semantics.GOOD_TOPIC_EXEMPLARS
+            + goal_semantics.NOISE_TOPIC_EXEMPLARS
+            + goal_semantics.SUBJECT_TOPIC_EXEMPLARS
+            + goal_semantics.INCOMPLETE_COMMAND_EXEMPLARS
+        ))
+        scores = [0.664, 0.485, 0.511, 0.684]
+        with patch("cognition.goal_semantics.embed", return_value=np.zeros((rows, 2))), patch(
+            "cognition.goal_semantics.max_cosine", side_effect=scores
+        ):
+            _alignment, quality = goal_semantics.batch_goal_quality_scores([name], {})
+        self.assertAlmostEqual(quality[name][0], 0.664)
+        self.assertAlmostEqual(quality[name][1], 0.485)
+        self.assertFalse(quality[name][2])
 
 
 if __name__ == "__main__":

@@ -332,7 +332,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertNotIn("private_query", str(summary))
         self.assertNotIn("do not expose", str(summary))
 
-    def test_simple_thought_evaluator_can_timestamp_a_fresh_goal_candidate(self):
+    def test_legacy_text_evaluation_cannot_promote_a_goal_without_structured_topic(self):
         class _Dal:
             def get_thoughts(self, **kwargs):
                 return [{
@@ -364,11 +364,12 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             ):
                 suggestions = evaluator.evaluate_recent_thoughts()
 
-        self.assertEqual(len(suggestions), 1)
-        self.assertEqual(suggestions[0]["concept"], "robot capabilities")
-        self.assertTrue(suggestions[0]["created_at"])
-        self.assertEqual(suggestions[0]["origin_thought_source"], "cognitive_loop")
-        self.assertEqual(suggestions[0]["origin_thought_type"], "tension_awareness")
+        self.assertEqual(suggestions, [])
+        self.assertFalse(evaluation["should_create_goal"])
+        self.assertEqual(
+            evaluation["goal_proposal_deferred_reason"],
+            "missing_structured_topic",
+        )
 
     def test_self_description_prompt_is_factual_and_marks_registry_partial(self):
         with tempfile.TemporaryDirectory() as temp_dir:
