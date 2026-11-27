@@ -283,6 +283,8 @@ def test_workspace_prompt_surfaces_open_uncertainty_without_flattening_source():
     assert "5 independent open source record(s)" in fragment
     assert "peak salience=0.90" in fragment
     assert "contributing modules" in fragment
+    assert "summarize every listed open record from this snapshot" in fragment
+    assert "retain its source type, module, and reference" in fragment
 
 
 def test_workspace_prompt_explicitly_reports_zero_open_uncertainty_sources():
@@ -295,6 +297,8 @@ def test_workspace_prompt_explicitly_reports_zero_open_uncertainty_sources():
 
     assert "0 independent uncertainty source records" in fragment
     assert "do not invent an internal source" in fragment
+    assert "answer from this snapshot" in fragment
+    assert "do not replace it with chat history" in fragment
     assert "[Open uncertainty synthesis]" in full_prompt
     assert receipt["open_uncertainty_source_count"] == 0
     assert receipt["uncertainty_synthesis_included"] is True

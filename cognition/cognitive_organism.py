@@ -149,7 +149,10 @@ def _global_workspace_uncertainty_fragment(workspace_state: Any) -> str:
         return (
             "[Open uncertainty synthesis] 0 independent uncertainty source records "
             "are currently open in the Global Workspace. This means none are "
-            "recorded there now; do not invent an internal source."
+            "recorded there now; do not invent an internal source. "
+            "For questions about the current Global Workspace, answer from this "
+            "snapshot and state that no open source is registered; do not replace "
+            "it with chat history, profile, goals, or inferred internal state."
         )
 
     source_counts: dict[str, int] = {}
@@ -177,6 +180,9 @@ def _global_workspace_uncertainty_fragment(workspace_state: Any) -> str:
         f"source record(s), peak salience={peak_salience:.2f}; "
         f"source types: {source_summary}; contributing modules: {module_summary}. "
         "Keep origins distinct; do not discard an alternative or resolve a record without evidence.\n"
+        "For questions about the current Global Workspace, summarize every listed "
+        "open record from this snapshot and retain its source type, module, and "
+        "reference. Do not substitute chat history, profile, goals, or inferred state.\n"
         "[Open uncertainty sources] " + " | ".join(rendered)
     )
 
