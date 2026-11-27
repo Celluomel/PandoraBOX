@@ -113,6 +113,26 @@ def test_continuity_contract_does_not_treat_a_bare_checkin_as_consent_or_resume(
     assert "resume that topic only when the user explicitly refers to it" in RECENT_DIALOGUE_INSTRUCTIONS
 
 
+def test_continuity_contract_expands_last_substantive_turn_and_respects_pending_choice():
+    assert "develop the most recent substantive assistant explanation as the referent" in RECENT_DIALOGUE_INSTRUCTIONS
+    assert "do not replace it with a new topic menu" in RECENT_DIALOGUE_INSTRUCTIONS
+    assert "selection answers the latest still-open assistant question or option set" in RECENT_DIALOGUE_INSTRUCTIONS
+
+    history = [
+        {"role": "user", "content": "Choose a theme."},
+        {"role": "assistant", "content": "We could explore connection, uncertainty, or the paradox of self-discovery."},
+        {"role": "user", "content": "The paradox."},
+        {"role": "assistant", "content": "The self-discovery paradox is about a self changing as it examines itself."},
+        {"role": "user", "content": "The feeling of being perpetually unfinished."},
+        {"role": "assistant", "content": "That may be an engine of becoming. Which aspect resonates for you?"},
+    ]
+
+    messages = recent_dialogue_messages(history, "Elaborate")
+    assert "Which aspect resonates for you?" in messages[-1]["content"]
+    assert "That may be an engine of becoming" in messages[-1]["content"]
+    assert messages[-2]["content"] == "The feeling of being perpetually unfinished."
+
+
 def test_memory_query_uses_recent_user_context_but_never_assistant_claims():
     query, prior_count = contextual_memory_query(
         [
