@@ -4,7 +4,10 @@ from types import SimpleNamespace
 from cognition.global_workspace import GlobalWorkspace
 from cognition.semantic_extractor import SemanticExtractor
 from cognition.intention_reasoner import IntentionReasoner
-from cognition.cognitive_organism import _global_workspace_prompt_fragment
+from cognition.cognitive_organism import (
+    _global_workspace_prompt_fragment,
+    _workspace_state_for_prompt,
+)
 from core.cognitive_event_bus import (
     CognitiveEventBus,
     CONTRADICTION_DETECTED,
@@ -218,6 +221,29 @@ def test_workspace_prompt_surfaces_open_uncertainty_without_flattening_source():
     assert "5 independent open source record(s)" in fragment
     assert "peak salience=0.90" in fragment
     assert "contributing modules" in fragment
+
+
+def test_prompt_uses_current_workspace_sources_not_stale_slow_cycle_snapshot():
+    workspace = GlobalWorkspace()
+    record = workspace.record_uncertainty(
+        source_type="user_exchange:open_question",
+        source_module="semantic_extractor",
+        source_ref="turn-current",
+        turn_id="turn-current",
+        question="Which source remains unresolved?",
+        evidence="Several possible sources remain open.",
+        salience=0.7,
+    )
+    stale_snapshot = GlobalWorkspace().get_state()
+    organism = SimpleNamespace(workspace=workspace, _v32_workspace_state=stale_snapshot)
+
+    selected = _workspace_state_for_prompt(organism)
+    fragment = _global_workspace_prompt_fragment(selected)
+
+    assert selected.uncertainty_sources[0]["uncertainty_id"] == record["uncertainty_id"]
+    assert "Which source remains unresolved?" in fragment
+    assert "ref=turn-current" in fragment
+    assert "Several possible sources remain open." not in fragment
 
 
 def test_intention_reasoning_limits_enter_workspace_as_separate_evidence(tmp_path):

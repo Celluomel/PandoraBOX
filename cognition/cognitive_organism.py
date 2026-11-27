@@ -206,6 +206,20 @@ def _global_workspace_prompt_fragment(
     return fragment
 
 
+def _workspace_state_for_prompt(organism: Any) -> Any:
+    """Prefer the current shared state; the slow-cycle snapshot may lag writers."""
+    workspace = getattr(organism, "workspace", None)
+    get_state = getattr(workspace, "get_state", None)
+    if callable(get_state):
+        try:
+            current = get_state()
+            if current is not None:
+                return current
+        except Exception:
+            pass
+    return getattr(organism, "_v32_workspace_state", None)
+
+
 class CognitiveOrganism:
     """
     Integrates all new cognitive subsystems around an existing LuminaCore instance.
@@ -759,19 +773,12 @@ class CognitiveOrganism:
         budget.add("cognitive_pressure", "arbitration", arb_block)
 
         # ── Phase 4.x: Global Workspace state ──────────────────────────────
-        # Reads the WorkspaceState snapshot that InternalLoop's autonomous
-        # slow-cycle already populates (WorkspaceCompetition.compete() +
-        # executive_arbitration.arbitrate(), synced via
-        # cognition/workspace_state_sync.py). Deliberately a READ of the
-        # latest snapshot here, not a synchronous recompute of the full
-        # attention->prediction->...->arbitration chain on every user
-        # message — that chain already runs in the background loop; making
-        # it synchronous on the live chat path would add real latency to
-        # every reply for state that changes slowly across turns anyway.
+        # Read the current shared state: source writers can update it between
+        # slow arbitration cycles. The published winner still supplies focus,
+        # while the canonical workspace snapshot supplies recent source records.
+        # Do not synchronously recompute the attention/arbitration chain here.
         try:
-            _ws_state = getattr(self, "_v32_workspace_state", None)
-            if _ws_state is None and getattr(self, "workspace", None) is not None:
-                _ws_state = self.workspace.get_state()
+            _ws_state = _workspace_state_for_prompt(self)
             if _ws_state is not None:
                 _published_winner = getattr(self, "_v32_workspace_winner", None)
                 _published_focus = None
