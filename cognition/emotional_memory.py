@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -80,6 +81,10 @@ class EmotionalTrace:
     perspective:  str   = "organism"  # organism state or lexicon-inferred user cue
     confidence:   float = 0.5
     evidence_source: str = ""
+    # Keep the affective mixture and its causal context. Older persisted
+    # traces omit these fields and remain readable through their defaults.
+    affect_profile: Dict[str, Any] = field(default_factory=dict)
+    turn_id: str = ""
     # Emotional relevance is not evidence that a conversation should become
     # an autonomous, persistent goal. Only a caller with explicit unresolved-
     # goal provenance may opt a trace into goal-topic generation.
@@ -107,6 +112,7 @@ class EmotionalResidueVector:
     dominant_emotion: str = ""      # the emotion with most residue weight
     total_weight:    float = 0.0    # how much residue is active
     dominant_category: str = ""     # what kind of experiences dominate
+    channel_deviations: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -169,12 +175,27 @@ class EmotionalMemorySystem:
         confidence:      float = 0.5,
         evidence_source: str   = "",
         goal_eligible:   bool  = False,
+        affect_profile:  Optional[Dict[str, Any]] = None,
+        turn_id:         str   = "",
     ) -> Optional[EmotionalTrace]:
         """
         Store a trace if the emotional intensity is above threshold.
         Intensity = |valence| × arousal × significance_heuristic.
         """
-        significance = abs(valence) * arousal
+        compact_profile = self._compact_affect_profile(affect_profile)
+        channel_deviations = [
+            abs(float(item.get("deviation", 0.0)))
+            for item in compact_profile.get("channels", {}).values()
+            if isinstance(item, dict) and abs(float(item.get("deviation", 0.0))) >= 0.01
+        ]
+        # Net valence can cancel in a mixed state (for example, curiosity and
+        # anxiety at once). Preserve a salient mixture based on channel
+        # deviation as well as the signed valence/arousal projection.
+        profile_intensity = (
+            math.sqrt(sum(value * value for value in channel_deviations) / len(channel_deviations))
+            if channel_deviations else 0.0
+        )
+        significance = max(abs(valence) * arousal, profile_intensity * max(arousal, 0.25))
         minimum_significance = 0.18 if perspective == "user" else SIGNIFICANCE_FLOOR
         if significance < minimum_significance:
             return None
@@ -190,6 +211,8 @@ class EmotionalMemorySystem:
             perspective      = perspective,
             confidence       = max(0.0, min(1.0, float(confidence))),
             evidence_source  = str(evidence_source or "")[:40],
+            affect_profile  = compact_profile,
+            turn_id         = str(turn_id or "")[:120],
             goal_eligible    = goal_eligible is True,
         )
 
@@ -208,6 +231,59 @@ class EmotionalMemorySystem:
         self._save()
         return trace
 
+    @staticmethod
+    def _compact_affect_profile(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Persist a bounded, backward-compatible snapshot of affect evidence."""
+        if not isinstance(profile, dict):
+            return {}
+        raw_channels = profile.get("channels")
+        channels: Dict[str, Dict[str, float]] = {}
+        if isinstance(raw_channels, dict):
+            for name, raw in raw_channels.items():
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    value = float(raw.get("value"))
+                    baseline = float(raw.get("baseline"))
+                    deviation = float(raw.get("deviation", value - baseline))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not all(math.isfinite(item) for item in (value, baseline, deviation)):
+                    continue
+                channels[str(name)[:48]] = {
+                    "value": round(max(0.0, min(1.0, value)), 4),
+                    "baseline": round(max(0.0, min(1.0, baseline)), 4),
+                    "deviation": round(max(-1.0, min(1.0, deviation)), 4),
+                }
+        result: Dict[str, Any] = {"channels": channels}
+        for key in ("valence", "arousal", "mood_valence", "mood_arousal"):
+            try:
+                value = float(profile.get(key))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(value):
+                result[key] = round(value, 4)
+        causes = profile.get("recent_causes")
+        if isinstance(causes, list):
+            safe_causes = []
+            for event in causes[-4:]:
+                if not isinstance(event, dict):
+                    continue
+                item = {
+                    key: event.get(key)
+                    for key in ("event_type", "source", "timestamp", "turn_id", "intensity")
+                    if event.get(key) is not None
+                }
+                if isinstance(event.get("cause_context"), dict):
+                    item["cause_context"] = {
+                        str(key)[:48]: value
+                        for key, value in list(event["cause_context"].items())[:8]
+                        if isinstance(value, (str, int, float, bool)) or value is None
+                    }
+                safe_causes.append(item)
+            result["recent_causes"] = safe_causes
+        return result
+
     def compute_residue(self) -> EmotionalResidueVector:
         """
         Aggregate all active traces into a residue vector.
@@ -219,6 +295,8 @@ class EmotionalMemorySystem:
         total_weight = 0.0
         emotion_weights: Dict[str, float] = {}
         category_weights: Dict[str, float] = {}
+        channel_weights: Dict[str, float] = {}
+        channel_total_weights: Dict[str, float] = {}
 
         with self._lock:
             traces = list(self._state.traces)
@@ -239,6 +317,18 @@ class EmotionalMemorySystem:
                 valence_sum  += t.valence  * w
                 arousal_sum  += t.arousal  * w
                 total_weight += w
+                raw_channels = t.affect_profile.get("channels", {}) if isinstance(t.affect_profile, dict) else {}
+                if isinstance(raw_channels, dict):
+                    for name, item in raw_channels.items():
+                        if not isinstance(item, dict):
+                            continue
+                        try:
+                            deviation = float(item.get("deviation"))
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                        if math.isfinite(deviation):
+                            channel_weights[name] = channel_weights.get(name, 0.0) + deviation * w
+                            channel_total_weights[name] = channel_total_weights.get(name, 0.0) + w
                 if t.dominant_emotion:
                     emotion_weights[t.dominant_emotion] = \
                         emotion_weights.get(t.dominant_emotion, 0.0) + w
@@ -253,6 +343,13 @@ class EmotionalMemorySystem:
 
         dominant_emotion  = max(emotion_weights,  key=emotion_weights.get,  default="")
         dominant_category = max(category_weights, key=category_weights.get, default="")
+        channel_deviations = {
+            name: round(channel_weights[name] / weight, 4)
+            for name, weight in channel_total_weights.items()
+            if weight > 0
+        }
+        if channel_deviations:
+            dominant_emotion = max(channel_deviations, key=lambda name: abs(channel_deviations[name]))
 
         return EmotionalResidueVector(
             valence_nudge    = round(valence_sum  / total_weight, 4),
@@ -260,6 +357,7 @@ class EmotionalMemorySystem:
             dominant_emotion = dominant_emotion,
             total_weight     = round(total_weight, 3),
             dominant_category= dominant_category,
+            channel_deviations=channel_deviations,
         )
 
     def apply_residue_to_emotional_state(
@@ -279,16 +377,28 @@ class EmotionalMemorySystem:
         scale  = min(0.6, residue.total_weight)   # cap maximum influence
         nudges: Dict[str, float] = {}
 
-        # Map valence to emotion nudges
-        if residue.valence_nudge > 0.15:
-            nudges["warmth"]      = residue.valence_nudge * scale * 0.6
-            nudges["satisfaction"] = residue.valence_nudge * scale * 0.4
-        elif residue.valence_nudge < -0.15:
-            nudges["melancholy"]  = abs(residue.valence_nudge) * scale * 0.5
-
-        # Map arousal to activation
-        if residue.arousal_nudge > 0.60:
-            nudges["curiosity"]   = (residue.arousal_nudge - 0.5) * scale * 0.4
+        if residue.channel_deviations:
+            # Carry the actual affect mixture forward. This is a transient
+            # self-influence, not a permanent baseline change.
+            nudges = {
+                name: max(-0.06, min(0.06, deviation * scale * 0.25))
+                for name, deviation in residue.channel_deviations.items()
+                if name in getattr(
+                    getattr(getattr(self._o, "ai_system", None), "emotional_state", None),
+                    "emotions", {},
+                ) and abs(deviation) >= 0.01
+            }
+        else:
+            # Backward compatibility for legacy traces that only stored a
+            # valence/arousal summary. All targets are real affect channels.
+            if residue.valence_nudge > 0.15:
+                nudges["warmth"] = residue.valence_nudge * scale * 0.6
+                nudges["satisfaction"] = residue.valence_nudge * scale * 0.4
+            elif residue.valence_nudge < -0.15:
+                nudges["sadness"] = abs(residue.valence_nudge) * scale * 0.5
+                nudges["frustration"] = abs(residue.valence_nudge) * scale * 0.25
+            if residue.arousal_nudge > 0.60:
+                nudges["curiosity"] = (residue.arousal_nudge - 0.5) * scale * 0.4
 
         if not nudges:
             return
@@ -413,6 +523,7 @@ class EmotionalMemorySystem:
         user_input:  str,
         ai_response: str,
         user_id:     str = "",
+        turn_id:     str = "",
     ) -> None:
         """
         Auto-extract emotional trace from an interaction.
@@ -423,21 +534,60 @@ class EmotionalMemorySystem:
             emo_state = getattr(ai_system, "emotional_state", None)
             emotions = getattr(emo_state, "emotions", {}) if emo_state else {}
             if emotions:
-                dominant = max(emotions.items(), key=lambda e: e[1].value)
-                dom_name = dominant[0]
-                dom_val = dominant[1].value
-                arousal = min(1.0, len(ai_response) / 800 + dom_val * 0.4)
-                positive_emos = {"warmth", "curiosity", "enthusiasm", "satisfaction",
-                                 "wonder", "joy", "care", "engagement"}
-                valence_sign = 1.0 if dom_name in positive_emos else -0.5
+                snapshot_getter = getattr(emo_state, "get_self_model_snapshot", None)
+                profile = snapshot_getter(event_limit=4) if callable(snapshot_getter) else {}
+                channels = profile.get("channels", {}) if isinstance(profile, dict) else {}
+                if isinstance(channels, dict) and channels:
+                    valid_deviations = {
+                        str(name): float(item.get("deviation", 0.0))
+                        for name, item in channels.items()
+                        if isinstance(item, dict)
+                    }
+                    dom_name = max(valid_deviations, key=lambda name: abs(valid_deviations[name]))
+                    valence = float(profile.get("valence", 0.0))
+                    arousal = float(profile.get("arousal", 0.4))
+                    description = "Affect profile shift: " + ", ".join(
+                        str(event.get("event_type"))
+                        for event in profile.get("recent_causes", [])[-2:]
+                        if isinstance(event, dict) and event.get("event_type")
+                    )
+                    evidence_source = "emotional_state_snapshot"
+                else:
+                    # Compatibility with older/test doubles that expose only
+                    # scalar emotion values. Never infer arousal from answer
+                    # length: response verbosity is not affect evidence.
+                    from cognition.emotional_state import (
+                        EMOTION_DEFAULT_BASELINES,
+                        EmotionalStateManager,
+                    )
+                    values = {str(name): float(item.value) for name, item in emotions.items()}
+                    baselines = {
+                        str(name): float(getattr(
+                            item, "baseline", EMOTION_DEFAULT_BASELINES.get(str(name), 0.3),
+                        ))
+                        for name, item in emotions.items()
+                    }
+                    valence, arousal = EmotionalStateManager.calculate_valence_arousal(
+                        values, baselines,
+                    )
+                    dom_name = max(
+                        values,
+                        key=lambda name: abs(values[name] - baselines.get(name, 0.3)),
+                    )
+                    profile = {}
+                    description = f"[{dom_name}] during interaction"
+                    evidence_source = "legacy_emotion_channels"
                 self.record_if_significant(
-                    valence=valence_sign * dom_val,
+                    valence=valence,
                     arousal=arousal,
-                    description=f"[{dom_name}] during interaction: {user_input[:50]}...",
+                    description=description[:120],
                     user_id=user_id,
                     category="interaction",
                     dominant_emotion=dom_name,
                     perspective="organism",
+                    evidence_source=evidence_source,
+                    affect_profile=profile,
+                    turn_id=turn_id,
                     # This trace calibrates emotional residue; the raw user
                     # request is not itself an enduring objective.
                     goal_eligible=False,

@@ -2108,6 +2108,7 @@ class CognitiveOrganism:
                 user_input  = user_input or "",
                 ai_response = response   or "",
                 user_id     = _uid,
+                turn_id     = str(turn_id or ""),
             )
         except Exception:
             pass
