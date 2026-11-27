@@ -21,17 +21,6 @@ from cognition.tension_topics import generate_topic_with_provenance, TENSION_GOA
 
 logger = logging.getLogger(__name__)
 
-# Tension keys → goal themes that are meaningful
-TENSION_THEMES = {
-    'curiosity_drive':        ['understand', 'explore', 'learn', 'discover', 'investigate', 'research'],
-    'identity_stress':        ['identity', 'self', 'values', 'purpose', 'meaning', 'consciousness'],
-    'goal_pressure':          ['complete', 'achieve', 'resolve', 'progress', 'advance'],
-    'contradiction_pressure': ['resolve', 'reconcile', 'integrate', 'clarify', 'align'],
-    'social_drive':           ['connect', 'relate', 'understand_user', 'empathize', 'engage'],
-    'knowledge_uncertainty':  ['understand', 'clarify', 'learn', 'research', 'resolve_uncertainty'],
-}
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -311,15 +300,14 @@ class GoalQualityFilter:
         Returns (score, [reasons]).
 
         semantic_align: optional precomputed (best_alignment, best_tension_key)
-            from the embedding-based scorer (cognition.goal_semantics). When
-            provided, tension alignment uses real semantic similarity; when
-            None, the original static dictionary matching is used as fallback.
+            from the embedding-based scorer (cognition.goal_semantics). If it is
+            unavailable, content-derived alignment remains neutral; no lexical
+            fallback is used to infer meaning or affective resonance.
         """
         reasons = []
         score = 0.5  # neutral baseline
 
         name  = goal.get('name', '').lower().strip()
-        words = set(name.replace('_', ' ').split())
 
         # Reuse the same semantic meaningfulness gate as GoalEngine. Unknown
         # embedding status is not a negative verdict and therefore cannot
@@ -336,13 +324,6 @@ class GoalQualityFilter:
         if semantic_quality_verdict is not None and not bool(semantic_quality_verdict[2]):
             return 0.0, ["semantic topic-quality gate rejected topic"]
 
-        # ── Semantic richness ──────────────────────────────────────────────
-        if len(words) <= 1:
-            score -= 0.2
-            reasons.append("single-word goal")
-        elif len(words) >= 3:
-            score += 0.1
-            reasons.append("multi-word goal")
 
         # ── Origin quality ─────────────────────────────────────────────────
         origin = goal.get('origin', '')
@@ -359,9 +340,8 @@ class GoalQualityFilter:
             score += 0.05
 
         # ── Tension alignment ──────────────────────────────────────────────
-        # Preferred: embedding-based semantic similarity (goal name × tension
-        # concept anchor). Fallback: original static dictionary matching when
-        # no embedding tier is reachable (semantic_align is None).
+        # Use only measured semantic similarity. If the embedding tier is
+        # unavailable, do not guess alignment from words in the goal text.
         best_tension_match = 0.0
         if semantic_align is not None:
             best_tension_match, best_tension_key = semantic_align
@@ -372,22 +352,8 @@ class GoalQualityFilter:
                     f"{tension_level:.2f} (cosine)"
                 )
         else:
-            for tension_key, themes in TENSION_THEMES.items():
-                tension_level = tensions.get(tension_key, 0.0)
-                if tension_level < 0.3:
-                    continue
-                if any(theme in name for theme in themes):
-                    alignment = tension_level * 0.3
-                    best_tension_match = max(best_tension_match, alignment)
-                    reasons.append(f"aligns with {tension_key}={tension_level:.2f}")
+            reasons.append("semantic tension alignment unavailable; no lexical inference applied")
         score += best_tension_match
-
-        # ── Emotional resonance ────────────────────────────────────────────
-        if emotions.get('curiosity', 0) > 0.7 and any(
-            t in name for t in ['understand', 'explore', 'learn', 'discover']
-        ):
-            score += 0.05
-            reasons.append("resonates with high curiosity")
 
         # ── Origin thoughts ────────────────────────────────────────────────
         if goal.get('origin_thoughts'):

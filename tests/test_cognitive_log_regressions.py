@@ -823,6 +823,39 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertTrue(reasons[0].startswith("semantic topic-quality gate rejected"))
         self.assertGreater(real_score, score)
 
+    def test_goal_quality_filter_does_not_use_lexical_alignment_when_embeddings_unavailable(self):
+        quality = GoalQualityFilter.__new__(GoalQualityFilter)
+        common = {
+            "origin": "manual",
+            "priority": 0.5,
+        }
+        scores = []
+        for label in ("rappelle", "remember", "郵便"):
+            score, reasons = quality._score_goal(
+                {**common, "name": label},
+                tensions={"curiosity_drive": 1.0, "knowledge_uncertainty": 1.0},
+                emotions={"curiosity": 1.0},
+                semantic_quality_checked=True,
+            )
+            scores.append(score)
+            self.assertIn(
+                "semantic tension alignment unavailable; no lexical inference applied",
+                reasons,
+            )
+            self.assertFalse(any("resonates with" in reason for reason in reasons))
+        self.assertEqual(scores, [scores[0]] * len(scores))
+
+    def test_goal_quality_filter_uses_semantic_alignment_when_available(self):
+        quality = GoalQualityFilter.__new__(GoalQualityFilter)
+        score, reasons = quality._score_goal(
+            {"name": "any topic", "origin": "manual", "priority": 0.5},
+            tensions={"curiosity_drive": 1.0}, emotions={},
+            semantic_align=(0.2, "curiosity_drive"),
+            semantic_quality_checked=True,
+        )
+        self.assertAlmostEqual(score, 0.75)
+        self.assertTrue(any("semantically aligns with curiosity_drive" in reason for reason in reasons))
+
     def test_tte_migrates_iteration_count_and_keeps_valid_records(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "thought_threads.json"
