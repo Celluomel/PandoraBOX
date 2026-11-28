@@ -723,7 +723,28 @@ def test_async_worker_result_is_attached_to_its_origin_cycle_not_current_cycle()
     assert worker_result == [True]
     assert origin["stages"][-1]["async_completion"] is True
     assert origin["stages"][-1]["metrics"] == {"need_count": 2, "acted_count": 1}
+    assert origin["stages"][-1]["inputs"]["origin_process_instance_id"] == loop._process_instance_id
     assert current["stages"] == []
+
+
+def test_async_cycle_completion_cannot_attach_to_same_number_from_previous_process():
+    loop = make_loop()
+    loop._process_instance_id = "current-process-instance"
+    loop._cycle_evidence.extend([
+        {"cycle_id": 10, "process_instance_id": "previous-process-instance", "stages": []},
+        {"cycle_id": 10, "process_instance_id": "current-process-instance", "stages": []},
+    ])
+
+    assert loop.record_async_cycle_stage(10, "worker.result", "completed") is True
+    assert loop.record_async_cycle_stage(
+        10, "worker.late_result", "completed",
+        process_instance_id="previous-process-instance",
+    ) is False
+
+    old_receipt, current_receipt = loop._cycle_evidence
+    assert old_receipt["stages"] == []
+    assert len(current_receipt["stages"]) == 1
+    assert current_receipt["stages"][0]["inputs"]["origin_process_instance_id"] == "current-process-instance"
 
 
 def test_async_action_receipt_exposes_effect_flags_without_result_text():

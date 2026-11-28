@@ -1380,17 +1380,29 @@ class InternalThoughtLoop:
         self, cycle_id: int, stage: str, status: str, *,
         output: Any = None, metrics: dict[str, Any] | None = None,
         error_type: str | None = None,
+        process_instance_id: str | None = None,
     ) -> bool:
-        """Attach a worker-thread result to its originating retained cycle."""
+        """Attach async output only to its originating process and cycle."""
         lock = getattr(self, "_cycle_evidence_lock", None)
         if lock is None:
             return False
+        current_instance_id = getattr(
+            self, "_process_instance_id", f"{os.getpid()}:untracked"
+        )
+        origin_instance_id = process_instance_id or current_instance_id
+        # A worker belonging to this loop may only append to this process
+        # instance. Old persisted receipts are history, not writable targets.
+        if origin_instance_id != current_instance_id:
+            return False
         with lock:
             receipt = self._active_cycle_evidence
-            if receipt is None or int(receipt.get("cycle_id", -1)) != int(cycle_id):
+            if (receipt is None
+                    or int(receipt.get("cycle_id", -1)) != int(cycle_id)
+                    or receipt.get("process_instance_id") != origin_instance_id):
                 receipt = next(
                     (item for item in reversed(self._cycle_evidence)
-                     if int(item.get("cycle_id", -1)) == int(cycle_id)),
+                     if int(item.get("cycle_id", -1)) == int(cycle_id)
+                     and item.get("process_instance_id") == origin_instance_id),
                     None,
                 )
             if receipt is None:
@@ -1402,7 +1414,10 @@ class InternalThoughtLoop:
                 "stage": str(stage),
                 "status": str(status),
                 "async_completion": True,
-                "inputs": {"origin_cycle_id": int(cycle_id)},
+                "inputs": {
+                    "origin_cycle_id": int(cycle_id),
+                    "origin_process_instance_id": origin_instance_id,
+                },
                 "output_ref": (
                     self._evidence_fingerprint(output) if output is not None else None
                 ),

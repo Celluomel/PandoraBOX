@@ -1651,6 +1651,7 @@ class IntentionPlanningTests(unittest.TestCase):
             report = executor.run_tick(cycle_id=91)
 
         self.assertEqual(report["outcome_status"], "dispatched")
+        self.assertIsNone(report["success"])
         executor._action_memory_recall_with_fallback.assert_not_called()
         self.assertTrue(callable(captured["action"]))
 

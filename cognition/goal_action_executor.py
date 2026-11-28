@@ -737,7 +737,9 @@ class GoalActionExecutor:
                 async_dispatched = True
                 # Dispatch is not an outcome. The coroutine records the plan
                 # result only after it has produced usable cognitive output.
-                report['success'] = False
+                # A dispatched worker has no terminal success/failure yet.
+                # None keeps the receipt from presenting "pending" as failure.
+                report['success'] = None
                 report['outcome_status'] = 'dispatched'
                 report['result']  = f"{action_type} dispatched (async)"
 
