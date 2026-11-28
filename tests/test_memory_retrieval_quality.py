@@ -46,6 +46,9 @@ class _MemoryProfileRouterEmbedder:
             _CONTINUING_COMMITMENT_EXAMPLES,
             _USER_UNCERTAINTY_EXAMPLES,
             _COMMUNICATIVE_POSTURE_EXAMPLES,
+            _RESPONSE_FORMAT_REVISION_EXAMPLES,
+            _RESPONSE_ACKNOWLEDGMENT_EXAMPLES,
+            _FUTURE_RESPONSE_STYLE_EXAMPLES,
         )
 
         if isinstance(texts, str):
@@ -63,9 +66,13 @@ class _MemoryProfileRouterEmbedder:
         commitment_positive_start = uncertainty_negative_start + len(_NO_EXPLICIT_UNCERTAINTY_EXAMPLES)
         commitment_negative_start = commitment_positive_start + len(_CONTINUING_COMMITMENT_EXAMPLES)
         posture_start = commitment_negative_start + len(_NO_CONTINUING_COMMITMENT_EXAMPLES)
-        query_start = posture_start + sum(
+        posture_example_count = sum(
             len(examples) for examples in _COMMUNICATIVE_POSTURE_EXAMPLES.values()
         )
+        response_revision_start = posture_start + posture_example_count
+        response_ack_start = response_revision_start + len(_RESPONSE_FORMAT_REVISION_EXAMPLES)
+        future_style_start = response_ack_start + len(_RESPONSE_ACKNOWLEDGMENT_EXAMPLES)
+        query_start = future_style_start + len(_FUTURE_RESPONSE_STYLE_EXAMPLES)
         batch_has_prototypes = len(texts) > query_start
         vectors = []
         for index, text in enumerate(texts):
@@ -91,11 +98,23 @@ class _MemoryProfileRouterEmbedder:
                     vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
                 elif "subtype-only-last-question" in text.casefold():
                     vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+                elif "response-format-revision-query" in text.casefold():
+                    vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [1.0, 0.0, 0.0])
+                elif "response-acknowledgment-query" in text.casefold():
+                    vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [0.0, 1.0, 0.0])
+                elif "future-response-style-query" in text.casefold():
+                    vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [0.0, 0.0, 1.0])
                 elif any(marker in text.casefold() for marker in (
                     "last question", "most recent question", "dernière question",
                     "última pregunta", "letzte frage",
                 )):
                     vectors.append([0.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+                elif "response-format-revision-query" in text.casefold():
+                    vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [1.0, 0.0, 0.0])
+                elif "response-acknowledgment-query" in text.casefold():
+                    vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [0.0, 1.0, 0.0])
+                elif "future-response-style-query" in text.casefold():
+                    vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [0.0, 0.0, 1.0])
                 elif any(marker in text.casefold() for marker in (
                     "previous conversations", "conversation précédente",
                 )):
@@ -106,6 +125,8 @@ class _MemoryProfileRouterEmbedder:
                     vectors.append([0.0] * 12 + [1.0] + [0.0] * (len(_COMMUNICATIVE_POSTURE_EXAMPLES) - 4))
                 else:
                     vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+                expected_query_width = 9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES) + 3
+                vectors[-1].extend([0.0] * max(0, expected_query_width - len(vectors[-1])))
                 continue
             if index < len(_PROFILE_LOOKUP_EXAMPLES):
                 vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -127,7 +148,7 @@ class _MemoryProfileRouterEmbedder:
                 vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             elif index < posture_start:
                 vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
-            elif index < query_start:
+            elif index < response_revision_start:
                 offset = posture_start
                 for posture_index, examples in enumerate(_COMMUNICATIVE_POSTURE_EXAMPLES.values()):
                     end = offset + len(examples)
@@ -137,12 +158,24 @@ class _MemoryProfileRouterEmbedder:
                         vectors.append(row)
                         break
                     offset = end
+            elif index < response_ack_start:
+                vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [1.0, 0.0, 0.0])
+            elif index < future_style_start:
+                vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [0.0, 1.0, 0.0])
+            elif index < query_start:
+                vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [0.0, 0.0, 1.0])
             elif "believe in god" in text.casefold():
                 vectors.append([0.0] * 10 + [1.0] + [0.0] * (len(_COMMUNICATIVE_POSTURE_EXAMPLES) - 2))
             elif "near-history-centroid" in text.casefold():
                 vectors.append([0.0, 0.714, 0.700, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif "near-general-centroid" in text.casefold():
                 vectors.append([0.0, 0.700, 0.714, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+            elif "response-format-revision-query" in text.casefold():
+                vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [1.0, 0.0, 0.0])
+            elif "response-acknowledgment-query" in text.casefold():
+                vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [0.0, 1.0, 0.0])
+            elif "future-response-style-query" in text.casefold():
+                vectors.append([0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES)) + [0.0, 0.0, 1.0])
             elif "subtype-only-last-question" in text.casefold():
                 vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif any(marker in text.casefold() for marker in (
@@ -410,6 +443,22 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertTrue(result["last_user_question_recall"])
         self.assertEqual(result["intent"], "history_recall")
         self.assertEqual(result["reason_code"], "semantic_last_user_question_target")
+
+    def test_response_revision_route_distinguishes_rewrite_acknowledgment_and_future_style(self):
+        revision, acknowledgment, future_style = classify_memory_profile_intents([
+            "response-format-revision-query",
+            "response-acknowledgment-query",
+            "future-response-style-query",
+        ], embedder=_MemoryProfileRouterEmbedder())
+
+        self.assertTrue(revision["response_format_revision"])
+        self.assertEqual(
+            revision["response_format_revision_reason"],
+            "semantic_previous_answer_revision",
+        )
+        self.assertGreaterEqual(revision["response_format_revision_margin"], 0.04)
+        self.assertFalse(acknowledgment["response_format_revision"])
+        self.assertFalse(future_style["response_format_revision"])
 
     def test_history_router_uses_relative_semantic_winner_near_margin(self):
         embedder = _MemoryProfileRouterEmbedder()

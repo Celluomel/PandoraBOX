@@ -201,6 +201,37 @@ _COMMUNICATIVE_POSTURE_EXAMPLES = {
 }
 _COMMUNICATIVE_POSTURE_MIN_SIMILARITY = 0.62
 _COMMUNICATIVE_POSTURE_MIN_MARGIN = 0.025
+_RESPONSE_FORMAT_REVISION_EXAMPLES = (
+    "Restate the answer you just gave in a shorter form.",
+    "Give me a concise version of your previous answer.",
+    "In a short answer, answer the question I just asked.",
+    "Answer that same question briefly.",
+    "That answer was long; give the same answer in one sentence.",
+    "Respond briefly to the question I asked in the previous turn.",
+    "Rephrase your last response more concisely.",
+    "Shorten that answer while preserving its meaning.",
+    "Réponds brièvement à la question précédente.",
+    "En une réponse courte, réponds à ma question précédente.",
+    "Résume ta réponse précédente sans changer son sens.",
+    "En una respuesta breve, responde a la pregunta anterior.",
+    "Fasse deine vorherige Antwort kürzer und beantworte dieselbe Frage erneut.",
+)
+_RESPONSE_ACKNOWLEDGMENT_EXAMPLES = (
+    "Please acknowledge receipt briefly.",
+    "I only need a brief acknowledgment.",
+    "Just say that you understand; do not answer the prior question.",
+    "Confirm that you saw this, in a few words.",
+    "Give me a short acknowledgment, not a substantive answer.",
+)
+_FUTURE_RESPONSE_STYLE_EXAMPLES = (
+    "Keep future answers concise.",
+    "I prefer short answers as a general style preference.",
+    "Please be concise in future conversations.",
+    "From now on, keep your responses brief.",
+    "Je préfère que tu répondes de manière concise en général.",
+)
+_RESPONSE_FORMAT_REVISION_MIN_SIMILARITY = 0.75
+_RESPONSE_FORMAT_REVISION_MIN_MARGIN = 0.04
 _PROFILE_FACT_SCOPE_EXAMPLES = {
     "preference": (
         "Which preferences are explicitly recorded in the user's profile?",
@@ -287,6 +318,9 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                     for examples in _COMMUNICATIVE_POSTURE_EXAMPLES.values()
                     for example in examples
                 ),
+                *_RESPONSE_FORMAT_REVISION_EXAMPLES,
+                *_RESPONSE_ACKNOWLEDGMENT_EXAMPLES,
+                *_FUTURE_RESPONSE_STYLE_EXAMPLES,
                 *(texts[index] for index in active_indices),
             ])
             import numpy as np
@@ -308,10 +342,15 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             posture_example_count = sum(
                 len(examples) for examples in _COMMUNICATIVE_POSTURE_EXAMPLES.values()
             )
+            response_format_revision_count = len(_RESPONSE_FORMAT_REVISION_EXAMPLES)
+            response_acknowledgment_count = len(_RESPONSE_ACKNOWLEDGMENT_EXAMPLES)
+            future_response_style_count = len(_FUTURE_RESPONSE_STYLE_EXAMPLES)
             expected_rows = (
                 prototype_count + category_example_count + uncertainty_positive_count
                 + uncertainty_negative_count + commitment_positive_count
-                + commitment_negative_count + posture_example_count + len(active_indices)
+                + commitment_negative_count + posture_example_count
+                + response_format_revision_count + response_acknowledgment_count
+                + future_response_style_count + len(active_indices)
             )
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("memory/profile router received invalid embeddings")
@@ -365,6 +404,27 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 center /= max(float(np.linalg.norm(center)), 1e-12)
                 posture_centroids[posture] = center
                 posture_offset = posture_end
+            response_revision_end = posture_offset + response_format_revision_count
+            response_format_revision = normalized[
+                posture_offset:response_revision_end
+            ].mean(axis=0)
+            response_format_revision /= max(
+                float(np.linalg.norm(response_format_revision)), 1e-12
+            )
+            response_ack_end = response_revision_end + response_acknowledgment_count
+            response_acknowledgment = normalized[
+                response_revision_end:response_ack_end
+            ].mean(axis=0)
+            response_acknowledgment /= max(
+                float(np.linalg.norm(response_acknowledgment)), 1e-12
+            )
+            future_style_end = response_ack_end + future_response_style_count
+            future_response_style = normalized[
+                response_ack_end:future_style_end
+            ].mean(axis=0)
+            future_response_style /= max(
+                float(np.linalg.norm(future_response_style)), 1e-12
+            )
             actual_space = str(space_id)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("memory/profile thresholds require Nomic v1.5")
@@ -374,18 +434,22 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                     category_centroids,
                     uncertainty_positive, uncertainty_negative,
                     commitment_positive, commitment_negative, posture_centroids,
+                    response_format_revision, response_acknowledgment,
+                    future_response_style,
                 )
             queries = normalized[
                 prototype_count + category_example_count
                 + uncertainty_positive_count + uncertainty_negative_count
                 + commitment_positive_count + commitment_negative_count
-                + posture_example_count:
+                + posture_example_count + response_format_revision_count
+                + response_acknowledgment_count + future_response_style_count:
             ]
         else:
             (profile, history, general, last_user_question, other_history_target,
              category_centroids, uncertainty_positive,
              uncertainty_negative, commitment_positive, commitment_negative,
-             posture_centroids) = cached
+             posture_centroids, response_format_revision,
+             response_acknowledgment, future_response_style) = cached
             vectors, actual_space = encoder([texts[index] for index in active_indices])
             import numpy as np
             queries = np.asarray(vectors, dtype="float64")
@@ -470,6 +534,15 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 "embedding_space": actual_space,
                 "score_semantics": "uncalibrated Nomic v1.5 cosine similarity; not a probability",
             }
+            response_revision_score = float(query @ response_format_revision)
+            response_ack_score = float(query @ response_acknowledgment)
+            future_style_score = float(query @ future_response_style)
+            response_revision_competitor = max(response_ack_score, future_style_score)
+            response_revision_margin = response_revision_score - response_revision_competitor
+            response_format_revision_candidate = bool(
+                response_revision_score >= _RESPONSE_FORMAT_REVISION_MIN_SIMILARITY
+                and response_revision_margin >= _RESPONSE_FORMAT_REVISION_MIN_MARGIN
+            )
             results[index] = {
                 "status": status,
                 "intent": intent,
@@ -502,6 +575,17 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
                 "embedding_space": actual_space,
                 "communicative_posture": communicative_posture,
+                "response_format_revision": response_format_revision_candidate,
+                "response_format_revision_similarity": round(response_revision_score, 4),
+                "response_format_revision_competitor_similarity": round(
+                    response_revision_competitor, 4
+                ),
+                "response_format_revision_margin": round(response_revision_margin, 4),
+                "response_format_revision_reason": (
+                    "semantic_previous_answer_revision"
+                    if response_format_revision_candidate
+                    else "below_semantic_revision_margin"
+                ),
                 "reason_code": (
                     "semantic_last_user_question_target"
                     if last_user_question_recall

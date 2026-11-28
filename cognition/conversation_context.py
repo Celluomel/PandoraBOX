@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 
@@ -145,6 +146,35 @@ def recent_dialogue_messages(
 
     selected.reverse()
     return [{"role": role, "content": content} for role, content in selected]
+
+
+def previous_assistant_exchange_sources(
+    history: Any, current_input: str, *, max_messages: int = 6,
+) -> dict[str, str] | None:
+    """Identify the latest complete user/assistant exchange before this turn.
+
+    Returns opaque content hashes only. The underlying role-tagged messages
+    remain in provider history; this receipt establishes which exchange a
+    semantic response-revision operation is allowed to target.
+    """
+    messages = recent_dialogue_messages(
+        history, current_input, max_chars=4200, max_messages=max_messages,
+        max_message_chars=1200,
+    )
+    if len(messages) < 2 or messages[-1].get("role") != "assistant":
+        return None
+    answer = messages[-1].get("content", "").strip()
+    question = next((
+        item.get("content", "").strip()
+        for item in reversed(messages[:-1])
+        if item.get("role") == "user" and item.get("content", "").strip()
+    ), "")
+    if not question or not answer:
+        return None
+    return {
+        "user_source_ref": hashlib.sha256(question.encode("utf-8", errors="replace")).hexdigest()[:20],
+        "assistant_source_ref": hashlib.sha256(answer.encode("utf-8", errors="replace")).hexdigest()[:20],
+    }
 
 
 def contextual_memory_query(

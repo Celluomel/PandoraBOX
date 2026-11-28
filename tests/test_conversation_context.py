@@ -2,6 +2,7 @@ from cognition.conversation_context import (
     CURRENT_TURN_AUTHORITY_INSTRUCTIONS,
     RECENT_DIALOGUE_INSTRUCTIONS,
     contextual_memory_query,
+    previous_assistant_exchange_sources,
     recent_dialogue_anchor,
     recent_dialogue_messages,
 )
@@ -55,6 +56,28 @@ def test_followup_history_is_sent_as_native_roles_with_the_latest_referents():
     assert "Explique tes émotions" in messages[4]["content"]
     assert "Curiosité" in messages[5]["content"]
     assert all("Dans les deux" not in item["content"] for item in messages)
+
+
+def test_previous_assistant_exchange_source_is_selected_for_format_revision_without_exposing_text():
+    history = [
+        {"role": "user", "content": "Do you believe in God?"},
+        {"role": "assistant", "content": "A long answer about belief and uncertainty."},
+        {"role": "user", "content": "In a short answer."},
+    ]
+
+    source = previous_assistant_exchange_sources(history, "In a short answer.")
+
+    assert source is not None
+    assert set(source) == {"user_source_ref", "assistant_source_ref"}
+    assert source["user_source_ref"] != source["assistant_source_ref"]
+    assert "Do you believe" not in repr(source)
+
+
+def test_previous_assistant_exchange_source_abstains_without_complete_exchange():
+    assert previous_assistant_exchange_sources(
+        [{"role": "user", "content": "Do you believe in God?"}],
+        "In a short answer.",
+    ) is None
 
 
 def test_role_tagged_history_drops_duplicate_current_input_and_private_reasoning():

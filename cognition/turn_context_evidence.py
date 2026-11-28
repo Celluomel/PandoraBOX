@@ -932,6 +932,13 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             receipt["memory_profile_intent_status"] = memory_profile_status
         if isinstance(value.get("last_user_question_recall"), bool):
             receipt["last_user_question_recall"] = value["last_user_question_recall"]
+        if isinstance(value.get("response_format_revision"), bool):
+            receipt["response_format_revision"] = value["response_format_revision"]
+        response_revision_reason = str(value.get("response_format_revision_reason") or "")
+        if response_revision_reason in {
+            "semantic_previous_answer_revision", "below_semantic_revision_margin",
+        }:
+            receipt["response_format_revision_reason"] = response_revision_reason
         question_candidate_count = value.get("historical_question_candidate_count")
         if isinstance(question_candidate_count, int) and not isinstance(question_candidate_count, bool):
             receipt["historical_question_candidate_count"] = max(0, min(24, question_candidate_count))
@@ -946,6 +953,9 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "last_user_question_similarity",
             "other_history_target_similarity",
             "last_user_question_margin",
+            "response_format_revision_similarity",
+            "response_format_revision_competitor_similarity",
+            "response_format_revision_margin",
         ):
             number = value.get(key)
             if isinstance(number, (int, float)) and not isinstance(number, bool):

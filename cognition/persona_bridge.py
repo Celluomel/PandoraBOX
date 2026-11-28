@@ -73,6 +73,7 @@ from cognition.conversation_context import (
     CURRENT_TURN_AUTHORITY_INSTRUCTIONS,
     RECENT_DIALOGUE_INSTRUCTIONS,
     contextual_memory_query,
+    previous_assistant_exchange_sources,
     recent_dialogue_anchor,
     recent_dialogue_messages,
 )
@@ -3555,6 +3556,12 @@ class PersonaBridge:
                 == " ".join(str(effective_input or "").casefold().split())
             ):
                 _route_user_messages.pop()
+        _response_revision_exchange = (
+            previous_assistant_exchange_sources(
+                _route_history, effective_input, max_messages=12,
+            )
+            if not peer_name else None
+        )
         _intent_batch = await asyncio.to_thread(
             classify_memory_profile_intents,
             [effective_input, *_route_user_messages],
@@ -3563,6 +3570,11 @@ class PersonaBridge:
             "status": "router_unavailable", "intent": "uncertain",
             "reason_code": "empty_router_result",
         }
+        _response_format_revision = bool(
+            not peer_name
+            and _response_revision_exchange
+            and _memory_profile_intent.get("response_format_revision")
+        )
         _dialogue_semantic_question_candidates = {
             source_text for source_text, result in zip(
                 _route_user_messages, _intent_batch[1:],
@@ -3583,6 +3595,16 @@ class PersonaBridge:
                 "last_user_question_recall": bool(
                     _memory_profile_intent.get("last_user_question_recall")
                 ),
+                "response_format_revision": _response_format_revision,
+                "response_format_revision_similarity": _memory_profile_intent.get(
+                    "response_format_revision_similarity"
+                ),
+                "response_format_revision_competitor_similarity": _memory_profile_intent.get(
+                    "response_format_revision_competitor_similarity"
+                ),
+                "response_format_revision_margin": _memory_profile_intent.get(
+                    "response_format_revision_margin"
+                ),
                 "last_user_question_similarity": _memory_profile_intent.get(
                     "last_user_question_similarity"
                 ),
@@ -3600,6 +3622,35 @@ class PersonaBridge:
                     if _route_user_messages else "no_recent_user_history"
                 ),
             },
+        )
+        self._record_turn_stage(
+            "response_format_revision",
+            "selected" if _response_format_revision else (
+                "no_prior_exchange" if _memory_profile_intent.get("response_format_revision")
+                else "not_selected"
+            ),
+            "Nomic semantic intent to revise the immediately preceding answer, gated on a complete role-tagged exchange."
+            if _response_format_revision else "No sourced previous-answer revision operation was selected.",
+            output={
+                "source": "nomic_v1.5_semantic_centroid",
+                "similarity": _memory_profile_intent.get(
+                    "response_format_revision_similarity"
+                ),
+                "competitor_similarity": _memory_profile_intent.get(
+                    "response_format_revision_competitor_similarity"
+                ),
+                "margin": _memory_profile_intent.get("response_format_revision_margin"),
+                "user_source_ref": (
+                    _response_revision_exchange.get("user_source_ref")
+                    if _response_format_revision else None
+                ),
+                "assistant_source_ref": (
+                    _response_revision_exchange.get("assistant_source_ref")
+                    if _response_format_revision else None
+                ),
+            },
+            consumes=("turn_input", "conversation_history"),
+            turn_id=_audit_turn_id,
         )
         # Keep routing language-independent: the cross-lingual semantic
         # classifier is the authority. A lexical fallback silently makes
@@ -3865,6 +3916,19 @@ class PersonaBridge:
                     ),
                     "last_user_question_margin": _memory_profile_intent.get(
                         "last_user_question_margin"
+                    ),
+                    "response_format_revision": _response_format_revision,
+                    "response_format_revision_similarity": _memory_profile_intent.get(
+                        "response_format_revision_similarity"
+                    ),
+                    "response_format_revision_competitor_similarity": _memory_profile_intent.get(
+                        "response_format_revision_competitor_similarity"
+                    ),
+                    "response_format_revision_margin": _memory_profile_intent.get(
+                        "response_format_revision_margin"
+                    ),
+                    "response_format_revision_reason": _memory_profile_intent.get(
+                        "response_format_revision_reason"
                     ),
                     "memory_profile_intent_space": (
                         "nomic_v1.5"
@@ -4524,6 +4588,40 @@ class PersonaBridge:
                         "source": "conversation_history",
                     },
                     consumes=("conversation_history",),
+                    turn_id=_audit_turn_id,
+                )
+            if _response_format_revision and _recent_anchor:
+                system_prompt += (
+                    "\n\n━━ ACTIVE RESPONSE REVISION TASK ━━\n"
+                    "The current user turn asks you to revise the answer you just gave. "
+                    "Use the immediately preceding user question and your prior answer in the "
+                    "role-tagged conversation as the target. Answer that question again now in "
+                    "one or two concise sentences, in the user's language. Correct any clearly "
+                    "unsupported claim rather than preserving it. Do not acknowledge the format "
+                    "instruction, promise a future style, explain that you are revising, or ask a "
+                    "follow-up. Output only the revised answer."
+                )
+                arb_temperature = min(
+                    float(arb_temperature) if arb_temperature is not None else 0.35,
+                    0.35,
+                )
+                self._record_turn_stage(
+                    "response_format_revision_context", "injected",
+                    "An active semantic rewrite task is attached to the preceding role-tagged exchange.",
+                    output={
+                        "user_source_ref": _response_revision_exchange["user_source_ref"],
+                        "assistant_source_ref": _response_revision_exchange["assistant_source_ref"],
+                        "max_sentences": 2,
+                        "language": "current_user_turn",
+                    },
+                    consumes=("response_format_revision", "conversation_history"),
+                    turn_id=_audit_turn_id,
+                )
+            elif _response_format_revision:
+                self._record_turn_stage(
+                    "response_format_revision_context", "not_injected_no_anchor",
+                    "The required provider history anchor was unavailable for this turn.",
+                    consumes=("response_format_revision",),
                     turn_id=_audit_turn_id,
                 )
         else:

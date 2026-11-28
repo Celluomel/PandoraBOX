@@ -1065,6 +1065,11 @@ def test_memory_profile_intent_receipt_preserves_scores_and_drops_untrusted_text
         "last_user_question_similarity": 0.7847,
         "other_history_target_similarity": 0.7412,
         "last_user_question_margin": 0.0434,
+        "response_format_revision": True,
+        "response_format_revision_similarity": 0.8248,
+        "response_format_revision_competitor_similarity": 0.7467,
+        "response_format_revision_margin": 0.0781,
+        "response_format_revision_reason": "semantic_previous_answer_revision",
         "memory_profile_intent_space": "nomic_v1.5",
         "memory_profile_intent_reason": "semantic_last_user_question_target",
         "private_query": "must not be copied",
@@ -1078,6 +1083,10 @@ def test_memory_profile_intent_receipt_preserves_scores_and_drops_untrusted_text
     assert receipt["last_user_question_recall"] is True
     assert receipt["last_user_question_similarity"] == 0.7847
     assert receipt["last_user_question_margin"] == 0.0434
+    assert receipt["response_format_revision"] is True
+    assert receipt["response_format_revision_similarity"] == 0.8248
+    assert receipt["response_format_revision_margin"] == 0.0781
+    assert receipt["response_format_revision_reason"] == "semantic_previous_answer_revision"
     assert receipt["memory_profile_intent_reason"] == "semantic_last_user_question_target"
     assert receipt["memory_profile_intent_space"] == "nomic_v1.5"
     assert "private_query" not in repr(receipt)
