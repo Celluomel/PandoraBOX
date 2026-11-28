@@ -43,6 +43,7 @@ from cognition.memory_retrieval import (
     recent_dialogue_message_source_result,
     semantic_user_recall_candidates,
     filter_recall_query_records,
+    filter_recall_lane_for_route,
     filter_memories_by_modality,
     is_visual_memory_query,
     merge_user_authored_memories,
@@ -7384,8 +7385,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     # high-similarity FAISS result, not evidence of the answer.
                     # Remove that self-match from both retrieval lanes before
                     # reserving a user-authored source in the prompt pool.
-                    _interaction_mems = filter_recall_query_records(
+                    _interaction_mems = filter_recall_lane_for_route(
                         _interaction_mems, query=user_input,
+                        semantic_recall=_semantic_explicit_memory_recall,
                     )
                 # Cross-source retrieval can rank a fluent, high-impact past
                 # Lumina reply above the user's source statement. Retrieve the
@@ -7399,8 +7401,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 )
                 _user_authored_mems = tag_memory_retrieval_lane(_user_authored_mems, "user_authored")
                 if _is_recall_request:
-                    _user_authored_mems = filter_recall_query_records(
+                    _user_authored_mems = filter_recall_lane_for_route(
                         _user_authored_mems, query=user_input,
+                        semantic_recall=_semantic_explicit_memory_recall,
                     )
                 memories = merge_user_authored_memories(
                     _interaction_mems, _user_authored_mems, _recall_limit

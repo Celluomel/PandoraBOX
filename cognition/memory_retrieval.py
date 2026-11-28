@@ -670,6 +670,21 @@ def semantic_user_recall_candidates(
     return candidates
 
 
+def filter_recall_lane_for_route(
+    memories: Sequence[dict], query: str, *, semantic_recall: bool = False,
+) -> List[dict]:
+    """Apply lexical source matching only when the recall route is lexical.
+
+    A confident semantic recall route has already identified the act and topic
+    through embeddings. Reapplying token-overlap filtering at an earlier lane
+    boundary can remove a cross-language or paraphrased source before the
+    source-role and relevance adjudicators see it.
+    """
+    if semantic_recall:
+        return list(memories)
+    return filter_recall_query_records(memories, query=query)
+
+
 def exact_filename_recall_result(
     query: str, memories: Sequence[dict],
 ) -> dict | None:

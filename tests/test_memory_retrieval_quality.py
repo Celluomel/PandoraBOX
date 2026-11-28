@@ -14,6 +14,7 @@ from cognition.memory_retrieval import (
     explicit_recall_source_result,
     explicit_recall_search_term_groups,
     explicit_recall_source_result,
+    filter_recall_lane_for_route,
     faiss_l2_relevance,
     is_explicit_memory_recall_query,
     rank_documents,
@@ -269,6 +270,38 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(answer["status"], "supported_verbatim_source")
         self.assertEqual(answer["source_type"], "user_message")
         self.assertIn("I worry about whether memory recall works", answer["answer"])
+
+    def test_semantic_recall_lane_does_not_apply_lexical_prefilter(self):
+        query = (
+            "Quelles explications ai-je laissées ouvertes dans mon message utilisateur "
+            "où je doutais que le rappel mémoire de la dernière étape ait retrouvé la bonne source ? "
+            "Réponds uniquement avec cette source utilisateur, ou indique que tu ne la retrouves pas."
+        )
+        source = {
+            "id": 10096,
+            "memory_type": "user_message",
+            "relevance": 0.91,
+            "text": (
+                "User message: Je doute que le rappel mémoire de la dernière étape ait retrouvé "
+                "la bonne source. Plusieurs explications restent possibles : l’index peut avoir "
+                "renvoyé un souvenir inadéquat, le routage peut avoir sélectionné le mauvais "
+                "contexte, ou l’introspection peut avoir mal interprété le souvenir."
+            ),
+        }
+
+        self.assertEqual(filter_recall_lane_for_route([source], query, semantic_recall=True), [source])
+        self.assertEqual(filter_recall_lane_for_route([source], query, semantic_recall=False), [])
+
+        candidates = semantic_user_recall_candidates(
+            [source], query,
+            source_role_classifier=lambda texts: [{
+                "status": "classified",
+                "role": "user_source_statement",
+            } for _ in texts],
+        )
+        result = explicit_recall_source_result(query, candidates, explicit_intent=True)
+        self.assertEqual(result["status"], "supported_verbatim_source")
+        self.assertIn("Plusieurs explications restent possibles", result["answer"])
 
     def test_source_role_router_distinguishes_statement_request_and_uncertainty(self):
         embedder = _MemorySourceRoleEmbedder()
