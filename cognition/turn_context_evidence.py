@@ -955,7 +955,12 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         if value.get("memory_profile_intent_space") in {"nomic_v1.5", "unavailable"}:
             receipt["memory_profile_intent_space"] = value["memory_profile_intent_space"]
         memory_profile_reason = str(value.get("memory_profile_intent_reason") or "")
-        if memory_profile_reason in {"cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input"}:
+        if memory_profile_reason in {
+            "cross_lingual_semantic_centroid_margin",
+            "semantic_last_user_question_target",
+            "router_unavailable",
+            "empty_input",
+        }:
             receipt["memory_profile_intent_reason"] = memory_profile_reason
         if isinstance(value.get("uncertainty_signal_candidate"), bool):
             receipt["uncertainty_signal_candidate"] = value["uncertainty_signal_candidate"]

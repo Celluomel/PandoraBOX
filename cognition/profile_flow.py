@@ -237,6 +237,8 @@ _MEMORY_SOURCE_ROLE_LOCK = threading.Lock()
 _MEMORY_SOURCE_ROLE_CENTROIDS: dict[str, tuple[Any, Any]] = {}
 _MEMORY_SOURCE_ROLE_MIN_SIMILARITY = 0.66
 _MEMORY_SOURCE_ROLE_MIN_MARGIN = 0.015
+_LAST_USER_QUESTION_MIN_SIMILARITY = 0.70
+_LAST_USER_QUESTION_MIN_MARGIN = 0.03
 
 
 def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[str, Any]]:
@@ -412,7 +414,18 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 and commitment_margin >= _COMMITMENT_MIN_MARGIN
             )
             margin = profile_score - history_score
-            if profile_score >= 0.63 and margin >= 0.04 and profile_score - general_score >= 0.04:
+            # A strong, separated match for the specific "last user question"
+            # target is itself an explicit history-recall request. Do not make
+            # it pass the broader history centroid gate as well: live Nomic
+            # scored this target at 0.7847 (margin 0.0434) while the broad
+            # history route stayed at 0.6078 and was incorrectly left uncertain.
+            last_user_question_recall = bool(
+                last_question_score >= _LAST_USER_QUESTION_MIN_SIMILARITY
+                and last_question_margin >= _LAST_USER_QUESTION_MIN_MARGIN
+            )
+            if last_user_question_recall:
+                status, intent = "history_recall", "history_recall"
+            elif profile_score >= 0.63 and margin >= 0.04 and profile_score - general_score >= 0.04:
                 status, intent = "profile_lookup", "profile_lookup"
             elif (
                 history_score >= 0.63
@@ -422,11 +435,6 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 status, intent = "history_recall", "history_recall"
             else:
                 status, intent = "intent_uncertain", "uncertain"
-            last_user_question_recall = bool(
-                intent == "history_recall"
-                and last_question_score >= 0.55
-                and last_question_margin >= 0.015
-            )
             category_scores = {
                 category: float(query @ center)
                 for category, center in category_centroids.items()
@@ -494,7 +502,11 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
                 "embedding_space": actual_space,
                 "communicative_posture": communicative_posture,
-                "reason_code": "cross_lingual_semantic_centroid_margin",
+                "reason_code": (
+                    "semantic_last_user_question_target"
+                    if last_user_question_recall
+                    else "cross_lingual_semantic_centroid_margin"
+                ),
                 "profile_fact_scope": {
                     "scope": category_scope,
                     "status": "classified" if category_scope != "all" else "uncertain_includes_all",

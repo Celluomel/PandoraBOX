@@ -89,11 +89,13 @@ class _MemoryProfileRouterEmbedder:
                     "je doute", "je ne sais pas encore", "no estoy seguro", "ich bin unsicher",
                 )):
                     vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+                elif "subtype-only-last-question" in text.casefold():
+                    vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
                 elif any(marker in text.casefold() for marker in (
                     "last question", "most recent question", "dernière question",
                     "última pregunta", "letzte frage",
                 )):
-                    vectors.append([0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+                    vectors.append([0.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
                 elif any(marker in text.casefold() for marker in (
                     "previous conversations", "conversation précédente",
                 )):
@@ -141,6 +143,8 @@ class _MemoryProfileRouterEmbedder:
                 vectors.append([0.0, 0.714, 0.700, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif "near-general-centroid" in text.casefold():
                 vectors.append([0.0, 0.700, 0.714, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+            elif "subtype-only-last-question" in text.casefold():
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif any(marker in text.casefold() for marker in (
                 "i am committed", "keep pursuing this goal", "je m'engage",
                 "poursuivre ce projet", "quiero continuar este proyecto",
@@ -396,6 +400,16 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(results[1]["intent"], "history_recall")
         self.assertFalse(results[1]["last_user_question_recall"])
         self.assertEqual(results[2]["communicative_posture"]["stance"], "seeking_answer")
+
+    def test_specific_last_question_semantic_target_can_route_when_broad_history_is_uncertain(self):
+        result = classify_memory_profile_intents(
+            ["subtype-only-last-question"], embedder=_MemoryProfileRouterEmbedder(),
+        )[0]
+
+        self.assertLess(result["history_similarity"], 0.63)
+        self.assertTrue(result["last_user_question_recall"])
+        self.assertEqual(result["intent"], "history_recall")
+        self.assertEqual(result["reason_code"], "semantic_last_user_question_target")
 
     def test_history_router_uses_relative_semantic_winner_near_margin(self):
         embedder = _MemoryProfileRouterEmbedder()

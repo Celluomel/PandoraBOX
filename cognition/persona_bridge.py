@@ -3854,6 +3854,18 @@ class PersonaBridge:
                         "general_similarity"
                     ),
                     "memory_profile_intent_margin": _memory_profile_intent.get("margin"),
+                    "last_user_question_recall": bool(
+                        _memory_profile_intent.get("last_user_question_recall")
+                    ),
+                    "last_user_question_similarity": _memory_profile_intent.get(
+                        "last_user_question_similarity"
+                    ),
+                    "other_history_target_similarity": _memory_profile_intent.get(
+                        "other_history_target_similarity"
+                    ),
+                    "last_user_question_margin": _memory_profile_intent.get(
+                        "last_user_question_margin"
+                    ),
                     "memory_profile_intent_space": (
                         "nomic_v1.5"
                         if str(_memory_profile_intent.get("embedding_space") or "").endswith(
