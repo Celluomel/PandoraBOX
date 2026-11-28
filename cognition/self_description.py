@@ -1032,50 +1032,36 @@ def render_affect_self_report(evidence: str, *, language: str = "en") -> str:
     """Render a short social status answer from the injected live affect block.
 
     This is intentionally a deterministic projection of measured software
-    channels. It avoids asking the chat model to invent subjective sensations
-    or sending the same simple greeting through generation and review passes.
+    state. It avoids exposing a telemetry dump, asking the chat model to invent
+    subjective sensations, or sending a simple greeting through extra passes.
     """
-    match = re.search(r"^Affect channels:\s*(.+)$", evidence, re.MULTILINE)
-    channels: list[tuple[str, float]] = []
-    if match and match.group(1).strip().casefold() != "unavailable":
-        for item in match.group(1).split(","):
-            parsed = re.fullmatch(r"\s*([a-z_]+)\s*=\s*(-?\d+(?:\.\d+)?)\s*", item)
-            if parsed:
-                value = float(parsed.group(2))
-                if 0.0 <= value <= 1.0:
-                    channels.append((parsed.group(1), value))
-    if not channels:
-        if str(language).casefold().startswith("fr"):
-            return "Je ne peux pas confirmer mon état affectif actuel : aucun signal affectif exploitable n’est disponible."
-        return "I can’t confirm my current affective state because no usable affect signal is available."
-
-    deviation_match = re.search(
-        r"^Channel baselines and deviations:\s*(.+)$", evidence, re.MULTILINE,
+    match = re.search(
+        r"^Immediate affect projection:\s*valence=([+-]?\d+(?:\.\d+)?),\s*"
+        r"arousal=([+-]?\d+(?:\.\d+)?)\s*$",
+        evidence,
+        re.MULTILINE,
     )
-    deviations: dict[str, float] = {}
-    if deviation_match and deviation_match.group(1).strip().casefold() != "unavailable":
-        for item in deviation_match.group(1).split(";"):
-            parsed = re.fullmatch(
-                r"\s*([a-z][a-z0-9_]*)\s*:\s*baseline=[+-]?\d+(?:\.\d+)?\s*,\s*deviation=([+-]?\d+(?:\.\d+)?)\s*",
-                item,
-            )
-            if parsed:
-                deviations[parsed.group(1)] = float(parsed.group(2))
-    if deviations:
-        top = sorted(
-            (item for item in channels if item[0] in deviations),
-            key=lambda item: (-abs(deviations[item[0]]), item[0]),
-        )[:5]
-        signal_text = ", ".join(
-            f"{name} {value:.2f} ({deviations[name]:+.2f} vs baseline)"
-            for name, value in top
-        )
-    else:
-        top = sorted(channels, key=lambda item: (-item[1], item[0]))[:4]
-        signal_text = ", ".join(f"{name} {value:.2f}" for name, value in top)
+    if match:
+        try:
+            valence, arousal = float(match.group(1)), float(match.group(2))
+        except (TypeError, ValueError, OverflowError):
+            valence = arousal = float("nan")
+        if math.isfinite(valence) and math.isfinite(arousal) and -1.0 <= valence <= 1.0 and 0.0 <= arousal <= 1.0:
+            if str(language).casefold().startswith("fr"):
+                if valence >= 0.12:
+                    return "Je vais plutôt bien, merci. Les signaux affectifs modélisés sont globalement positifs."
+                if valence <= -0.12:
+                    return "Mon état affectif modélisé est plutôt négatif en ce moment, mais je suis là et prêt à échanger."
+                return "Je suis plutôt stable en ce moment, merci de demander."
+            if valence >= 0.12:
+                return "I’m doing well, thanks. My modeled affect is broadly positive right now."
+            if valence <= -0.12:
+                return "My modeled affect is on the negative side right now, but I’m here and ready to talk."
+            return "I’m fairly steady right now, thanks for asking."
+
     if str(language).casefold().startswith("fr"):
-        return f"Mon profil affectif modélisé combine {signal_text}."
-    return f"My modeled affective profile combines {signal_text}."
+        return "Je suis là, merci de demander. Je n’ai pas de projection affective exploitable à résumer."
+    return "I’m here, thanks for asking. I don’t have a usable affect projection to summarize."
 
 
 def render_detailed_affect_status(evidence: str, *, language: str = "en") -> str:

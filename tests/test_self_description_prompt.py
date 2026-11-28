@@ -760,33 +760,26 @@ class SelfDescriptionPromptTests(unittest.TestCase):
     def test_social_status_answer_is_a_deterministic_projection_of_modeled_channels(self):
         evidence = (
             "Affect channels: curiosity=0.730, warmth=0.910, satisfaction=0.200\n"
+            "Immediate affect projection: valence=+0.380, arousal=0.520\n"
             "State description: stable\n"
             "Latest recorded affect-changing appraisal: none recorded."
         )
         answer = render_affect_self_report(evidence, language="en")
         self.assertEqual(
             answer,
-            "My modeled affective profile combines warmth 0.91, curiosity 0.73, satisfaction 0.20.",
+            "I’m doing well, thanks. My modeled affect is broadly positive right now.",
         )
-        self.assertNotIn("satisfied", answer)
-        self.assertNotIn("biological", render_affect_self_report(
-            "Affect channels: warmth=1.000", language="fr",
-        ))
-        self.assertIn("warmth 1.00", render_affect_self_report(
-            "Affect channels: warmth=1.000", language="en",
-        ))
-        mixed = render_affect_self_report(
-            "Affect channels: curiosity=0.80, awe=0.72, ambivalence=0.65, warmth=0.30\n"
-            "Channel baselines and deviations: curiosity: baseline=0.30, deviation=+0.50; "
-            "awe: baseline=0.20, deviation=+0.52; ambivalence: baseline=0.25, deviation=+0.40; "
-            "warmth: baseline=0.30, deviation=+0.00",
-            language="en",
+        self.assertNotRegex(answer, r"\b\d+(?:\.\d+)?\b")
+        self.assertEqual(
+            render_affect_self_report(
+                "Immediate affect projection: valence=-0.400, arousal=0.700", language="fr",
+            ),
+            "Mon état affectif modélisé est plutôt négatif en ce moment, mais je suis là et prêt à échanger.",
         )
-        self.assertIn("awe 0.72 (+0.52 vs baseline)", mixed)
-        self.assertIn("ambivalence 0.65 (+0.40 vs baseline)", mixed)
-        self.assertIn("curiosity 0.80 (+0.50 vs baseline)", mixed)
-        unavailable = render_affect_self_report("Affect channels: unavailable", language="en")
-        self.assertIn("no usable affect signal", unavailable)
+        self.assertEqual(
+            render_affect_self_report("Affect channels: warmth=1.000", language="en"),
+            "I’m here, thanks for asking. I don’t have a usable affect projection to summarize.",
+        )
 
     def test_affect_context_and_event_receipts_accept_new_data_channels_without_lexical_whitelist(self):
         from time import time
