@@ -43,6 +43,7 @@ class _MemoryProfileRouterEmbedder:
             _PROFILE_FACT_SCOPE_EXAMPLES,
             _CONTINUING_COMMITMENT_EXAMPLES,
             _USER_UNCERTAINTY_EXAMPLES,
+            _COMMUNICATIVE_POSTURE_EXAMPLES,
         )
 
         if isinstance(texts, str):
@@ -57,7 +58,10 @@ class _MemoryProfileRouterEmbedder:
         uncertainty_negative_start = uncertainty_positive_start + len(_USER_UNCERTAINTY_EXAMPLES)
         commitment_positive_start = uncertainty_negative_start + len(_NO_EXPLICIT_UNCERTAINTY_EXAMPLES)
         commitment_negative_start = commitment_positive_start + len(_CONTINUING_COMMITMENT_EXAMPLES)
-        query_start = commitment_negative_start + len(_NO_CONTINUING_COMMITMENT_EXAMPLES)
+        posture_start = commitment_negative_start + len(_NO_CONTINUING_COMMITMENT_EXAMPLES)
+        query_start = posture_start + sum(
+            len(examples) for examples in _COMMUNICATIVE_POSTURE_EXAMPLES.values()
+        )
         batch_has_prototypes = len(texts) > query_start
         vectors = []
         for index, text in enumerate(texts):
@@ -85,6 +89,8 @@ class _MemoryProfileRouterEmbedder:
                     vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                 elif "explicitly stored" in text.casefold():
                     vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                elif "stance:challenging" in text.casefold():
+                    vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
                 else:
                     vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
                 continue
@@ -102,8 +108,18 @@ class _MemoryProfileRouterEmbedder:
                 vectors.append([0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
             elif index < commitment_negative_start:
                 vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-            elif index < query_start:
+            elif index < posture_start:
                 vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+            elif index < query_start:
+                offset = posture_start
+                for posture_index, examples in enumerate(_COMMUNICATIVE_POSTURE_EXAMPLES.values()):
+                    end = offset + len(examples)
+                    if index < end:
+                        row = [0.0] * 7
+                        row[posture_index] = 1.0
+                        vectors.append(row)
+                        break
+                    offset = end
             elif "near-history-centroid" in text.casefold():
                 vectors.append([0.0, 0.714, 0.700, 0.0, 0.0, 0.0, 0.0])
             elif "near-general-centroid" in text.casefold():
@@ -131,6 +147,8 @@ class _MemoryProfileRouterEmbedder:
                 vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             elif "explicitly stored" in text.casefold():
                 vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            elif "stance:challenging" in text.casefold():
+                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             else:
                 vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
         return vectors, self.embedding_space_id
@@ -382,6 +400,19 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
             results[1]["commitment_router_reason"],
             "below_commitment_signal_threshold",
         )
+
+    def test_communicative_posture_is_semantic_and_scores_are_uncalibrated(self):
+        results = classify_memory_profile_intents(
+            ["stance:challenging", "near-general-centroid"],
+            embedder=_MemoryProfileRouterEmbedder(),
+        )
+        result = results[0]["communicative_posture"]
+
+        self.assertEqual(result["status"], "classified")
+        self.assertEqual(result["stance"], "challenging")
+        self.assertEqual(result["source"], "cross_lingual_semantic_centroid")
+        self.assertIn("not a probability", result["score_semantics"])
+        self.assertEqual(results[1]["communicative_posture"]["status"], "uncertain")
 
     def test_semantic_historical_intent_abstains_without_a_clear_retrieved_source(self):
         query = "From earlier conversations, what concern did I raise about memory recall?"

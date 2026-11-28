@@ -139,6 +139,52 @@ _NO_CONTINUING_COMMITMENT_EXAMPLES = (
 _COMMITMENT_MIN_SIMILARITY = 0.66
 _COMMITMENT_MIN_MARGIN = 0.02
 _HISTORY_RECALL_MIN_GENERAL_MARGIN = 0.005
+_COMMUNICATIVE_POSTURE_EXAMPLES = {
+    "exploring": (
+        "I am thinking aloud and exploring several possibilities without asking for a final answer yet.",
+        "Je réfléchis à voix haute et j'explore plusieurs pistes sans chercher encore une réponse définitive.",
+        "Estoy pensando en voz alta y explorando varias posibilidades, todavía sin pedir una respuesta final.",
+        "Ich denke laut nach und erkunde mehrere Möglichkeiten, ohne schon eine endgültige Antwort zu erwarten.",
+    ),
+    "seeking_answer": (
+        "Please give me a clear answer to this specific question.",
+        "Je cherche une réponse claire à cette question précise.",
+        "Necesito una respuesta clara a esta pregunta concreta.",
+        "Ich möchte eine klare Antwort auf diese konkrete Frage.",
+    ),
+    "validating": (
+        "Does my reasoning make sense? Please assess the idea I have proposed.",
+        "Est-ce que mon raisonnement tient la route ? Évalue l'idée que je propose.",
+        "¿Tiene sentido mi razonamiento? Evalúa la idea que propongo.",
+        "Ist meine Überlegung nachvollziehbar? Bitte bewerte meinen Vorschlag.",
+    ),
+    "challenging": (
+        "I disagree with that conclusion. Recheck the evidence and explain your reasoning.",
+        "Je ne suis pas d'accord avec cette conclusion. Réexamine les éléments et explique ton raisonnement.",
+        "No estoy de acuerdo con esa conclusión. Revisa las pruebas y explica tu razonamiento.",
+        "Ich widerspreche dieser Schlussfolgerung. Prüfe die Belege erneut und erkläre deine Begründung.",
+    ),
+    "support_seeking": (
+        "I am sharing something difficult and would like you to listen before offering advice.",
+        "Je partage quelque chose de difficile et j'aimerais que tu m'écoutes avant de me conseiller.",
+        "Estoy contando algo difícil y quisiera que me escucharas antes de darme consejos.",
+        "Ich erzähle von etwas Belastendem und möchte, dass du erst zuhörst, bevor du Ratschläge gibst.",
+    ),
+    "playful": (
+        "I am joking around and want to keep this exchange light.",
+        "Je plaisante et je souhaite garder cet échange léger.",
+        "Estoy bromeando y quiero que la conversación siga siendo ligera.",
+        "Ich mache einen Scherz und möchte das Gespräch locker halten.",
+    ),
+    "brief": (
+        "Keep your response short; I only need a brief acknowledgment.",
+        "Réponds brièvement ; j'ai seulement besoin d'un court accusé de réception.",
+        "Responde brevemente; solo necesito una confirmación corta.",
+        "Antworte kurz; ich brauche nur eine knappe Bestätigung.",
+    ),
+}
+_COMMUNICATIVE_POSTURE_MIN_SIMILARITY = 0.62
+_COMMUNICATIVE_POSTURE_MIN_MARGIN = 0.025
 _PROFILE_FACT_SCOPE_EXAMPLES = {
     "preference": (
         "Which preferences are explicitly recorded in the user's profile?",
@@ -217,6 +263,11 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 *_NO_EXPLICIT_UNCERTAINTY_EXAMPLES,
                 *_CONTINUING_COMMITMENT_EXAMPLES,
                 *_NO_CONTINUING_COMMITMENT_EXAMPLES,
+                *(
+                    example
+                    for examples in _COMMUNICATIVE_POSTURE_EXAMPLES.values()
+                    for example in examples
+                ),
                 *(texts[index] for index in active_indices),
             ])
             import numpy as np
@@ -233,10 +284,13 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             uncertainty_negative_count = len(_NO_EXPLICIT_UNCERTAINTY_EXAMPLES)
             commitment_positive_count = len(_CONTINUING_COMMITMENT_EXAMPLES)
             commitment_negative_count = len(_NO_CONTINUING_COMMITMENT_EXAMPLES)
+            posture_example_count = sum(
+                len(examples) for examples in _COMMUNICATIVE_POSTURE_EXAMPLES.values()
+            )
             expected_rows = (
                 prototype_count + category_example_count + uncertainty_positive_count
                 + uncertainty_negative_count + commitment_positive_count
-                + commitment_negative_count + len(active_indices)
+                + commitment_negative_count + posture_example_count + len(active_indices)
             )
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("memory/profile router received invalid embeddings")
@@ -277,6 +331,14 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 commitment_positive_end:commitment_positive_end + commitment_negative_count
             ].mean(axis=0)
             commitment_negative /= max(float(np.linalg.norm(commitment_negative)), 1e-12)
+            posture_offset = commitment_positive_end + commitment_negative_count
+            posture_centroids = {}
+            for posture, examples in _COMMUNICATIVE_POSTURE_EXAMPLES.items():
+                posture_end = posture_offset + len(examples)
+                center = normalized[posture_offset:posture_end].mean(axis=0)
+                center /= max(float(np.linalg.norm(center)), 1e-12)
+                posture_centroids[posture] = center
+                posture_offset = posture_end
             actual_space = str(space_id)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("memory/profile thresholds require Nomic v1.5")
@@ -284,16 +346,18 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 _MEMORY_PROFILE_ROUTER_CENTROIDS[actual_space] = (
                     profile, history, general, category_centroids,
                     uncertainty_positive, uncertainty_negative,
-                    commitment_positive, commitment_negative,
+                    commitment_positive, commitment_negative, posture_centroids,
                 )
             queries = normalized[
                 prototype_count + category_example_count
                 + uncertainty_positive_count + uncertainty_negative_count
-                + commitment_positive_count + commitment_negative_count:
+                + commitment_positive_count + commitment_negative_count
+                + posture_example_count:
             ]
         else:
             (profile, history, general, category_centroids, uncertainty_positive,
-             uncertainty_negative, commitment_positive, commitment_negative) = cached
+             uncertainty_negative, commitment_positive, commitment_negative,
+             posture_centroids) = cached
             vectors, actual_space = encoder([texts[index] for index in active_indices])
             import numpy as np
             queries = np.asarray(vectors, dtype="float64")
@@ -342,6 +406,28 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 if ranked_categories[0][1] >= 0.64 and category_margin >= 0.025
                 else "all"
             )
+            posture_scores = {
+                posture: float(query @ center)
+                for posture, center in posture_centroids.items()
+            }
+            ranked_postures = sorted(
+                posture_scores.items(), key=lambda item: item[1], reverse=True,
+            )
+            posture_margin = ranked_postures[0][1] - ranked_postures[1][1]
+            posture_classified = bool(
+                ranked_postures[0][1] >= _COMMUNICATIVE_POSTURE_MIN_SIMILARITY
+                and posture_margin >= _COMMUNICATIVE_POSTURE_MIN_MARGIN
+            )
+            communicative_posture = {
+                "status": "classified" if posture_classified else "uncertain",
+                "stance": ranked_postures[0][0] if posture_classified else "uncertain",
+                "top_similarity": round(ranked_postures[0][1], 4),
+                "margin": round(posture_margin, 4),
+                "scores": {key: round(value, 4) for key, value in posture_scores.items()},
+                "source": "cross_lingual_semantic_centroid",
+                "embedding_space": actual_space,
+                "score_semantics": "uncalibrated Nomic v1.5 cosine similarity; not a probability",
+            }
             results[index] = {
                 "status": status,
                 "intent": intent,
@@ -369,6 +455,7 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 ),
                 "score_semantics": "uncalibrated Nomic v1.5 cosine routing score; not a probability",
                 "embedding_space": actual_space,
+                "communicative_posture": communicative_posture,
                 "reason_code": "cross_lingual_semantic_centroid_margin",
                 "profile_fact_scope": {
                     "scope": category_scope,
@@ -394,6 +481,11 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 "uncertainty_router_reason": "router_unavailable",
                 "continuing_commitment_candidate": False,
                 "commitment_router_reason": "router_unavailable",
+                "communicative_posture": {
+                    "status": "unavailable", "stance": "uncertain",
+                    "source": "router_unavailable",
+                    "score_semantics": "unavailable; no posture inferred",
+                },
             }
     return [item for item in results if item is not None]
 

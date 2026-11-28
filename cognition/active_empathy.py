@@ -156,9 +156,10 @@ class ActiveEmpathy:
 
         # Determine dominant need
         signals = getattr(affect_read, "signals", [])
-        valence = getattr(affect_read, "valence", "neutral")
-        dominant_signal = signals[0] if signals else "exploring"
-        emotion = getattr(affect_read, "dominant_emotion", "neutral")
+        read_source = getattr(affect_read, "source", "unassessed")
+        valence = getattr(affect_read, "valence", "unassessed")
+        dominant_signal = signals[0] if signals else "unassessed"
+        emotion = getattr(affect_read, "dominant_emotion", "unassessed")
 
         care_posture = CARE_BY_SIGNAL.get(dominant_signal, "Be genuinely present.")
         valence_note = CARE_BY_VALENCE.get(valence, "")
@@ -170,7 +171,7 @@ class ActiveEmpathy:
         # Proactive noticing — pick up on what they haven't explicitly said
         proactive = False
         proactive_note = ""
-        if valence == "negative" and dominant_signal not in ("venting", "distressed"):
+        if read_source != "unassessed" and valence == "negative" and dominant_signal not in ("venting", "distressed"):
             # They're struggling but haven't named it
             proactive = True
             proactive_note = (

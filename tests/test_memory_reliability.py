@@ -2,6 +2,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -15,6 +16,8 @@ sys.modules.setdefault("cognition", package)
 from cognition.memory_intrusion import MemoryIntrusionSystem
 from cognition.emotional_memory import EmotionalMemorySystem
 from cognition.empathy_engine import EmpathyEngine
+from cognition.active_empathy import ActiveEmpathy
+from cognition.relational_memory import RelationalMemorySystem
 from cognition.semantic_extractor import SemanticExtractor
 from cognition.semantic_memory import SemanticMemory
 from cognition.meta_cognition import MetaCognition
@@ -497,19 +500,27 @@ class MemoryReliabilityTests(unittest.TestCase):
             self.assertEqual(memory._state.affect_calibration, {})
             self.assertEqual(memory.calibrate_affect_read("fred", read), 0.9)
 
-    def test_explicit_bilingual_self_report_overrides_inferred_affect_without_llm(self):
+    def test_lexical_self_report_does_not_replace_semantic_affect_result(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = EmotionalMemorySystem(type("Organism", (), {})(), str(Path(directory) / "emotion.json"))
             organism = type("Organism", (), {"emotional_memory": memory})()
-            engine = EmpathyEngine(organism, llm=None)
+            engine = EmpathyEngine(
+                organism, llm=None,
+                multilingual_classifier_factory=lambda: type("Classifier", (), {
+                    "classify": lambda _self, _text: type("Classification", (), {
+                        "valence": "neutral", "confidence": 0.0,
+                    })(),
+                })(),
+            )
             llm_calls = []
             engine._llm_read = lambda *_args: llm_calls.append(True)
 
             read = engine.read_user("fred", "Je me sens épuisé et inquiet.")
+            engine._affect_queue.join()
 
-            self.assertEqual(read.valence, "negative")
-            self.assertEqual(read.source, "explicit_self_report")
-            self.assertEqual(read.confidence, 0.98)
+            self.assertEqual(read.valence, "unassessed")
+            self.assertEqual(read.source, "unassessed")
+            self.assertEqual(read.confidence, 0.0)
             self.assertEqual(llm_calls, [])
 
     def test_explicit_affect_language_cases_distinguish_self_reports_from_context(self):
@@ -534,19 +545,27 @@ class MemoryReliabilityTests(unittest.TestCase):
             path = Path(directory) / "emotion.json"
             memory = EmotionalMemorySystem(organism, str(path))
             organism.emotional_memory = memory
-            engine = EmpathyEngine(organism, llm=None)
+            engine = EmpathyEngine(
+                organism, llm=None,
+                multilingual_classifier_factory=lambda: type("Classifier", (), {
+                    "classify": lambda _self, _text: type("Classification", (), {
+                        "valence": "negative", "confidence": 0.71,
+                    })(),
+                })(),
+            )
 
             read = engine.read_user("fred", "Je me sens épuisé et inquiet.")
+            engine._affect_queue.join()
             memory.record_from_interaction("Je me sens épuisé et inquiet.", "Je comprends.", "fred")
 
-            self.assertEqual(read.source, "explicit_self_report")
-            self.assertEqual(memory._state.affect_calibration["fred:explicit_self_report"], {
+            self.assertEqual(read.source, "multilingual_embedding")
+            self.assertEqual(memory._state.affect_calibration["fred:multilingual_embedding"], {
                 "samples": 1, "correct": 1,
             })
             self.assertEqual(memory._state.traces[0]["perspective"], "user")
-            self.assertEqual(memory._state.traces[0]["evidence_source"], "explicit_self_report")
+            self.assertEqual(memory._state.traces[0]["evidence_source"], "multilingual_embedding")
             saved = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["affect_calibration"]["fred:explicit_self_report"]["correct"], 1)
+            self.assertEqual(saved["affect_calibration"]["fred:multilingual_embedding"]["correct"], 1)
 
     def test_multilingual_affect_is_background_and_does_not_call_chat_llm(self):
         class _Classifier:
@@ -567,6 +586,110 @@ class MemoryReliabilityTests(unittest.TestCase):
         self.assertEqual(read.valence, "negative")
         self.assertEqual(read.source, "multilingual_embedding")
         self.assertAlmostEqual(read.confidence, 0.71)
+
+    def test_empathy_does_not_infer_emotion_or_stance_from_surface_words(self):
+        engine = EmpathyEngine(type("Organism", (), {})(), llm=None)
+        read = engine.read_user("fred", "I wonder if this is fascinating.", turn_id="turn-42")
+
+        self.assertEqual(read.source, "unassessed")
+        self.assertEqual(read.dominant_emotion, "unassessed")
+        self.assertEqual(read.signals, [])
+        self.assertEqual(read.turn_id, "turn-42")
+        self.assertEqual(engine.get_model("fred").session_valence, [])
+        self.assertEqual(engine.get_prompt_fragment("fred"), "")
+
+    def test_semantic_posture_is_separate_from_affect_and_scoped_to_turn(self):
+        engine = EmpathyEngine(type("Organism", (), {})(), llm=None)
+        read = engine.read_user(
+            "fred",
+            "No estoy de acuerdo con esa conclusión; revisa las pruebas.",
+            interaction_appraisal={
+                "status": "classified", "stance": "challenging",
+                "source": "cross_lingual_semantic_centroid", "top_similarity": 0.81,
+            },
+            turn_id="turn-semantic-1",
+        )
+
+        self.assertEqual(read.source, "unassessed")
+        self.assertEqual(read.dominant_emotion, "unassessed")
+        self.assertEqual(read.signals, ["challenging"])
+        self.assertEqual(read.posture_source, "cross_lingual_semantic_centroid")
+        self.assertEqual(read.turn_id, "turn-semantic-1")
+        fragment = engine.get_prompt_fragment("fred").casefold()
+        self.assertIn("semantic communicative-posture estimate", fragment)
+        self.assertNotIn("skeptical", fragment)
+
+    def test_async_affect_appends_sourced_observation_without_overwriting_prior_turn(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class _PositiveClassifier:
+            def classify(self, _text):
+                started.set()
+                release.wait(timeout=2.0)
+                return type("Classification", (), {
+                    "valence": "positive", "confidence": 0.71,
+                })()
+
+        memory = type("Memory", (), {
+            "_explicit_self_report": staticmethod(lambda _text: None),
+        })()
+        engine = EmpathyEngine(
+            type("Organism", (), {"emotional_memory": memory})(), llm=None,
+            multilingual_classifier_factory=_PositiveClassifier,
+        )
+        earlier = engine.read_user("fred", "First message with no stated mood.")
+        self.assertTrue(started.wait(timeout=2.0))
+        earlier_generation = engine._affect_generation["fred"]
+        current = engine.read_user("fred", "Second message with no stated mood.")
+        release.set()
+        engine._affect_queue.join()
+
+        model = engine.get_model("fred")
+        self.assertGreater(engine._affect_generation["fred"], earlier_generation)
+        self.assertEqual(model.session_valence, [1.0])
+        self.assertEqual(len(model.session_valence_timestamps), 1)
+        self.assertEqual(current.source, "multilingual_embedding")
+        self.assertEqual(earlier.source, "unassessed")
+
+    def test_unassessed_affect_does_not_mutate_relational_emotion_or_style(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = RelationalMemorySystem(str(Path(directory) / "relations.json"))
+            before = memory.get_or_create("fred")
+            before_score = before.relationship_score
+
+            memory.record_exchange(
+                "fred", "I wonder if this is fascinating.", "A reply.",
+                valence=None, arousal=None, communication_posture=None,
+            )
+
+            relationship = memory.get_or_create("fred")
+            self.assertEqual(relationship.emotional_arc, [])
+            self.assertEqual(relationship.relationship_score, before_score)
+            self.assertEqual(relationship.communication_prefs, {})
+
+            memory.record_exchange(
+                "fred", "No estoy de acuerdo; revisa los datos.", "A reply.",
+                valence=None, arousal=None, communication_posture="challenging",
+            )
+            self.assertEqual(relationship.emotional_arc, [])
+            self.assertGreater(relationship.communication_prefs["analytical"], 0.5)
+
+    def test_active_empathy_does_not_default_an_unknown_turn_to_exploration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = ActiveEmpathy(
+                type("Organism", (), {})(), str(Path(directory) / "active.json"),
+            )
+            read = type("AffectRead", (), {
+                "signals": [], "valence": "unassessed", "source": "unassessed",
+                "dominant_emotion": "unassessed",
+            })()
+
+            intent = engine.generate_care("fred", read, None)
+
+            self.assertEqual(intent.care_posture, "Be genuinely present.")
+            self.assertFalse(intent.is_proactive)
+            self.assertNotIn("curiosity", intent.dominant_need.casefold())
 
     def test_newer_turn_is_not_overwritten_by_stale_multilingual_result(self):
         class _NeutralClassifier:

@@ -3535,6 +3535,16 @@ class PersonaBridge:
         _memory_profile_intent = await asyncio.to_thread(
             classify_memory_profile_intent, effective_input,
         )
+        self._record_turn_stage(
+            "memory_profile_intent",
+            "completed" if _memory_profile_intent.get("status") != "router_unavailable" else "unavailable",
+            turn_id=_audit_turn_id,
+            output={
+                "intent": _memory_profile_intent.get("intent"),
+                "communicative_posture": _memory_profile_intent.get("communicative_posture"),
+                "embedding_space": _memory_profile_intent.get("embedding_space"),
+            },
+        )
         # Keep routing language-independent: the cross-lingual semantic
         # classifier is the authority. A lexical fallback silently makes
         # unsupported languages behave differently and can misroute topics.
@@ -3901,10 +3911,31 @@ class PersonaBridge:
             if peer_name:
                 self._record_turn_stage("empathy_read", "skipped_by_scope", turn_id=_audit_turn_id)
             elif _st_ee.empathy_engine:
-                await asyncio.to_thread(
-                    _st_ee.empathy_engine.read_user, user_id, effective_input
+                _empathy_read = await asyncio.to_thread(
+                    _st_ee.empathy_engine.read_user,
+                    user_id,
+                    effective_input,
+                    interaction_appraisal=_memory_profile_intent.get("communicative_posture"),
+                    turn_id=_audit_turn_id,
                 )
-                self._record_turn_stage("empathy_read", "completed", turn_id=_audit_turn_id)
+                self._record_turn_stage(
+                    "empathy_read",
+                    "completed",
+                    (
+                        f"affect_source={_empathy_read.source}; "
+                        f"posture_source={_empathy_read.posture_source}; "
+                        f"stance={_empathy_read.signals[0] if _empathy_read.signals else 'uncertain'}; "
+                        f"turn_id={_empathy_read.turn_id or 'missing'}"
+                    ),
+                    turn_id=_audit_turn_id,
+                    output={
+                        "affect_source": _empathy_read.source,
+                        "posture_source": _empathy_read.posture_source,
+                        "signals": list(_empathy_read.signals),
+                        "turn_id": _empathy_read.turn_id,
+                    },
+                    consumes=("memory_profile_intent",),
+                )
             else:
                 self._record_turn_stage("empathy_read", "skipped_unavailable", turn_id=_audit_turn_id)
         except Exception as _empathy_error:

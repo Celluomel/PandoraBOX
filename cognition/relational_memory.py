@@ -128,10 +128,11 @@ class RelationalMemorySystem:
         user_id:    str,
         user_text:  str,
         ai_response:str,
-        valence:    str,
-        arousal:    str,
+        valence:    str | None,
+        arousal:    str | None,
         topic:      str  = "general",
         impact:     float= 0.5,
+        communication_posture: str | None = None,
     ) -> UserRelationship:
         with self._lock:
             rel = self.get_or_create(user_id)
@@ -143,15 +144,15 @@ class RelationalMemorySystem:
 
             # Emotional arc
             v_map = {"Positive": 1.0, "Neutral": 0.5, "Negative": 0.0}
-            rel.emotional_arc.append(v_map.get(valence, 0.5))
-            if len(rel.emotional_arc) > self.ARC_WINDOW:
-                rel.emotional_arc = rel.emotional_arc[-self.ARC_WINDOW:]
-
-            # Relationship score: slow weighted average
-            v_num  = v_map.get(valence, 0.5)
-            change = (v_num - rel.relationship_score) * 0.04 * impact
             old_rel = rel.relationship_score
-            rel.relationship_score = max(0.05, min(0.95, rel.relationship_score + change))
+            if valence in v_map:
+                rel.emotional_arc.append(v_map[valence])
+                if len(rel.emotional_arc) > self.ARC_WINDOW:
+                    rel.emotional_arc = rel.emotional_arc[-self.ARC_WINDOW:]
+
+                # Relationship quality moves only from sourced valence.
+                change = (v_map[valence] - rel.relationship_score) * 0.04 * impact
+                rel.relationship_score = max(0.05, min(0.95, rel.relationship_score + change))
 
             # Trust (moves slower)
             trust_delta = 0.0
@@ -173,9 +174,20 @@ class RelationalMemorySystem:
             for t in detected:
                 rel.shared_topics[t] = rel.shared_topics.get(t, 0) + 1
 
-            # Communication style inference
-            styles = self._infer_comm_style(user_text)
-            for style, score in styles.items():
+            # Update communication preferences only from the same-turn
+            # cross-lingual semantic posture appraisal. Do not infer them
+            # from token/length heuristics when the appraisal is absent.
+            posture_style = {
+                "brief": ("direct", 1.0),
+                "seeking_answer": ("direct", 1.0),
+                "exploring": ("thoughtful", 1.0),
+                "validating": ("thoughtful", 0.8),
+                "support_seeking": ("emotional", 1.0),
+                "challenging": ("analytical", 1.0),
+                "playful": ("playful", 1.0),
+            }.get(communication_posture)
+            if posture_style:
+                style, score = posture_style
                 prev = rel.communication_prefs.get(style, 0.5)
                 rel.communication_prefs[style] = prev * 0.85 + score * 0.15
 
@@ -250,16 +262,6 @@ class RelationalMemorySystem:
             if any(k in text_lower for k in keywords):
                 found.append(topic)
         return found[:3]
-
-    def _infer_comm_style(self, text: str) -> Dict[str, float]:
-        t = text.lower()
-        return {
-            "direct":     1.0 if len(t.split()) < 15 else 0.3,
-            "thoughtful": 1.0 if len(t.split()) > 30 else 0.3,
-            "emotional":  1.0 if any(w in t for w in ["feel","heart","love","hate","sad","happy"]) else 0.2,
-            "analytical": 1.0 if any(w in t for w in ["because","therefore","however","analyze","logic"]) else 0.2,
-            "playful":    1.0 if any(c in text for c in ["!", "?", ":)", "haha", "lol"]) else 0.2,
-        }
 
     def _save(self):
         try:

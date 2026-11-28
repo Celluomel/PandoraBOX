@@ -11,23 +11,17 @@ Previously PandoraBOX processed the *content* of messages.
 This engine models the *person* sending them.
 
 Per-message pipeline:
-  1. Detect user emotional state (valence + arousal)
-  2. Detect 8 subtext signal types (cognitive state, social intent, need)
-  3. Update per-user AffectModel (temporal arc, session mood, trust signals)
-  4. Generate "empathic posture" — a short natural-language read of the user
+  1. Preserve emotion as unassessed without an explicit or model-backed source
+  2. Accept a separate semantic communicative-posture estimate
+  3. Update only sourced affect and posture history
+  4. Generate a concise prompt note from supported evidence
      injected into PandoraBOX's system prompt every turn
   5. Feed quality signals back into RelationalMemory
   6. Nudge attractor traits (curiosity ↑ when user is exploratory, etc.)
 
-Empathic posture example (injected into system prompt):
-  [Empathic read: Fred seems intellectually energized and exploratory —
-   he's thinking out loud rather than seeking a specific answer.
-   Today's mood is warm. He may value being challenged over being agreed with.]
-
-Detection starts with a fast local heuristic and explicit self-reports. A
-multilingual sentence-embedding model refines inferred valence on a daemon
-worker after the user-facing path continues; it never calls the chat LLM and
-abstains when semantic evidence is weak. Affect estimates remain tentative.
+Emotion remains unassessed unless a user self-report or accepted multilingual
+valence estimate exists. Interaction posture is supplied separately by the
+cross-lingual semantic turn router and remains a tentative estimate.
 
 Public API
 ──────────
@@ -41,7 +35,6 @@ from __future__ import annotations
 
 import logging
 import queue
-import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -63,14 +56,14 @@ SIGNAL_WITHDRAWN      = "withdrawn"       # short replies, disengagement signals
 
 @dataclass
 class AffectRead:
-    """Single-turn read of what the user is feeling and needing."""
+    """Single-turn read separating sourced affect from inferred conversation posture."""
     user_id:        str
     timestamp:      float = field(default_factory=time.time)
 
     # Emotional state
-    valence:        str   = "neutral"     # positive / neutral / negative
-    arousal:        str   = "medium"      # high / medium / low
-    dominant_emotion: str = "neutral"     # joy/curiosity/frustration/anxiety/etc.
+    valence:        str   = "unassessed"  # positive / neutral / negative / unassessed
+    arousal:        str   = "unassessed"  # high / medium / low / unassessed
+    dominant_emotion: str = "unassessed"
 
     # Subtext signals (top 1–2)
     signals:        List[str] = field(default_factory=list)
@@ -79,9 +72,13 @@ class AffectRead:
     posture_hint:   str   = ""
 
     # Confidence in the read (0–1)
-    confidence:     float = 0.7
-    source:         str   = "heuristic"
+    confidence:     float = 0.0
+    source:         str   = "unassessed"
     source_text:    str   = ""
+    posture_source:  str   = "unavailable"
+    posture_confidence: float = 0.0
+    posture_label:  str   = "uncertain"
+    turn_id:        str   = ""
 
     # Raw summary for prompt injection
     posture_text:   str   = ""
@@ -95,8 +92,9 @@ class UserAffectModel:
     """
     user_id:            str
     session_valence:    List[float] = field(default_factory=list)   # turn-by-turn (0–1)
+    session_valence_timestamps: List[float] = field(default_factory=list)
     session_signals:    Dict[str, int] = field(default_factory=dict) # signal → count
-    dominant_signal:    str   = SIGNAL_EXPLORING
+    dominant_signal:    str   = ""
     session_mood:       str   = "neutral"    # positive/neutral/negative arc
     depth_preference:   float = 0.5         # 0=surface/quick, 1=deep/thorough
     challenge_appetite: float = 0.5         # 0=wants agreement, 1=wants pushback
@@ -104,6 +102,26 @@ class UserAffectModel:
     today_arc:          str   = "stable"    # warming/cooling/stable/volatile
     last_updated:       float = field(default_factory=time.time)
     turn_count:         int   = 0
+
+
+def _refresh_affect_trend(model: UserAffectModel) -> None:
+    """Recompute slow affect summaries only from recorded sourced observations."""
+    if len(model.session_valence) >= 3:
+        avg = sum(model.session_valence[-6:]) / len(model.session_valence[-6:])
+        model.session_mood = "positive" if avg > 0.62 else "negative" if avg < 0.38 else "neutral"
+    if len(model.session_valence) >= 4:
+        early = sum(model.session_valence[:2]) / 2
+        late = sum(model.session_valence[-2:]) / 2
+        delta = late - early
+        std = (sum((value - (early + late) / 2) ** 2 for value in model.session_valence[-4:]) / 4) ** 0.5
+        if std > 0.3:
+            model.today_arc = "volatile"
+        elif delta > 0.15:
+            model.today_arc = "warming"
+        elif delta < -0.15:
+            model.today_arc = "cooling"
+        else:
+            model.today_arc = "stable"
 
 
 class EmpathyEngine:
@@ -141,40 +159,53 @@ class EmpathyEngine:
     #  Primary public API
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def read_user(self, user_id: str, user_text: str) -> AffectRead:
+    def read_user(
+        self, user_id: str, user_text: str, *,
+        interaction_appraisal: dict[str, Any] | None = None, turn_id: str = "",
+    ) -> AffectRead:
         """
         Analyze one user message. Call this BEFORE generating PandoraBOX's response.
 
         Returns an AffectRead and updates the per-user model.
         The result is also cached so get_prompt_fragment() can use it.
         """
-        # ── Heuristic pass (fast, always runs) ───────────────────────────
-        read = self._heuristic_read(user_id, user_text)
-
-        # An explicit first-person emotion statement is stronger evidence than
-        # inferred tone, so preserve it over any later semantic estimate.
-        explicit_valence = None
-        try:
-            memory = getattr(self._org, "emotional_memory", None)
-            classifier = getattr(memory, "_explicit_self_report", None)
-            if callable(classifier):
-                explicit_valence = classifier(user_text)
-        except Exception:
-            pass
-        if explicit_valence:
-            read.valence = explicit_valence
-            read.confidence = 0.98
-            read.source = "explicit_self_report"
-            read.dominant_emotion = f"self_reported_{explicit_valence}"
-
-        # This local lookup uses only matched, explicit self-reports.
-        try:
-            memory = getattr(self._org, "emotional_memory", None)
-            if (not explicit_valence and memory
-                    and hasattr(memory, "calibrate_affect_read")):
-                read.confidence = memory.calibrate_affect_read(user_id, read)
-        except Exception:
-            pass
+        # A communicative stance is not an emotion. The turn router supplies
+        # an optional cross-lingual semantic appraisal; absent/ambiguous
+        # evidence stays unknown instead of becoming a default "curious" read.
+        read = AffectRead(
+            user_id=user_id,
+            source_text=user_text[:2000],
+            source="unassessed",
+            dominant_emotion="unassessed",
+            signals=[],
+            posture_hint="",
+            confidence=0.0,
+            turn_id=str(turn_id or "")[:120],
+        )
+        if isinstance(interaction_appraisal, dict):
+            stance = str(interaction_appraisal.get("stance") or "uncertain")
+            status = str(interaction_appraisal.get("status") or "unavailable")
+            signal_by_stance = {
+                "exploring": SIGNAL_EXPLORING,
+                "seeking_answer": SIGNAL_SEEKING_ANSWER,
+                "validating": SIGNAL_VALIDATING,
+                "challenging": SIGNAL_CHALLENGING,
+                "support_seeking": SIGNAL_VENTING,
+                "playful": SIGNAL_PLAYFUL,
+                "brief": SIGNAL_WITHDRAWN,
+            }
+            signal = signal_by_stance.get(stance) if status == "classified" else None
+            if signal:
+                read.signals = [signal]
+                read.posture_label = stance
+                read.posture_source = str(interaction_appraisal.get("source") or "semantic_router")[:80]
+                try:
+                    read.posture_confidence = max(
+                        0.0, min(1.0, float(interaction_appraisal.get("top_similarity", 0.0)))
+                    )
+                except (TypeError, ValueError):
+                    read.posture_confidence = 0.0
+                read.posture_hint = self._signal_to_posture(read.signals, "neutral", "medium")
 
         # ── Update model ──────────────────────────────────────────────────
         self._update_model(user_id, read)
@@ -182,7 +213,7 @@ class EmpathyEngine:
         # ── Cache ─────────────────────────────────────────────────────────
         with self._lock:
             self._last_reads[user_id] = read
-        if not explicit_valence:
+        if user_text.strip():
             self._queue_multilingual_classification(user_id, user_text, read.timestamp)
         try:
             self._org._last_user_affect_read = read
@@ -257,7 +288,7 @@ class EmpathyEngine:
                     except queue.Empty:
                         break
                 logger.warning(
-                    "Multilingual affect model unavailable; retaining fast local affect reads: %s",
+                    "Multilingual affect model unavailable; affect remains unassessed without a source: %s",
                     exc,
                 )
                 return
@@ -280,16 +311,23 @@ class EmpathyEngine:
                 return
             read.valence = valence
             read.source = "multilingual_embedding"
+            read.confidence = confidence
             memory = getattr(self._org, "emotional_memory", None)
             if memory and hasattr(memory, "calibrate_affect_read"):
                 confidence = memory.calibrate_affect_read(user_id, read)
             read.confidence = confidence
             model = self._models.get(user_id)
-            if model and model.session_valence:
-                model.session_valence[-1] = {"positive": 1.0, "neutral": 0.5, "negative": 0.0}[valence]
-                if len(model.session_valence) >= 3:
-                    avg = sum(model.session_valence[-6:]) / len(model.session_valence[-6:])
-                    model.session_mood = "positive" if avg > 0.62 else "negative" if avg < 0.38 else "neutral"
+            if model:
+                timestamp_key = round(float(timestamp), 6)
+                if timestamp_key not in model.session_valence_timestamps:
+                    model.session_valence.append(
+                        {"positive": 1.0, "neutral": 0.5, "negative": 0.0}[valence]
+                    )
+                    model.session_valence_timestamps.append(timestamp_key)
+                    if len(model.session_valence) > 20:
+                        model.session_valence = model.session_valence[-20:]
+                        model.session_valence_timestamps = model.session_valence_timestamps[-20:]
+                _refresh_affect_trend(model)
             try:
                 self._org._last_user_affect_read = read
             except Exception:
@@ -345,13 +383,13 @@ class EmpathyEngine:
                     "positive": "Positive",
                     "neutral":  "Neutral",
                     "negative": "Negative",
-                }.get(read.valence, "Neutral")
+                }.get(read.valence) if read.source != "unassessed" else None
 
                 rm_arousal = {
                     "high":   "High",
                     "medium": "Medium",
                     "low":    "Low",
-                }.get(read.arousal, "Medium")
+                }.get(read.arousal) if read.source != "unassessed" else None
 
                 impact = 0.5 + (0.3 if SIGNAL_DISTRESSED in read.signals else 0.0)
                 before = None
@@ -364,6 +402,9 @@ class EmpathyEngine:
                     valence     = rm_valence,
                     arousal     = rm_arousal,
                     impact      = impact,
+                    communication_posture=(
+                        read.posture_label if read.posture_source != "unavailable" else None
+                    ),
                 )
                 after = getattr(relationship, "interaction_count", None)
                 if before is not None and isinstance(after, int):
@@ -390,123 +431,6 @@ class EmpathyEngine:
         }
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    #  Detection — heuristic pass
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    # Lexical signal patterns
-    _PATTERNS: Dict[str, List[str]] = {
-        SIGNAL_EXPLORING: [
-            r"\bwhat if\b", r"\bi wonder\b", r"\bmaybe\b", r"\bcould be\b",
-            r"\bthinking\b", r"\bexploring\b", r"\bnot sure\b", r"\bperhaps\b",
-            r"\bjust thinking\b", r"\bI've been\b", r"\bcurious\b",
-        ],
-        SIGNAL_SEEKING_ANSWER: [
-            r"\bhow do\b", r"\bwhat is\b", r"\bcan you\b", r"\bplease\b",
-            r"\bexplain\b", r"\btell me\b", r"\bwhat should\b", r"\bhelp me\b",
-            r"\bI need\b", r"\bwhat's the\b",
-        ],
-        SIGNAL_VALIDATING: [
-            r"\bright\b\?", r"\bmakes sense\b", r"\bdo you think\b",
-            r"\bwould you say\b", r"\bam I\b", r"\bdon't you\b",
-            r"\byou agree\b", r"\bwould that\b",
-        ],
-        SIGNAL_VENTING: [
-            r"\bso frustrated\b", r"\bso tired\b", r"\bcan't believe\b",
-            r"\bannoying\b", r"\bstupid\b", r"\bwhy does\b", r"\bugh\b",
-            r"\bthis is ridiculous\b", r"\bI hate\b", r"\bso annoying\b",
-        ],
-        SIGNAL_CHALLENGING: [
-            r"\bdo you really\b", r"\bbut what about\b", r"\bcounterpoint\b",
-            r"\bI disagree\b", r"\bthat's not\b", r"\bactually\b",
-            r"\bwait\b", r"\bhow can you\b", r"\bprove\b", r"\breally\?\b",
-        ],
-        SIGNAL_PLAYFUL: [
-            r"\blol\b", r"\bhaha\b", r"\b😂\b", r"\b😄\b", r"\bjust kidding\b",
-            r"\bfun\b", r"\bfor fun\b", r"\bhypothetically\b",
-            r"\bwhat if we\b", r"\bwouldn't it be\b",
-        ],
-        SIGNAL_DISTRESSED: [
-            r"\bhelp\b", r"\bscared\b", r"\bafraid\b", r"\banxious\b",
-            r"\boverwhelmed\b", r"\bdon't know what to do\b", r"\bstressed\b",
-            r"\bworried\b", r"\bcan't cope\b", r"\blosing it\b",
-        ],
-        SIGNAL_WITHDRAWN: [
-            r"^\s*\w{1,4}\s*$",    # very short message
-            r"^(ok|okay|fine|sure|yeah|yes|no|nah)\s*\.?\s*$",
-            r"^(k|kk|hmm|mhm)\s*$",
-        ],
-    }
-
-    def _heuristic_read(self, user_id: str, text: str) -> AffectRead:
-        text_lower = text.lower().strip()
-
-        # ── Signal detection ──────────────────────────────────────────────
-        signal_scores: Dict[str, float] = {}
-        for signal, patterns in self._PATTERNS.items():
-            score = sum(
-                1.0 for p in patterns
-                if re.search(p, text_lower, re.IGNORECASE)
-            )
-            if score > 0:
-                signal_scores[signal] = score
-
-        top_signals = sorted(signal_scores, key=signal_scores.get, reverse=True)[:2]
-        if not top_signals:
-            top_signals = [SIGNAL_EXPLORING]
-
-        # ── Valence / arousal heuristics ──────────────────────────────────
-        positive_words = {"great","love","amazing","wonderful","happy","excited",
-                          "excellent","perfect","brilliant","fantastic","glad","joy"}
-        negative_words = {"bad","terrible","awful","hate","frustrated","angry",
-                          "sad","worried","fail","wrong","broken","stupid","ugh"}
-        exclamation    = text.count("!") + text.count("?")
-
-        words     = set(text_lower.split())
-        pos_hits  = len(words & positive_words)
-        neg_hits  = len(words & negative_words)
-
-        if pos_hits > neg_hits:
-            valence = "positive"
-        elif neg_hits > pos_hits or SIGNAL_DISTRESSED in top_signals:
-            valence = "negative"
-        else:
-            valence = "neutral"
-
-        if exclamation >= 2 or SIGNAL_VENTING in top_signals or SIGNAL_DISTRESSED in top_signals:
-            arousal = "high"
-        elif SIGNAL_WITHDRAWN in top_signals or len(text.split()) < 5:
-            arousal = "low"
-        else:
-            arousal = "medium"
-
-        # ── Dominant emotion guess ────────────────────────────────────────
-        emotion_map = {
-            SIGNAL_EXPLORING:      "curious",
-            SIGNAL_SEEKING_ANSWER: "focused",
-            SIGNAL_VALIDATING:     "uncertain",
-            SIGNAL_VENTING:        "frustrated",
-            SIGNAL_CHALLENGING:    "skeptical",
-            SIGNAL_PLAYFUL:        "joyful",
-            SIGNAL_DISTRESSED:     "anxious",
-            SIGNAL_WITHDRAWN:      "disengaged",
-        }
-        dominant_emotion = emotion_map.get(top_signals[0], "neutral")
-
-        # ── Posture hint ──────────────────────────────────────────────────
-        posture_hint = self._signal_to_posture(top_signals, valence, arousal)
-
-        return AffectRead(
-            user_id         = user_id,
-            source_text     = text[:2000],
-            valence         = valence,
-            arousal         = arousal,
-            dominant_emotion= dominant_emotion,
-            signals         = top_signals,
-            posture_hint    = posture_hint,
-            confidence      = 0.55,
-        )
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Model update
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -519,34 +443,23 @@ class EmpathyEngine:
         model.turn_count    += 1
         model.last_updated   = time.time()
 
-        # Valence arc
-        v_score = {"positive": 1.0, "neutral": 0.5, "negative": 0.0}.get(read.valence, 0.5)
-        model.session_valence.append(v_score)
-        if len(model.session_valence) > 20:
-            model.session_valence = model.session_valence[-20:]
-
-        # Session mood
-        if len(model.session_valence) >= 3:
-            avg = sum(model.session_valence[-6:]) / len(model.session_valence[-6:])
-            model.session_mood = "positive" if avg > 0.62 else "negative" if avg < 0.38 else "neutral"
-
-        # Arc direction (warming / cooling / stable / volatile)
-        if len(model.session_valence) >= 4:
-            early = sum(model.session_valence[:2]) / 2
-            late  = sum(model.session_valence[-2:]) / 2
-            delta = late - early
-            std   = (sum((v - (early+late)/2)**2 for v in model.session_valence[-4:]) / 4) ** 0.5
-            if std > 0.3:
-                model.today_arc = "volatile"
-            elif delta > 0.15:
-                model.today_arc = "warming"
-            elif delta < -0.15:
-                model.today_arc = "cooling"
-            else:
-                model.today_arc = "stable"
+        # Only sourced affect observations contribute to mood history. An
+        # unknown read must not be stored as measured neutral affect.
+        if read.source == "explicit_self_report":
+            v_score = {"positive": 1.0, "neutral": 0.5, "negative": 0.0}.get(read.valence, 0.5)
+            model.session_valence.append(v_score)
+            timestamps = getattr(model, "session_valence_timestamps", None)
+            if timestamps is None:
+                timestamps = []
+                model.session_valence_timestamps = timestamps
+            timestamps.append(round(float(read.timestamp), 6))
+            if len(model.session_valence) > 20:
+                model.session_valence = model.session_valence[-20:]
+                model.session_valence_timestamps = timestamps[-20:]
+            _refresh_affect_trend(model)
 
         # Signal counts
-        for s in read.signals:
+        for s in read.signals if read.posture_source != "unavailable" else []:
             model.session_signals[s] = model.session_signals.get(s, 0) + 1
 
         # Dominant signal (most frequent this session)
@@ -554,20 +467,18 @@ class EmpathyEngine:
             model.dominant_signal = max(model.session_signals, key=model.session_signals.get)
 
         # Derived preferences (slow-moving)
-        if SIGNAL_EXPLORING in read.signals or SIGNAL_CHALLENGING in read.signals:
+        if read.posture_source != "unavailable" and (SIGNAL_EXPLORING in read.signals or SIGNAL_CHALLENGING in read.signals):
             model.depth_preference = min(1.0, model.depth_preference + 0.03)
-        elif SIGNAL_SEEKING_ANSWER in read.signals or SIGNAL_WITHDRAWN in read.signals:
+        elif read.posture_source != "unavailable" and (SIGNAL_SEEKING_ANSWER in read.signals or SIGNAL_WITHDRAWN in read.signals):
             model.depth_preference = max(0.0, model.depth_preference - 0.03)
 
-        if SIGNAL_CHALLENGING in read.signals:
+        if read.posture_source != "unavailable" and SIGNAL_CHALLENGING in read.signals:
             model.challenge_appetite = min(1.0, model.challenge_appetite + 0.05)
-        elif SIGNAL_VALIDATING in read.signals:
+        elif read.posture_source != "unavailable" and SIGNAL_VALIDATING in read.signals:
             model.challenge_appetite = max(0.0, model.challenge_appetite - 0.03)
 
-        if read.arousal == "high":
-            model.pace_preference = min(1.0, model.pace_preference + 0.02)
-        elif read.arousal == "low":
-            model.pace_preference = max(0.0, model.pace_preference - 0.02)
+        # The current cross-lingual affect classifier does not estimate
+        # arousal, so message punctuation/length cannot alter pace preference.
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Prompt fragment builder
@@ -576,37 +487,26 @@ class EmpathyEngine:
     def _build_posture_fragment(self, read: AffectRead, model: UserAffectModel) -> str:
         parts = []
 
-        # Emotional state this turn
-        emotion_desc = {
-            "curious":    "intellectually energized and curious",
-            "joyful":     "in a warm, playful mood",
-            "frustrated": "frustrated — processing something difficult",
-            "anxious":    "anxious or stressed",
-            "focused":    "focused and looking for something specific",
-            "uncertain":  "uncertain and looking for grounding",
-            "skeptical":  "questioning and testing ideas",
-            "disengaged": "somewhat withdrawn right now",
-            "neutral":    "in a calm, neutral state",
-        }.get(read.dominant_emotion, "in a neutral state")
-
-        parts.append(f"feels {emotion_desc}")
+        if read.source == "explicit_self_report":
+            parts.append(f"explicitly self-reported {read.valence} affect this turn")
 
         # Primary intent
         intent_desc = {
-            SIGNAL_EXPLORING:      "thinking out loud — exploring, not looking for a final answer",
-            SIGNAL_SEEKING_ANSWER: "wants a clear, direct answer",
-            SIGNAL_VALIDATING:     "checking their own thinking — resonance matters more than correction",
-            SIGNAL_VENTING:        "venting — needs to feel heard before anything else",
-            SIGNAL_CHALLENGING:    "enjoys intellectual friction — don't just agree",
-            SIGNAL_PLAYFUL:        "in a light mood — match the energy",
-            SIGNAL_DISTRESSED:     "showing signs of stress — prioritize warmth and steadiness",
-            SIGNAL_WITHDRAWN:      "being brief — don't over-respond",
-        }.get(read.signals[0] if read.signals else "", "engaging normally")
+            SIGNAL_EXPLORING:      "open-ended exploration — keep multiple lines of thought available",
+            SIGNAL_SEEKING_ANSWER: "seeking a specific answer — be clear and direct",
+            SIGNAL_VALIDATING:     "requesting an evaluation of their reasoning",
+            SIGNAL_VENTING:        "asking to be heard before advice is offered",
+            SIGNAL_CHALLENGING:    "testing the reasoning — respond with evidence rather than simply agreeing",
+            SIGNAL_PLAYFUL:        "using a playful tone — match the lightness without assuming their mood",
+            SIGNAL_DISTRESSED:     "support request detected — respond with steadiness",
+            SIGNAL_WITHDRAWN:      "brief message — avoid over-responding",
+        }.get(read.signals[0] if read.signals else "")
 
-        parts.append(intent_desc)
+        if intent_desc and read.posture_source != "unavailable":
+            parts.append(f"semantic communicative-posture estimate: {intent_desc}")
 
         # Session arc context
-        if model.turn_count > 3:
+        if len(model.session_valence) > 3:
             arc_desc = {
                 "warming":  "the conversation is warming up",
                 "cooling":  "there's been some cooling in the exchange",
@@ -627,9 +527,11 @@ class EmpathyEngine:
         elif model.challenge_appetite < 0.35:
             hints.append("benefits from validation over challenge right now")
 
-        if hints:
+        if hints and read.posture_source != "unavailable":
             parts.append("; ".join(hints))
 
+        if not parts:
+            return ""
         summary = ". ".join(p.capitalize() for p in parts if p) + "."
         return f"[Empathic read: {summary}]"
 
@@ -685,18 +587,18 @@ class EmpathyEngine:
     @staticmethod
     def _signal_to_posture(signals: List[str], valence: str, arousal: str) -> str:
         """Convert signal list to a plain-English posture hint."""
-        primary = signals[0] if signals else SIGNAL_EXPLORING
+        primary = signals[0] if signals else ""
         hints = {
             SIGNAL_EXPLORING:      "Let them explore — follow their thread, don't close it.",
             SIGNAL_SEEKING_ANSWER: "Be clear and direct. They want resolution.",
             SIGNAL_VALIDATING:     "Acknowledge first. They need resonance before refinement.",
             SIGNAL_VENTING:        "Hold the space. Don't rush to fix or advise.",
-            SIGNAL_CHALLENGING:    "Engage the friction. Don't concede too easily.",
-            SIGNAL_PLAYFUL:        "Match the lightness. This is not a serious moment.",
+            SIGNAL_CHALLENGING:    "Address the challenge with evidence rather than simply agreeing.",
+            SIGNAL_PLAYFUL:        "Match the playful tone without assuming the user's mood.",
             SIGNAL_DISTRESSED:     "Lead with warmth and steadiness. Solve later.",
             SIGNAL_WITHDRAWN:      "Don't over-respond. Keep it brief and open.",
         }
-        return hints.get(primary, "Engage naturally.")
+        return hints.get(primary, "")
 
     def get_model(self, user_id: str) -> Optional[UserAffectModel]:
         with self._lock:
