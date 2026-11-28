@@ -180,6 +180,29 @@ _AFFECT_SELF_INTEGRATION_NEGATIVE = (
     "Explain the software architecture of the emotional-state manager and its data structures.",
     "Report a user's emotional profile from conversation history.",
 )
+_SOCIAL_AFFECT_STATUS_POSITIVE = (
+    "How are you?",
+    "How are you doing today?",
+    "How have you been lately?",
+    "How are things with you right now?",
+    "Tell me how you are doing, Lumina.",
+    "Comment vas-tu aujourd'hui ?",
+    "Comment te sens-tu en ce moment ?",
+    "Comment allez-vous aujourd'hui ?",
+    "Wie geht es dir heute?",
+    "Como você está hoje?",
+    "¿Cómo estás hoy?",
+)
+_SOCIAL_AFFECT_STATUS_NEGATIVE = (
+    "How are you using the camera?",
+    "How do your modeled feelings interact and shape your identity over time?",
+    "What emotions are active in your system? Give their measured values.",
+    "What caused your modeled affect to change? Report only recorded events.",
+    "How is the project progressing?",
+    "How does this character feel in the story?",
+    "How do I feel today?",
+    "Explain the current affective state and its recorded causes in detail.",
+)
 ARCHITECTURE_ANSWER_CONTRACT = (
     "Answer questions about this software's cognitive architecture directly and concisely. "
     "Separate implemented facts from inference. For the Global Workspace, distinguish "
@@ -699,6 +722,7 @@ def classify_prompt_source_provenance_intent(
                 *_SOFTWARE_ARCHITECTURE_POSITIVE, *_SOFTWARE_ARCHITECTURE_NEGATIVE,
                 *_GLOBAL_WORKSPACE_STATE_POSITIVE, *_GLOBAL_WORKSPACE_STATE_NEGATIVE,
                 *_AFFECT_SELF_INTEGRATION_POSITIVE, *_AFFECT_SELF_INTEGRATION_NEGATIVE,
+                *_SOCIAL_AFFECT_STATUS_POSITIVE, *_SOCIAL_AFFECT_STATUS_NEGATIVE,
                 value,
             ])
             import numpy as np
@@ -707,7 +731,8 @@ def classify_prompt_source_provenance_intent(
             architecture_rows = len(_SOFTWARE_ARCHITECTURE_POSITIVE) + len(_SOFTWARE_ARCHITECTURE_NEGATIVE)
             workspace_rows = len(_GLOBAL_WORKSPACE_STATE_POSITIVE) + len(_GLOBAL_WORKSPACE_STATE_NEGATIVE)
             affect_rows = len(_AFFECT_SELF_INTEGRATION_POSITIVE) + len(_AFFECT_SELF_INTEGRATION_NEGATIVE)
-            expected_rows = provenance_rows + architecture_rows + workspace_rows + affect_rows + 1
+            social_affect_rows = len(_SOCIAL_AFFECT_STATUS_POSITIVE) + len(_SOCIAL_AFFECT_STATUS_NEGATIVE)
+            expected_rows = provenance_rows + architecture_rows + workspace_rows + affect_rows + social_affect_rows + 1
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("prompt provenance router received invalid embeddings")
             normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
@@ -719,6 +744,8 @@ def classify_prompt_source_provenance_intent(
             workspace_negative_end = architecture_negative_end + workspace_rows
             affect_positive_end = workspace_negative_end + len(_AFFECT_SELF_INTEGRATION_POSITIVE)
             affect_negative_end = workspace_negative_end + affect_rows
+            social_affect_positive_end = affect_negative_end + len(_SOCIAL_AFFECT_STATUS_POSITIVE)
+            social_affect_negative_end = social_affect_positive_end + len(_SOCIAL_AFFECT_STATUS_NEGATIVE)
             positive = normalized[:provenance_positive_end].mean(axis=0)
             negative = normalized[provenance_positive_end:provenance_negative_end].mean(axis=0)
             architecture_positive = normalized[provenance_negative_end:architecture_positive_end].mean(axis=0)
@@ -727,6 +754,8 @@ def classify_prompt_source_provenance_intent(
             workspace_negative = normalized[workspace_positive_end:workspace_negative_end].mean(axis=0)
             affect_positive = normalized[workspace_negative_end:affect_positive_end].mean(axis=0)
             affect_negative = normalized[affect_positive_end:affect_negative_end].mean(axis=0)
+            social_affect_positive = normalized[affect_negative_end:social_affect_positive_end].mean(axis=0)
+            social_affect_negative = normalized[social_affect_positive_end:social_affect_negative_end].mean(axis=0)
             positive /= max(float(np.linalg.norm(positive)), 1e-12)
             negative /= max(float(np.linalg.norm(negative)), 1e-12)
             architecture_positive /= max(float(np.linalg.norm(architecture_positive)), 1e-12)
@@ -735,6 +764,8 @@ def classify_prompt_source_provenance_intent(
             workspace_negative /= max(float(np.linalg.norm(workspace_negative)), 1e-12)
             affect_positive /= max(float(np.linalg.norm(affect_positive)), 1e-12)
             affect_negative /= max(float(np.linalg.norm(affect_negative)), 1e-12)
+            social_affect_positive /= max(float(np.linalg.norm(social_affect_positive)), 1e-12)
+            social_affect_negative /= max(float(np.linalg.norm(social_affect_negative)), 1e-12)
             actual_space = str(actual_space)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("prompt provenance routing requires Nomic v1.5")
@@ -742,12 +773,14 @@ def classify_prompt_source_provenance_intent(
                 _PROMPT_PROVENANCE_CENTROIDS[actual_space] = (
                     positive, negative, architecture_positive, architecture_negative,
                     workspace_positive, workspace_negative, affect_positive, affect_negative,
+                    social_affect_positive, social_affect_negative,
                 )
             query = normalized[-1]
         else:
             (
                 positive, negative, architecture_positive, architecture_negative,
                 workspace_positive, workspace_negative, affect_positive, affect_negative,
+                social_affect_positive, social_affect_negative,
             ) = cached
             vectors, actual_space = encoder(value)
             import numpy as np
@@ -796,6 +829,15 @@ def classify_prompt_source_provenance_intent(
             affect_status, affect_route = "not_affect_self_integration_intent", False
         else:
             affect_status, affect_route = "affect_self_integration_intent_uncertain", False
+        social_affect_positive_score = float(query @ social_affect_positive)
+        social_affect_negative_score = float(query @ social_affect_negative)
+        social_affect_margin = social_affect_positive_score - social_affect_negative_score
+        if social_affect_positive_score >= 0.68 and social_affect_margin >= 0.10:
+            social_affect_status, social_affect_route = "social_affect_status_intent", True
+        elif social_affect_positive_score < 0.64 or social_affect_margin < 0.0:
+            social_affect_status, social_affect_route = "not_social_affect_status_intent", False
+        else:
+            social_affect_status, social_affect_route = "social_affect_status_intent_uncertain", False
         return {
             "status": status,
             "route": route,
@@ -823,6 +865,12 @@ def classify_prompt_source_provenance_intent(
             "affect_self_integration_negative_similarity": round(affect_negative_score, 4),
             "affect_self_integration_margin": round(affect_margin, 4),
             "affect_self_integration_reason_code": "cross_lingual_semantic_centroid_margin",
+            "social_affect_status": social_affect_status,
+            "social_affect_status_route": social_affect_route,
+            "social_affect_status_positive_similarity": round(social_affect_positive_score, 4),
+            "social_affect_status_negative_similarity": round(social_affect_negative_score, 4),
+            "social_affect_status_margin": round(social_affect_margin, 4),
+            "social_affect_status_reason_code": "cross_lingual_semantic_centroid_margin",
         }
     except Exception as exc:
         return {
@@ -839,6 +887,9 @@ def classify_prompt_source_provenance_intent(
             "affect_self_integration_status": "router_unavailable",
             "affect_self_integration_route": False,
             "affect_self_integration_reason_code": type(exc).__name__,
+            "social_affect_status": "router_unavailable",
+            "social_affect_status_route": False,
+            "social_affect_status_reason_code": type(exc).__name__,
         }
 
 
@@ -1013,7 +1064,7 @@ def is_self_affect_query(user_input: str) -> bool:
 
 def affect_report_mode(
     user_input: str, *, debug_introspection: bool = False, peer_dialogue: bool = False,
-    self_integration_query: bool = False,
+    self_integration_query: bool = False, social_status_query: bool = False,
 ) -> str:
     """Choose the affect evidence projection for this conversational turn."""
     if peer_dialogue or self_integration_query:
@@ -1023,7 +1074,7 @@ def affect_report_mode(
     # Broad affect/self questions should reach semantic routing and normal
     # synthesis. A lexical self-affect match alone must not replace them with
     # a two-channel canned report.
-    if is_social_status_greeting(user_input):
+    if social_status_query or is_social_status_greeting(user_input):
         return "brief"
     return "none"
 

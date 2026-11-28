@@ -3547,6 +3547,7 @@ class PersonaBridge:
             "global_workspace_state_route": False,
         }
         _affect_self_integration_query = False
+        _social_affect_status_query = False
         _api_route_query = False
         _architecture_context_query = False
         _api_route_intent: dict[str, Any] = {"status": "not_checked", "route": False}
@@ -3590,6 +3591,11 @@ class PersonaBridge:
             _affect_self_integration_query = bool(
                 _prompt_source_provenance_intent.get("affect_self_integration_route") is True
                 and not peer_name
+            )
+            _social_affect_status_query = bool(
+                _prompt_source_provenance_intent.get("social_affect_status_route") is True
+                and not peer_name
+                and not _affect_self_integration_query
             )
             _architecture_context_query = (
                 is_architecture_query(effective_input, api_route_intent=_api_route_query)
@@ -3707,6 +3713,19 @@ class PersonaBridge:
                     ),
                     "affect_self_integration_reason": str(
                         _prompt_source_provenance_intent.get("affect_self_integration_reason_code") or "unavailable"
+                    ),
+                    "social_affect_status_query": _social_affect_status_query,
+                    "social_affect_status_intent": str(
+                        _prompt_source_provenance_intent.get("social_affect_status") or "unavailable"
+                    ),
+                    "social_affect_status_positive_similarity": _prompt_source_provenance_intent.get(
+                        "social_affect_status_positive_similarity"
+                    ),
+                    "social_affect_status_negative_similarity": _prompt_source_provenance_intent.get(
+                        "social_affect_status_negative_similarity"
+                    ),
+                    "social_affect_status_margin": _prompt_source_provenance_intent.get(
+                        "social_affect_status_margin"
                     ),
                     "api_route_query": bool(_api_route_query),
                     "api_route_intent_status": str(_api_route_intent.get("status") or "unavailable"),
@@ -4195,6 +4214,7 @@ class PersonaBridge:
             debug_introspection=debug_introspection,
             peer_dialogue=bool(peer_name),
             self_integration_query=_affect_self_integration_query,
+            social_status_query=_social_affect_status_query,
         )
         _structured_affect_status = _affect_report_mode == "detailed"
         _affect_self_report_query = _affect_report_mode != "none"

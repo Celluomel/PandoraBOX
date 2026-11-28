@@ -336,9 +336,11 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                     _SOFTWARE_ARCHITECTURE_POSITIVE, _SOFTWARE_ARCHITECTURE_NEGATIVE,
                     _GLOBAL_WORKSPACE_STATE_POSITIVE, _GLOBAL_WORKSPACE_STATE_NEGATIVE,
                     _AFFECT_SELF_INTEGRATION_POSITIVE, _AFFECT_SELF_INTEGRATION_NEGATIVE,
+                    _SOCIAL_AFFECT_STATUS_POSITIVE, _SOCIAL_AFFECT_STATUS_NEGATIVE,
                 )
                 if isinstance(texts, str) or len(texts) == 1:
-                    return np.asarray([self.query_vector], dtype="float64"), self.embedding_space_id
+                    query = list(self.query_vector) + [0.0] * max(0, 10 - len(self.query_vector))
+                    return np.asarray([query], dtype="float64"), self.embedding_space_id
                 vectors = []
                 for value in texts[:-1]:
                     if value in _PROMPT_PROVENANCE_POSITIVE:
@@ -357,9 +359,17 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                         vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
                     elif value in _AFFECT_SELF_INTEGRATION_NEGATIVE:
                         vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+                    elif value in _SOCIAL_AFFECT_STATUS_POSITIVE:
+                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                    elif value in _SOCIAL_AFFECT_STATUS_NEGATIVE:
+                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
                     else:
                         vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                 vectors.append(self.query_vector)
+                vectors = [
+                    list(vector) + [0.0] * max(0, 10 - len(vector))
+                    for vector in vectors
+                ]
                 vectors = (
                     vectors
                 )
@@ -402,6 +412,22 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "What emotions are active in you now? Give their current measured values and latest appraisal.",
             embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.98]),
         )
+        social_status = classify_prompt_source_provenance_intent(
+            "How are you doing today?",
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.98, 0.02]),
+        )
+        social_status_french = classify_prompt_source_provenance_intent(
+            "Comment vas-tu aujourd'hui ?",
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.98, 0.02]),
+        )
+        affect_detail_not_social = classify_prompt_source_provenance_intent(
+            "What emotions are active in you right now?",
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.98, 0.0, 0.0]),
+        )
+        camera_usage_not_social = classify_prompt_source_provenance_intent(
+            "How are you using the camera?",
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.98]),
+        )
 
         self.assertTrue(prompt_delivery["route"])
         self.assertEqual(prompt_delivery["status"], "prompt_provenance_intent")
@@ -438,6 +464,11 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             direct_affect_report["affect_self_integration_status"],
             "not_affect_self_integration_intent",
         )
+        self.assertTrue(social_status["social_affect_status_route"])
+        self.assertTrue(social_status_french["social_affect_status_route"])
+        self.assertEqual(social_status["social_affect_status"], "social_affect_status_intent")
+        self.assertFalse(affect_detail_not_social["social_affect_status_route"])
+        self.assertFalse(camera_usage_not_social["social_affect_status_route"])
 
     def test_global_workspace_registry_describes_real_merge_and_provenance_limits(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -646,6 +677,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
     def test_affect_report_mode_wires_social_and_structured_turns_without_peer_leakage(self):
         self.assertEqual(affect_report_mode("How are you doing, Lumina?"), "brief")
         self.assertEqual(affect_report_mode("Comment ça va ?"), "brief")
+        self.assertEqual(affect_report_mode("How are you doing today?", social_status_query=True), "brief")
         self.assertEqual(affect_report_mode(
             "What emotions are active in you now?"
         ), "detailed")
