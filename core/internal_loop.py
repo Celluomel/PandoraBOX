@@ -835,6 +835,7 @@ class InternalThoughtLoop:
                 "research_item_queued", "hypothesis_generated",
                 "source_thought_source", "source_thought_type", "source_concept_method",
                 "drive_update", "need_scan", "pressure_source",
+                "aspiration_planning", "goal_plan_schedule_status",
                 "narrative_present", "delivery_status",
             ):
                 item = value.get(key)
@@ -880,6 +881,8 @@ class InternalThoughtLoop:
                 "history_count",
                 "semantic_scoring_ms", "goal_scoring_ms",
                 "goal_persistence_ms", "semantic_scoring_batch_count",
+                "goal_plans_synchronized", "goal_plans_scheduled",
+                "goal_plans_pending",
             }
             numeric_summary = {
                 key: item for key, item in value.items()
@@ -887,6 +890,27 @@ class InternalThoughtLoop:
             }
             if numeric_summary:
                 summary["numeric_metrics"] = numeric_summary
+            if isinstance(value.get("aspiration_plan_exists"), bool):
+                summary["aspiration_plan_exists"] = value["aspiration_plan_exists"]
+            aspiration_action = value.get("aspiration_action")
+            if isinstance(aspiration_action, dict):
+                action_summary: dict[str, Any] = {}
+                for key in ("outcome_status", "reason_code", "operation"):
+                    item = aspiration_action.get(key)
+                    if isinstance(item, str) and item.isascii() and len(item) <= 64 \
+                            and item.replace("_", "").replace("-", "").isalnum():
+                        action_summary[key] = item
+                for key in ("execution_dispatched", "success"):
+                    item = aspiration_action.get(key)
+                    if isinstance(item, bool):
+                        action_summary[key] = item
+                execution_id = aspiration_action.get("execution_id")
+                if isinstance(execution_id, str) and execution_id:
+                    action_summary["execution_ref"] = hashlib.sha256(
+                        execution_id.encode("utf-8")
+                    ).hexdigest()[:20]
+                if action_summary:
+                    summary["aspiration_action"] = action_summary
             rejection_reason_counts = value.get("rejection_reason_counts")
             if isinstance(rejection_reason_counts, dict):
                 safe_reason_counts = {

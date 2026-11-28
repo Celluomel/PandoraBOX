@@ -234,6 +234,37 @@ def test_goal_admission_receipt_preserves_rejection_counts_and_safe_reason_codes
     assert "private free-form explanation" not in repr(summary)
 
 
+def test_long_horizon_planner_receipt_preserves_action_control_flow_without_text():
+    summary = InternalThoughtLoop._evidence_summary({
+        "cycle": 42,
+        "outcome_status": "completed",
+        "goal_plans_scheduled": 1,
+        "goal_plans_pending": 1,
+        "goal_plan_schedule_status": "scheduled",
+        "aspiration_planning": "cadence_deferred",
+        "aspiration_plan_exists": True,
+        "aspiration_action": {
+            "outcome_status": "dispatched",
+            "operation": "memory_recall",
+            "execution_dispatched": True,
+            "execution_id": "private-execution-id",
+            "result": "private provider output",
+        },
+    })
+
+    assert summary["outcome_status"] == "completed"
+    assert summary["aspiration_planning"] == "cadence_deferred"
+    assert summary["goal_plan_schedule_status"] == "scheduled"
+    assert summary["numeric_metrics"]["goal_plans_scheduled"] == 1
+    assert summary["aspiration_plan_exists"] is True
+    assert summary["aspiration_action"]["outcome_status"] == "dispatched"
+    assert summary["aspiration_action"]["operation"] == "memory_recall"
+    assert summary["aspiration_action"]["execution_dispatched"] is True
+    assert summary["aspiration_action"]["execution_ref"]
+    assert "private-execution-id" not in repr(summary)
+    assert "private provider output" not in repr(summary)
+
+
 def test_goal_quality_filter_performance_metrics_are_kept_in_cycle_receipt():
     summary = InternalThoughtLoop._evidence_summary({
         "semantic_scoring_ms": 12.5,
