@@ -41,6 +41,24 @@ class PromptContextInfluenceTests(unittest.TestCase):
         self.assertEqual(fitted, prompt)
         self.assertEqual(receipt["status"], "within_budget")
 
+    def test_response_revision_contract_survives_final_prompt_compaction(self):
+        contract = (
+            "ACTIVE RESPONSE REVISION TASK\n"
+            "Answer the exact prior question: Do you believe in God? "
+            "Give only a direct answer in two sentences."
+        )
+        fitted, receipt = fit_system_prompt_to_context(
+            "CORE IDENTITY\n" + ("unrelated cognitive context " * 1200),
+            "In a short answer.",
+            context_tokens=4096,
+            output_tokens=2048,
+            protected_tail=contract,
+        )
+
+        self.assertEqual(receipt["status"], "compacted")
+        self.assertTrue(receipt["protected_tail_preserved"])
+        self.assertTrue(fitted.endswith(contract))
+
     def test_admission_record_keeps_the_cognitive_turn_id(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "contributions.json"

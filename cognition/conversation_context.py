@@ -148,14 +148,13 @@ def recent_dialogue_messages(
     return [{"role": role, "content": content} for role, content in selected]
 
 
-def previous_assistant_exchange_sources(
+def previous_assistant_exchange_context(
     history: Any, current_input: str, *, max_messages: int = 6,
 ) -> dict[str, str] | None:
-    """Identify the latest complete user/assistant exchange before this turn.
+    """Return the latest complete user/assistant exchange before this turn.
 
-    Returns opaque content hashes only. The underlying role-tagged messages
-    remain in provider history; this receipt establishes which exchange a
-    semantic response-revision operation is allowed to target.
+    Content is for internal prompt construction only. Audit receipts must use
+    the opaque references and must never copy the exchange text.
     """
     messages = recent_dialogue_messages(
         history, current_input, max_chars=4200, max_messages=max_messages,
@@ -172,8 +171,24 @@ def previous_assistant_exchange_sources(
     if not question or not answer:
         return None
     return {
+        "question_text": question,
         "user_source_ref": hashlib.sha256(question.encode("utf-8", errors="replace")).hexdigest()[:20],
         "assistant_source_ref": hashlib.sha256(answer.encode("utf-8", errors="replace")).hexdigest()[:20],
+    }
+
+
+def previous_assistant_exchange_sources(
+    history: Any, current_input: str, *, max_messages: int = 6,
+) -> dict[str, str] | None:
+    """Identify the latest exchange using content-free audit references."""
+    exchange = previous_assistant_exchange_context(
+        history, current_input, max_messages=max_messages,
+    )
+    if exchange is None:
+        return None
+    return {
+        "user_source_ref": exchange["user_source_ref"],
+        "assistant_source_ref": exchange["assistant_source_ref"],
     }
 
 

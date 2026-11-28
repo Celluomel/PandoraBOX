@@ -1092,6 +1092,24 @@ def test_memory_profile_intent_receipt_preserves_scores_and_drops_untrusted_text
     assert "private_query" not in repr(receipt)
 
 
+def test_response_revision_delivery_receipt_exposes_retention_without_prompt_text():
+    receipt = audit_safe_turn_summary({
+        "type": "response_format_revision_prompt_delivery_receipt",
+        "contract_retained": True,
+        "protected_tail_preserved": True,
+        "target_question_ref": "a1b2c3d4e5f6",
+        "target_question_chars": 23,
+        "max_sentences": 2,
+        "target_question": "Do you believe in God?",
+    })
+
+    assert receipt["contract_retained"] is True
+    assert receipt["protected_tail_preserved"] is True
+    assert receipt["target_question_ref"] == "a1b2c3d4e5f6"
+    assert receipt["target_question_chars"] == 23
+    assert "Do you believe" not in repr(receipt)
+
+
 def test_affect_self_integration_route_is_preserved_as_safe_turn_receipt():
     receipt = audit_safe_turn_summary({
         "type": "turn_evidence_routing_receipt",

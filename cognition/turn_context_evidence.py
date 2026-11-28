@@ -373,6 +373,22 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
 
+    if value.get("type") == "response_format_revision_prompt_delivery_receipt":
+        user_ref = re.sub(r"[^A-Za-z0-9_.:-]", "", str(value.get("target_question_ref") or ""))[:64]
+        try:
+            target_chars = max(0, min(1200, int(value.get("target_question_chars", 0))))
+        except (TypeError, ValueError, OverflowError):
+            target_chars = 0
+        return {
+            "type": "response_format_revision_prompt_delivery_receipt",
+            "quality": "present",
+            "contract_retained": bool(value.get("contract_retained")),
+            "protected_tail_preserved": bool(value.get("protected_tail_preserved")),
+            "target_question_ref": user_ref,
+            "target_question_chars": target_chars,
+            "max_sentences": max(1, min(2, int(value.get("max_sentences", 2) or 2))),
+        }
+
     if value.get("type") == "current_observation_availability_receipt":
         availability = str(value.get("availability") or "unavailable")
         if availability not in {
