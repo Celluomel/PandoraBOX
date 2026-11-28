@@ -728,6 +728,30 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             receipt["global_workspace_state_query"] = value["global_workspace_state_query"]
         if isinstance(value.get("affect_self_integration_query"), bool):
             receipt["affect_self_integration_query"] = value["affect_self_integration_query"]
+        if isinstance(value.get("social_affect_status_query"), bool):
+            receipt["social_affect_status_query"] = value["social_affect_status_query"]
+        social_affect_status = str(value.get("social_affect_status_intent") or "")
+        if social_affect_status in {
+            "social_affect_status_intent", "not_social_affect_status_intent",
+            "social_affect_status_intent_uncertain", "router_unavailable",
+            "empty_input", "not_checked",
+        }:
+            receipt["social_affect_status_intent"] = social_affect_status
+        for key in (
+            "social_affect_status_positive_similarity",
+            "social_affect_status_negative_similarity",
+            "social_affect_status_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        social_affect_reason = str(value.get("social_affect_status_reason") or "")
+        if social_affect_reason in {
+            "cross_lingual_semantic_centroid_margin", "router_unavailable", "empty_input",
+        }:
+            receipt["social_affect_status_reason"] = social_affect_reason
         workspace_state_status = str(value.get("global_workspace_state_intent_status") or "")
         if workspace_state_status in {
             "global_workspace_state_intent", "not_global_workspace_state_intent",

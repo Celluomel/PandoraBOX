@@ -1099,6 +1099,31 @@ def test_affect_self_integration_route_is_preserved_as_safe_turn_receipt():
     assert "private_query" not in repr(receipt)
 
 
+def test_social_affect_route_is_preserved_as_safe_turn_receipt():
+    receipt = audit_safe_turn_summary({
+        "type": "turn_evidence_routing_receipt",
+        "factual_plan_query": False,
+        "closed_world_report": False,
+        "architecture_query": False,
+        "cognitive_trace_query": False,
+        "runtime_execution_query": False,
+        "explicit_memory_recall": False,
+        "social_affect_status_query": True,
+        "social_affect_status_intent": "social_affect_status_intent",
+        "social_affect_status_positive_similarity": 0.7953,
+        "social_affect_status_negative_similarity": 0.6697,
+        "social_affect_status_margin": 0.1256,
+        "social_affect_status_reason": "cross_lingual_semantic_centroid_margin",
+        "private_query": "must not be copied",
+    })
+
+    assert receipt["social_affect_status_query"] is True
+    assert receipt["social_affect_status_intent"] == "social_affect_status_intent"
+    assert receipt["social_affect_status_margin"] == 0.1256
+    assert receipt["social_affect_status_reason"] == "cross_lingual_semantic_centroid_margin"
+    assert "private_query" not in repr(receipt)
+
+
 def test_runtime_execution_route_uses_originating_turn_trace_snapshot():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
