@@ -786,7 +786,11 @@ def classify_prompt_source_provenance_intent(
         affect_positive_score = float(query @ affect_positive)
         affect_negative_score = float(query @ affect_negative)
         affect_margin = affect_positive_score - affect_negative_score
-        if affect_positive_score >= 0.72 and affect_margin >= 0.05:
+        # Nomic v1.5 live examples of integrated affect questions cluster
+        # around a 0.045 margin; direct status, greeting, and general
+        # psychology controls remain below zero. Keep the threshold at 0.04
+        # so a strong positive semantic match is not dropped as uncertain.
+        if affect_positive_score >= 0.72 and affect_margin >= 0.04:
             affect_status, affect_route = "affect_self_integration_intent", True
         elif affect_positive_score < 0.66 or affect_margin < 0.0:
             affect_status, affect_route = "not_affect_self_integration_intent", False

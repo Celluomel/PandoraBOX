@@ -392,6 +392,12 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "How do the different affective signals recorded in your system relate to one another and contribute together to your continuing sense of self?",
             embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.98, 0.02]),
         )
+        affect_integration_borderline = classify_prompt_source_provenance_intent(
+            "Explain how your measured affective signals and recorded causes combine in your self-model.",
+            # A unit vector with positive similarity ~0.73 and a ~0.045
+            # positive-vs-negative margin, matching the live Nomic boundary.
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.73, 0.685]),
+        )
         direct_affect_report = classify_prompt_source_provenance_intent(
             "What emotions are active in you now? Give their current measured values and latest appraisal.",
             embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.98]),
@@ -419,6 +425,10 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertFalse(unavailable["global_workspace_state_route"])
         self.assertTrue(affect_integration["affect_self_integration_route"])
         self.assertTrue(affect_integration_english["affect_self_integration_route"])
+        self.assertTrue(affect_integration_borderline["affect_self_integration_route"])
+        self.assertGreaterEqual(
+            affect_integration_borderline["affect_self_integration_margin"], 0.04,
+        )
         self.assertEqual(
             affect_integration["affect_self_integration_status"],
             "affect_self_integration_intent",
