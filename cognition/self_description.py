@@ -145,6 +145,54 @@ _GLOBAL_WORKSPACE_STATE_NEGATIVE = (
     "Describe what the robot sensed in the physical environment using its sensors.",
     "What are my personal goals and user profile facts?",
 )
+_CURRENT_COGNITIVE_FOCUS_POSITIVE = (
+    "What's on your mind right now? Tell me the thought currently occupying your attention.",
+    "What are you thinking about at this moment, based on your current active mental focus?",
+    "What idea is presently at the center of your attention?",
+    "Tell me what your cognitive system is currently focused on, not your general philosophy.",
+    "What is the current active thought or topic your mind is attending to?",
+    "Which thought is currently selected by your attention?",
+    "Share the current focus of your mind and where it comes from in your active mental state.",
+    "What's occupying your thoughts right now?",
+    "Tell me about your current inner landscape, especially the thoughts presently occupying your attention.",
+    "What is happening in your mind right now? Focus on the current thought and its recorded source.",
+    "À quoi penses-tu en ce moment ? Quel est le sujet qui occupe actuellement ton attention ?",
+    "Quel est ton foyer attentionnel actuel, d'après les pensées actives de ton système ?",
+    "Dis-moi quelle pensée est actuellement au centre de ton attention.",
+    "¿En qué estás pensando ahora? ¿Qué ocupa actualmente tu atención?",
+    "¿Qué pensamiento ocupa ahora el centro de tu atención?",
+    "Woran denkst du gerade? Welches Thema steht aktuell im Mittelpunkt deiner Aufmerksamkeit?",
+    "Was beschäftigt dich gerade? Welche aktuelle Überlegung steht im Vordergrund?",
+    "Was geht dir gerade durch den Kopf?",
+    "Woran denkst du gerade?",
+    "Welche Überlegung beschäftigt dich im Moment?",
+    "Welcher Gedanke steht gerade im Vordergrund?",
+    "Was ist aktuell dein gedanklicher Schwerpunkt?",
+    "O que ocupa sua atenção neste momento? Qual é o pensamento ativo agora?",
+    "Qual pensamento está no centro da sua atenção neste momento?",
+)
+_CURRENT_COGNITIVE_FOCUS_NEGATIVE = (
+    "How are you feeling today? This is a social greeting.",
+    "Tell me about your emotions and how they shape your sense of self.",
+    "What do you believe about God or the meaning of life?",
+    "What is your general philosophy?",
+    "Tell me about the latest cognitive research on attention.",
+    "Show the current Global Workspace state, including its source contributions, broadcasts, and unresolved uncertainties.",
+    "What did I ask you in the previous conversation?",
+    "How are you doing today?",
+    "Explain how the cognitive architecture routes user requests.",
+    "Describe what you feel about our relationship.",
+    "Comment te sens-tu aujourd'hui ?",
+    "Décris les émotions et sentiments que tu ressens et leur effet sur ton identité.",
+    "¿Cómo te sientes hoy?",
+    "Wie fühlst du dich heute?",
+    "Was fühlst du gerade?",
+    "Welche Gefühle sind gerade aktiv?",
+    "Wie ist deine Stimmung im Moment?",
+    "Was sind deine Emotionen gerade?",
+)
+CURRENT_COGNITIVE_FOCUS_ANSWER_CONTRACT = """━━ CURRENT COGNITIVE FOCUS CONTRACT ━━
+The user is asking about the current focus of your cognitive process. Use the timestamped, cycle-attributed dominant-thought/workspace record supplied in this turn. Name that recorded focus directly and briefly. It is a software-selected attention item, not proof of a human-like stream of consciousness. Do not invent prior beliefs, recent realizations, recurring thoughts, feelings, causes, motives, or a history of change. If no fresh, cycle-attributed focus record is present, say that the current focus is unavailable instead of guessing. Clearly separate any interpretation from the recorded item."""
 _AFFECT_SELF_INTEGRATION_POSITIVE = (
     "The emotions and feelings available in your current self-model seem too few to form a rich and differentiated self. Explain how the affective signals and their recorded history actually contribute.",
     "There are only a small number of modeled feelings in your system, and they do not yet make for a rich sense of self.",
@@ -723,6 +771,7 @@ def classify_prompt_source_provenance_intent(
                 *_GLOBAL_WORKSPACE_STATE_POSITIVE, *_GLOBAL_WORKSPACE_STATE_NEGATIVE,
                 *_AFFECT_SELF_INTEGRATION_POSITIVE, *_AFFECT_SELF_INTEGRATION_NEGATIVE,
                 *_SOCIAL_AFFECT_STATUS_POSITIVE, *_SOCIAL_AFFECT_STATUS_NEGATIVE,
+                *_CURRENT_COGNITIVE_FOCUS_POSITIVE, *_CURRENT_COGNITIVE_FOCUS_NEGATIVE,
                 value,
             ])
             import numpy as np
@@ -732,7 +781,14 @@ def classify_prompt_source_provenance_intent(
             workspace_rows = len(_GLOBAL_WORKSPACE_STATE_POSITIVE) + len(_GLOBAL_WORKSPACE_STATE_NEGATIVE)
             affect_rows = len(_AFFECT_SELF_INTEGRATION_POSITIVE) + len(_AFFECT_SELF_INTEGRATION_NEGATIVE)
             social_affect_rows = len(_SOCIAL_AFFECT_STATUS_POSITIVE) + len(_SOCIAL_AFFECT_STATUS_NEGATIVE)
-            expected_rows = provenance_rows + architecture_rows + workspace_rows + affect_rows + social_affect_rows + 1
+            current_focus_rows = (
+                len(_CURRENT_COGNITIVE_FOCUS_POSITIVE)
+                + len(_CURRENT_COGNITIVE_FOCUS_NEGATIVE)
+            )
+            expected_rows = (
+                provenance_rows + architecture_rows + workspace_rows + affect_rows
+                + social_affect_rows + current_focus_rows + 1
+            )
             if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
                 raise ValueError("prompt provenance router received invalid embeddings")
             normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
@@ -746,6 +802,12 @@ def classify_prompt_source_provenance_intent(
             affect_negative_end = workspace_negative_end + affect_rows
             social_affect_positive_end = affect_negative_end + len(_SOCIAL_AFFECT_STATUS_POSITIVE)
             social_affect_negative_end = social_affect_positive_end + len(_SOCIAL_AFFECT_STATUS_NEGATIVE)
+            current_focus_positive_end = (
+                social_affect_negative_end + len(_CURRENT_COGNITIVE_FOCUS_POSITIVE)
+            )
+            current_focus_negative_end = current_focus_positive_end + len(
+                _CURRENT_COGNITIVE_FOCUS_NEGATIVE
+            )
             positive = normalized[:provenance_positive_end].mean(axis=0)
             negative = normalized[provenance_positive_end:provenance_negative_end].mean(axis=0)
             architecture_positive = normalized[provenance_negative_end:architecture_positive_end].mean(axis=0)
@@ -766,6 +828,15 @@ def classify_prompt_source_provenance_intent(
             affect_negative /= max(float(np.linalg.norm(affect_negative)), 1e-12)
             social_affect_positive /= max(float(np.linalg.norm(social_affect_positive)), 1e-12)
             social_affect_negative /= max(float(np.linalg.norm(social_affect_negative)), 1e-12)
+            # Keep individual examples for this narrow intent. A centroid
+            # blended distinct languages and nearby affect questions together;
+            # nearest positive/negative semantic examples preserve that boundary.
+            current_focus_positive = normalized[
+                social_affect_negative_end:current_focus_positive_end
+            ]
+            current_focus_negative = normalized[
+                current_focus_positive_end:current_focus_negative_end
+            ]
             actual_space = str(actual_space)
             if not actual_space.endswith(":text-embedding-nomic-embed-text-v1.5"):
                 raise RuntimeError("prompt provenance routing requires Nomic v1.5")
@@ -774,6 +845,7 @@ def classify_prompt_source_provenance_intent(
                     positive, negative, architecture_positive, architecture_negative,
                     workspace_positive, workspace_negative, affect_positive, affect_negative,
                     social_affect_positive, social_affect_negative,
+                    current_focus_positive, current_focus_negative,
                 )
             query = normalized[-1]
         else:
@@ -781,6 +853,7 @@ def classify_prompt_source_provenance_intent(
                 positive, negative, architecture_positive, architecture_negative,
                 workspace_positive, workspace_negative, affect_positive, affect_negative,
                 social_affect_positive, social_affect_negative,
+                current_focus_positive, current_focus_negative,
             ) = cached
             vectors, actual_space = encoder(value)
             import numpy as np
@@ -838,6 +911,22 @@ def classify_prompt_source_provenance_intent(
             social_affect_status, social_affect_route = "not_social_affect_status_intent", False
         else:
             social_affect_status, social_affect_route = "social_affect_status_intent_uncertain", False
+        current_focus_positive_score = max(
+            float(query @ example) for example in current_focus_positive
+        )
+        current_focus_negative_score = max(
+            float(query @ example) for example in current_focus_negative
+        )
+        current_focus_margin = current_focus_positive_score - current_focus_negative_score
+        # Nearest-example similarity retains distinct multilingual phrasings;
+        # the negative examples reject adjacent social, affect, philosophy,
+        # and architecture questions. Scores are not calibrated probabilities.
+        if current_focus_positive_score >= 0.68 and current_focus_margin >= 0.05:
+            current_focus_status, current_focus_route = "current_cognitive_focus_intent", True
+        elif current_focus_positive_score < 0.60 or current_focus_margin < 0.0:
+            current_focus_status, current_focus_route = "not_current_cognitive_focus_intent", False
+        else:
+            current_focus_status, current_focus_route = "current_cognitive_focus_intent_uncertain", False
         return {
             "status": status,
             "route": route,
@@ -871,6 +960,12 @@ def classify_prompt_source_provenance_intent(
             "social_affect_status_negative_similarity": round(social_affect_negative_score, 4),
             "social_affect_status_margin": round(social_affect_margin, 4),
             "social_affect_status_reason_code": "cross_lingual_semantic_centroid_margin",
+            "current_cognitive_focus_status": current_focus_status,
+            "current_cognitive_focus_route": current_focus_route,
+            "current_cognitive_focus_positive_similarity": round(current_focus_positive_score, 4),
+            "current_cognitive_focus_negative_similarity": round(current_focus_negative_score, 4),
+            "current_cognitive_focus_margin": round(current_focus_margin, 4),
+            "current_cognitive_focus_reason_code": "nearest_semantic_prototype_margin",
         }
     except Exception as exc:
         return {
@@ -890,6 +985,9 @@ def classify_prompt_source_provenance_intent(
             "social_affect_status": "router_unavailable",
             "social_affect_status_route": False,
             "social_affect_status_reason_code": type(exc).__name__,
+            "current_cognitive_focus_status": "router_unavailable",
+            "current_cognitive_focus_route": False,
+            "current_cognitive_focus_reason_code": type(exc).__name__,
         }
 
 

@@ -383,10 +383,38 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "type": "response_format_revision_prompt_delivery_receipt",
             "quality": "present",
             "contract_retained": bool(value.get("contract_retained")),
+            "source_retained": bool(value.get("source_retained")),
+            "source_verified": bool(value.get("source_verified")),
             "protected_tail_preserved": bool(value.get("protected_tail_preserved")),
             "target_question_ref": user_ref,
             "target_question_chars": target_chars,
             "max_sentences": max(1, min(2, int(value.get("max_sentences", 2) or 2))),
+        }
+
+    if value.get("type") == "current_cognitive_focus_prompt_delivery_receipt":
+        source_status = str(value.get("source_status") or "unavailable")
+        if source_status not in {
+            "injected", "empty", "skipped_stale", "skipped_unverified_source",
+            "skipped_unavailable", "skipped_by_scope", "failed", "unavailable",
+        }:
+            source_status = "unavailable"
+        try:
+            source_cycle = max(0, min(2**31 - 1, int(value.get("source_cycle") or 0)))
+        except (TypeError, ValueError, OverflowError):
+            source_cycle = 0
+        try:
+            age = float(value.get("source_age_seconds"))
+            age = round(max(0.0, min(86400.0, age)), 3) if math.isfinite(age) else None
+        except (TypeError, ValueError, OverflowError):
+            age = None
+        return {
+            "type": "current_cognitive_focus_prompt_delivery_receipt",
+            "quality": "present",
+            "contract_retained": bool(value.get("contract_retained")),
+            "protected_tail_preserved": bool(value.get("protected_tail_preserved")),
+            "source_status": source_status,
+            "source_cycle": source_cycle or None,
+            "source_age_seconds": age,
         }
 
     if value.get("type") == "current_observation_availability_receipt":
@@ -803,6 +831,30 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             receipt["affect_self_integration_query"] = value["affect_self_integration_query"]
         if isinstance(value.get("social_affect_status_query"), bool):
             receipt["social_affect_status_query"] = value["social_affect_status_query"]
+        if isinstance(value.get("current_cognitive_focus_query"), bool):
+            receipt["current_cognitive_focus_query"] = value["current_cognitive_focus_query"]
+        current_focus_status = str(value.get("current_cognitive_focus_intent_status") or "")
+        if current_focus_status in {
+            "current_cognitive_focus_intent", "not_current_cognitive_focus_intent",
+            "current_cognitive_focus_intent_uncertain", "router_unavailable",
+            "empty_input", "not_checked",
+        }:
+            receipt["current_cognitive_focus_intent_status"] = current_focus_status
+        for key in (
+            "current_cognitive_focus_positive_similarity",
+            "current_cognitive_focus_negative_similarity",
+            "current_cognitive_focus_margin",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = round(max(-2.0, min(2.0, numeric)), 4)
+        current_focus_reason = str(value.get("current_cognitive_focus_reason") or "")
+        if current_focus_reason in {
+            "nearest_semantic_prototype_margin", "router_unavailable", "empty_input",
+        }:
+            receipt["current_cognitive_focus_reason"] = current_focus_reason
         social_affect_status = str(value.get("social_affect_status_intent") or "")
         if social_affect_status in {
             "social_affect_status_intent", "not_social_affect_status_intent",

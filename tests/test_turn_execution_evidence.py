@@ -564,6 +564,18 @@ def test_prompt_assembly_declares_only_contexts_with_recorded_outputs():
     assert skipped_with_payload == ("turn_input",)
 
 
+def test_current_focus_contract_is_a_prompt_assembly_dependency():
+    dependencies = _prompt_assembly_dependencies({
+        "current_cognitive_focus_context": {
+            "status": "injected",
+            "output_fingerprint": "f" * 64,
+            "output_quality": "present",
+        },
+    })
+
+    assert dependencies == ("turn_input", "current_cognitive_focus_context")
+
+
 def test_prompt_fallback_does_not_claim_to_consume_partial_context():
     dependencies = _prompt_assembly_dependencies({
         "prompt_context_build": {"status": "failed"},
@@ -1096,6 +1108,8 @@ def test_response_revision_delivery_receipt_exposes_retention_without_prompt_tex
     receipt = audit_safe_turn_summary({
         "type": "response_format_revision_prompt_delivery_receipt",
         "contract_retained": True,
+        "source_retained": True,
+        "source_verified": True,
         "protected_tail_preserved": True,
         "target_question_ref": "a1b2c3d4e5f6",
         "target_question_chars": 23,
@@ -1104,10 +1118,57 @@ def test_response_revision_delivery_receipt_exposes_retention_without_prompt_tex
     })
 
     assert receipt["contract_retained"] is True
+    assert receipt["source_retained"] is True
+    assert receipt["source_verified"] is True
     assert receipt["protected_tail_preserved"] is True
     assert receipt["target_question_ref"] == "a1b2c3d4e5f6"
     assert receipt["target_question_chars"] == 23
     assert "Do you believe" not in repr(receipt)
+
+
+def test_current_cognitive_focus_delivery_receipt_is_bounded_and_provenanced():
+    receipt = audit_safe_turn_summary({
+        "type": "current_cognitive_focus_prompt_delivery_receipt",
+        "contract_retained": True,
+        "protected_tail_preserved": True,
+        "source_status": "injected",
+        "source_cycle": 1842,
+        "source_age_seconds": 12.75,
+        "private_focus_text": "must not be copied into the receipt",
+    })
+
+    assert receipt["contract_retained"] is True
+    assert receipt["protected_tail_preserved"] is True
+    assert receipt["source_status"] == "injected"
+    assert receipt["source_cycle"] == 1842
+    assert receipt["source_age_seconds"] == 12.75
+    assert "private_focus_text" not in repr(receipt)
+    assert "must not be copied" not in repr(receipt)
+
+
+def test_current_cognitive_focus_routing_fields_are_preserved_without_text():
+    receipt = audit_safe_turn_summary({
+        "type": "turn_evidence_routing_receipt",
+        "factual_plan_query": False,
+        "closed_world_report": False,
+        "architecture_query": False,
+        "cognitive_trace_query": False,
+        "runtime_execution_query": False,
+        "explicit_memory_recall": False,
+        "current_cognitive_focus_query": True,
+        "current_cognitive_focus_intent_status": "current_cognitive_focus_intent",
+        "current_cognitive_focus_positive_similarity": 0.7981,
+        "current_cognitive_focus_negative_similarity": 0.7020,
+        "current_cognitive_focus_margin": 0.0961,
+        "current_cognitive_focus_reason": "nearest_semantic_prototype_margin",
+        "private_query": "must not be copied",
+    })
+
+    assert receipt["current_cognitive_focus_query"] is True
+    assert receipt["current_cognitive_focus_intent_status"] == "current_cognitive_focus_intent"
+    assert receipt["current_cognitive_focus_margin"] == 0.0961
+    assert receipt["current_cognitive_focus_reason"] == "nearest_semantic_prototype_margin"
+    assert "private_query" not in repr(receipt)
 
 
 def test_affect_self_integration_route_is_preserved_as_safe_turn_receipt():

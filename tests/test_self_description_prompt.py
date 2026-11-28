@@ -337,9 +337,10 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                     _GLOBAL_WORKSPACE_STATE_POSITIVE, _GLOBAL_WORKSPACE_STATE_NEGATIVE,
                     _AFFECT_SELF_INTEGRATION_POSITIVE, _AFFECT_SELF_INTEGRATION_NEGATIVE,
                     _SOCIAL_AFFECT_STATUS_POSITIVE, _SOCIAL_AFFECT_STATUS_NEGATIVE,
+                    _CURRENT_COGNITIVE_FOCUS_POSITIVE, _CURRENT_COGNITIVE_FOCUS_NEGATIVE,
                 )
                 if isinstance(texts, str) or len(texts) == 1:
-                    query = list(self.query_vector) + [0.0] * max(0, 10 - len(self.query_vector))
+                    query = list(self.query_vector) + [0.0] * max(0, 12 - len(self.query_vector))
                     return np.asarray([query], dtype="float64"), self.embedding_space_id
                 vectors = []
                 for value in texts[:-1]:
@@ -363,11 +364,15 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                         vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
                     elif value in _SOCIAL_AFFECT_STATUS_NEGATIVE:
                         vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+                    elif value in _CURRENT_COGNITIVE_FOCUS_POSITIVE:
+                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                    elif value in _CURRENT_COGNITIVE_FOCUS_NEGATIVE:
+                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
                     else:
-                        vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                        vectors.append([0.0] * 12)
                 vectors.append(self.query_vector)
                 vectors = [
-                    list(vector) + [0.0] * max(0, 10 - len(vector))
+                    list(vector) + [0.0] * max(0, 12 - len(vector))
                     for vector in vectors
                 ]
                 vectors = (
@@ -428,6 +433,30 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "How are you using the camera?",
             embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.98]),
         )
+        current_focus = classify_prompt_source_provenance_intent(
+            "What's on your mind right now?",
+            embedder=FakeEmbedder([0.0] * 10 + [0.98, 0.02]),
+        )
+        affect_question_not_focus = classify_prompt_source_provenance_intent(
+            "How are you doing today?",
+            embedder=FakeEmbedder([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.98, 0.02]),
+        )
+        philosophy_not_focus = classify_prompt_source_provenance_intent(
+            "What is your general philosophy?",
+            embedder=FakeEmbedder([0.0] * 10 + [0.02, 0.98]),
+        )
+        german_focus = classify_prompt_source_provenance_intent(
+            "Was beschäftigt dich gerade?",
+            embedder=FakeEmbedder([0.0] * 10 + [0.98, 0.02]),
+        )
+        internal_landscape_followup = classify_prompt_source_provenance_intent(
+            "any of your internal landscape",
+            embedder=FakeEmbedder([0.0] * 10 + [0.98, 0.02]),
+        )
+        german_affect_not_focus = classify_prompt_source_provenance_intent(
+            "Was fühlst du gerade?",
+            embedder=FakeEmbedder([0.0] * 10 + [0.02, 0.98]),
+        )
 
         self.assertTrue(prompt_delivery["route"])
         self.assertEqual(prompt_delivery["status"], "prompt_provenance_intent")
@@ -469,6 +498,20 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertEqual(social_status["social_affect_status"], "social_affect_status_intent")
         self.assertFalse(affect_detail_not_social["social_affect_status_route"])
         self.assertFalse(camera_usage_not_social["social_affect_status_route"])
+        self.assertTrue(current_focus["current_cognitive_focus_route"])
+        self.assertEqual(
+            current_focus["current_cognitive_focus_status"],
+            "current_cognitive_focus_intent",
+        )
+        self.assertFalse(affect_question_not_focus["current_cognitive_focus_route"])
+        self.assertFalse(philosophy_not_focus["current_cognitive_focus_route"])
+        self.assertTrue(german_focus["current_cognitive_focus_route"])
+        self.assertTrue(internal_landscape_followup["current_cognitive_focus_route"])
+        self.assertFalse(german_affect_not_focus["current_cognitive_focus_route"])
+        self.assertEqual(
+            current_focus["current_cognitive_focus_reason_code"],
+            "nearest_semantic_prototype_margin",
+        )
 
     def test_global_workspace_registry_describes_real_merge_and_provenance_limits(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -707,7 +750,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("distinctive texture", context)
         self.assertIn("tension_released from internal_loop", context)
         self.assertIn("State description omitted", context)
-        self.assertNotIn("modeled state", context)
+        self.assertNotIn("State description: modeled state", context)
         self.assertIn("baseline deviation is the current value relative to that channel's baseline", context)
         self.assertIn("it is not a temporal change", context)
 
