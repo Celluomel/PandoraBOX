@@ -736,6 +736,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("do not infer that one channel caused another", context)
         self.assertIn("satisfaction does not prove a goal was met", context)
         self.assertIn("warmth does not establish affinity with a person", context)
+        self.assertIn("does not prove a goal or task was completed", context)
         self.assertNotIn("synthetic or biological", context)
 
     def test_affect_self_integration_uses_cause_receipts_and_persisted_history(self):
@@ -770,6 +771,9 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         )
         self.assertIn("Latest recorded affect-changing appraisal: contradiction_detected from belief_revision", context)
         self.assertIn("turn=cause-turn-1", context)
+        self.assertIn("Recorded modeled-state update", context)
+        self.assertIn("not an independently verified external outcome", context)
+        self.assertIn("producer=belief_revision", context)
         self.assertNotIn("Recorded affect event: type=time_decay", context)
         self.assertIn("Persisted self-affect moment (3600s ago, turn=memory-turn-1)", context)
         self.assertIn("curiosity=0.68 (+0.38 vs baseline)", context)
@@ -955,6 +959,11 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("do not substitute it", context)
         self.assertIn("Latest recorded affect-changing appraisal: drive_satisfied from goal_engine, 3.2s ago", context)
         self.assertNotIn("human-like subjective experience", context)
+
+    def test_warmth_description_does_not_claim_a_personal_connection(self):
+        from cognition.emotional_state import EMOTION_LANGUAGE
+
+        self.assertEqual(EMOTION_LANGUAGE["warmth"], "warm")
 
     def test_runtime_manifest_distinguishes_observation_from_semantic_validation(self):
         description = SelfDescription.__new__(SelfDescription)

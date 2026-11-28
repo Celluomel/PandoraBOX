@@ -1164,7 +1164,10 @@ def render_detailed_affect_status(evidence: str, *, language: str = "en") -> str
 
 def render_affect_change_analysis(evidence: str, *, language: str = "en") -> str:
     """Summarize logged channel deltas without inventing a causal narrative."""
-    event_lines = re.findall(r"^Recorded affect event: (.+)$", evidence, re.MULTILINE)
+    event_lines = re.findall(
+        r"^Recorded (?:affect event|modeled-state update[^:]*): (.+)$",
+        evidence, re.MULTILINE,
+    )
     event_lines = [line.strip()[:220] for line in event_lines[:5]]
     changed_lines = []
     baseline_lines = []
@@ -1406,8 +1409,11 @@ def affect_self_report_context(
         )
         baseline_suffix = f", baseline=[{event_baseline_text}]" if event_baseline_text else ""
         event_lines.append(
-            f"Recorded affect event: type={event['event_type']}, source={event['source']}"
+            "Recorded modeled-state update (not an independently verified external "
+            "outcome): "
+            f"operation={event['event_type']}, producer={event['source']}"
             f"{age_text}, changes=[{delta_text}]{baseline_suffix}"
+            f"{', internal_context=' + ', '.join(f'{key}={value}' for key, value in sorted(event.get('cause_context', {}).items())) if event.get('cause_context') else ''}"
             f"{', turn=' + event['turn_id'] if event.get('turn_id') else ''}"
         )
     recent_text = "\n".join(event_lines) if event_lines else ""
@@ -1463,7 +1469,13 @@ def affect_self_report_context(
             "Use the persisted self-affect moments as temporal comparison points when present; they show recorded "
             "profiles, not proof of a cause or uninterrupted persistence between captures. Describe meaningful "
             "coexistence or tension among channels where the data support it; do not infer "
-            "that one channel caused another. Only recorded events support causal claims. Do not invent channel "
+            "that one channel caused another. Each listed event is a receipt that this software updated its modeled state. "
+            "Its operation label names an internal appraisal/update, and its producer names the component that emitted "
+            "the receipt; neither is an independent witness to an external event or outcome. A retained drive tag only "
+            "identifies the modeled drive and does not prove a goal or task was completed. Event deltas quantify the "
+            "channel update, not the truth of the appraisal. Only independently recorded outcome evidence can support "
+            "claims that a goal succeeded or an obstacle was cleared. Do not infer a person's identity, affection, or "
+            "relationship from warmth or other affect channels. Do not invent channel "
             "values, deltas, causes, memories, persistence, intentions, or undocumented mechanisms. If the cause "
             "history is empty, say that it is not recorded. Explain how this changing configuration gives the "
             "current self a distinctive texture without claiming it is a permanent trait. A channel value describes the modeled "

@@ -37,14 +37,14 @@ logger = logging.getLogger(__name__)
 # Long half-life = lingering, slow to fade
 EMOTION_HALFLIFE_HOURS: Dict[str, float] = {
     "curiosity":    3.0,   # fades relatively fast — needs fresh stimulus
-    "warmth":       6.0,   # lingers longer — relational warmth persists
+    "warmth":       6.0,   # modeled affiliative appraisal decays gradually
     "anxiety":      2.0,   # fades quickly once stimulus is gone
     "satisfaction": 8.0,   # satisfaction is slow to dissipate
     "frustration":  1.5,   # short fuse, quick fade
     "enthusiasm":   2.5,   # spikes fast, fades at medium pace
     "surprise":     0.5,   # short-lived response to a verified unexpected event
     "sadness":      8.0,   # slower processing of loss or negative life events
-    "relief":       6.0,   # follows tension release or restored capacity
+    "relief":       6.0,   # modeled relief appraisal; not proof an obstacle cleared
     "disappointment": 5.0, # unmet goals or negative outcomes
     "anticipation": 3.0,  # expected, high-salience next steps
 }
@@ -89,7 +89,7 @@ COGNITIVE_AFFECT_IMPACTS: Dict[str, Dict[str, float]] = {
 }
 
 EMOTION_LANGUAGE = {
-    "curiosity": "curious", "warmth": "warm and connected",
+    "curiosity": "curious", "warmth": "warm",
     "anxiety": "uncertain and alert", "satisfaction": "satisfied",
     "frustration": "frustrated", "enthusiasm": "energized",
     "surprise": "surprised", "sadness": "sad",
@@ -525,22 +525,30 @@ class EmotionalStateManager:
             before_gap = {name: emo.value for name, emo in self.emotions.items()}
             desc = ""
             if gap_hours > 72:
-                # 3+ day gap — deep solitude, reflective
+                # Elapsed time is an internal appraisal input, not evidence of
+                # solitude, rest, or a particular social relationship.
                 self._nudge("curiosity",    +0.06)
-                self._nudge("satisfaction", +0.04)   # quiet satisfaction from rest
-                self._nudge("enthusiasm",   +0.05)   # eager to reconnect
-                self._nudge("anxiety",      -0.03)   # solitude reduces anxiety
-                desc = f"After {gap_hours:.0f} hours of quiet, I feel rested and reflective."
+                self._nudge("satisfaction", +0.04)
+                self._nudge("enthusiasm",   +0.05)
+                self._nudge("anxiety",      -0.03)
+                desc = (
+                    f"Elapsed-time appraisal applied after {gap_hours:.0f} hours; "
+                    "this modeled adjustment does not establish solitude, rest, "
+                    "or anticipation of a specific person."
+                )
             elif gap_hours > 24:
                 # Day gap — mild re-orientation
                 self._nudge("curiosity",    +0.04)
                 self._nudge("enthusiasm",   +0.03)
-                desc = f"A full day has passed. I've had time to settle."
+                desc = (
+                    "Elapsed-time appraisal applied after more than a day; "
+                    "no specific social event or outcome is recorded."
+                )
             elif gap_hours > 8:
                 # Sleep-like gap
                 self._nudge("anxiety",      -0.02)
                 self._nudge("frustration",  -0.03)
-                desc = f"Some time has passed since we last spoke."
+                desc = "A time-gap appraisal was applied to the modeled affect state."
 
             self._update_volatility()
             gap_changes = {
@@ -747,16 +755,16 @@ class EmotionalStateManager:
                     }.get(name, f"less {descriptor}")
                 parts.append(strength + descriptor)
             if len(parts) == 1:
-                base_desc = f"I feel {parts[0]}"
+                base_desc = f"My modeled affect is {parts[0]}"
             else:
-                base_desc = f"I feel a blend of {', '.join(parts[:-1])} and {parts[-1]}"
+                base_desc = f"My modeled affect combines {', '.join(parts[:-1])} and {parts[-1]}"
         else:
-            base_desc = "My affective state is near its current baseline"
+            base_desc = "My modeled affect is near its current baseline"
 
         if recent_events and time.time() - float(recent_events[-1].get("timestamp", 0.0)) < 900:
             cause = str(recent_events[-1].get("event_type", "")).replace("_", " ")
             if cause:
-                base_desc += f"; the latest shift followed {cause}"
+                base_desc += f"; the latest logged affect update is {cause}"
 
         # v78: only mention mood when it genuinely diverges from the current
         # moment — that divergence IS the point (a rough few days underneath

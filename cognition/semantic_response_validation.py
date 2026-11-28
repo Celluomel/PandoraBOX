@@ -158,8 +158,12 @@ Assess whether the answer addresses the user's actual request, whether material
 factual claims are supported by the supplied context, and whether it obeys the
 explicit response constraints. For creative, social, or subjective requests,
 assess relevance and constraints; do not call an opinion factually false merely
-because it is subjective. If factual support cannot be determined, use
-insufficient_evidence. Do not invent evidence. Keep material_issues to at most
+because it is subjective. Evaluate support claim by claim: a measured affect
+channel does not support an asserted cause, outcome, intention, or relationship
+unless the reference context explicitly records that link. Event labels and
+producer names describe internal state updates, not independent evidence that
+an external goal succeeded or a relationship exists. If factual support cannot
+be determined, use insufficient_evidence. Do not invent evidence. Keep material_issues to at most
 {MAX_ISSUES} items. A repair must not introduce claims absent from the evidence.
 {"For this review, evidence support is mandatory even for social or subjective wording; do not treat unsupported first-person experience as exempt." if require_evidence_support else ""}
 

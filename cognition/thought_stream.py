@@ -1421,13 +1421,13 @@ class ThoughtStream:
             if not description and values:
                 dominant = max(values, key=values.get)
                 descriptor = {
-                    "curiosity": "curious", "warmth": "warm and connected",
+                    "curiosity": "curious", "warmth": "warm",
                     "anxiety": "uncertain and alert", "satisfaction": "satisfied",
                     "frustration": "frustrated", "enthusiasm": "energized",
                     "surprise": "surprised", "sadness": "sad", "relief": "relieved",
                     "disappointment": "disappointed", "anticipation": "expectant",
                 }.get(dominant, dominant.replace('_', ' '))
-                description = f"I feel {descriptor}"
+                description = f"My modeled affect is {descriptor}"
             if not description:
                 return None
             arousal = 0.4

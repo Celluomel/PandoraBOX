@@ -144,7 +144,10 @@ class EmotionalAffectEventTests(unittest.TestCase):
             self.assertEqual(feedback["cause_context"], {"feedback": "negative"})
             self.assertTrue(feedback["changes"])
 
-            state.update_from_time_gap(36.0)
+            gap_description = state.update_from_time_gap(36.0)
+            self.assertIn("Elapsed-time appraisal", gap_description)
+            self.assertNotIn("rested", gap_description.casefold())
+            self.assertNotIn("reconnect", gap_description.casefold())
             gap = state.get_recent_affect_events(1)[0]
             self.assertEqual(gap["event_type"], "conversation_gap")
             self.assertEqual(gap["cause_context"], {"gap_hours": "36.0"})
