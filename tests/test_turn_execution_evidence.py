@@ -17,6 +17,7 @@ from cognition.persona_bridge import (
     _prior_assistant_trace_evidence,
     _deterministic_projection_label,
     _prompt_assembly_dependencies,
+    _turn_data_flow_issues,
     _prompt_source_provenance,
     _render_prompt_source_provenance,
     _render_prompt_source_provenance_answer,
@@ -526,6 +527,32 @@ def test_prompt_assembly_declares_only_contexts_with_recorded_outputs():
         "turn_input", "memory_prompt_context", "affect_advisory_context",
     )
 
+    skipped_with_payload = _prompt_assembly_dependencies({
+        "session_archive_retrieval": {
+            "status": "not_requested", "output_fingerprint": "d" * 64,
+            "output_quality": "present",
+        },
+        "dominant_thought_context": {
+            "status": "empty", "output_fingerprint": "e" * 64,
+            "output_quality": "present_redacted",
+        },
+    })
+    assert skipped_with_payload == ("turn_input",)
+
+
+def test_prompt_fallback_does_not_claim_to_consume_partial_context():
+    dependencies = _prompt_assembly_dependencies({
+        "prompt_context_build": {"status": "failed"},
+        "memory_prompt_context": {
+            "status": "injected", "output_fingerprint": "a" * 64,
+        },
+        "user_profile_context": {
+            "status": "injected", "output_fingerprint": "b" * 64,
+        },
+    })
+
+    assert dependencies == ("turn_input",)
+
 
 def test_source_provenance_distinguishes_conversation_from_unrecorded_memory():
     stages = {
@@ -651,7 +678,6 @@ def test_data_flow_integrity_ignores_contexts_not_consumed_by_prompt_assembly():
         "response_finalization": {"status": "completed"},
         "response": {"status": "completed"},
     })
-
     bridge._finish_turn_trace("completed")
     integrity = bridge.get_turn_trace("turn-evidence-1")["pipeline_integrity"]
 
@@ -1562,6 +1588,7 @@ def test_affect_integration_route_crosses_prompt_worker_boundary():
     )
     builder_params = {arg.arg for arg in prompt_builder.args.args}
     assert "affect_self_integration_query" in builder_params
+    assert "affect_self_report_query" in builder_params
     assert "audit_turn_id" in builder_params
     assert not any(
         isinstance(node, ast.Name) and node.id == "_audit_turn_id"
@@ -1604,6 +1631,52 @@ def test_affect_integration_route_crosses_prompt_worker_boundary():
     )
     assert isinstance(route_arg, ast.Name)
     assert route_arg.id == "_affect_self_integration_query"
+    affect_report_arg = next(
+        keyword.value for keyword in builder_call.keywords
+        if keyword.arg == "affect_self_report_query"
+    )
+    assert isinstance(affect_report_arg, ast.Name)
+    assert affect_report_arg.id == "_affect_self_report_query"
+    assert isinstance(builder_call.args[8], ast.Name)
+    assert builder_call.args[8].id == "debug_introspection"
+
+
+def test_prompt_builder_failure_is_recorded_as_degraded_context():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    prompt_builder = next(
+        node for node in bridge.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_build_prompt_and_cache"
+    )
+    fallback_handler = next(
+        node for node in ast.walk(prompt_builder)
+        if isinstance(node, ast.ExceptHandler)
+        and any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "_record_turn_stage"
+            and call.args
+            and isinstance(call.args[0], ast.Constant)
+            and call.args[0].value == "prompt_context_build"
+            for call in ast.walk(node)
+        )
+    )
+    failure_call = next(
+        call for call in ast.walk(fallback_handler)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "_record_turn_stage"
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+        and call.args[0].value == "prompt_context_build"
+    )
+    assert isinstance(failure_call.args[1], ast.Constant)
+    assert failure_call.args[1].value == "failed"
 
 
 def test_structured_affect_integration_skips_lossy_advisory_summary():
@@ -2051,7 +2124,7 @@ def test_missing_provider_completion_metadata_is_incomplete_evidence():
     assert trace["pipeline_integrity"]["incomplete_outputs"] == ["provider_completion"]
 
 
-def test_turn_integrity_detects_stale_upstream_output_fingerprint():
+def test_turn_integrity_resolves_consumed_earlier_stage_version():
     bridge = _bridge()
     bridge._record_turn_stage("prompt", "completed", output="first prompt")
     bridge._record_turn_stage(
@@ -2070,10 +2143,22 @@ def test_turn_integrity_detects_stale_upstream_output_fingerprint():
 
     bridge._finish_turn_trace("completed")
 
-    assert bridge._last_turn_trace["pipeline_integrity"]["status"] == "incomplete_evidence"
-    assert bridge._last_turn_trace["pipeline_integrity"]["data_flow_issues"] == [
-        "source_output_mismatch:prompt->generation"
-    ]
+    assert bridge._last_turn_trace["pipeline_integrity"]["data_flow_issues"] == []
+
+
+def test_turn_integrity_rejects_unmatched_consumed_fingerprint():
+    bridge = _bridge()
+    bridge._record_turn_stage("prompt", "completed", output="prompt v1")
+    bridge._record_turn_stage(
+        "generation", "completed", output="answer", consumes=("prompt",)
+    )
+    bridge._last_turn_trace["stages"]["generation"]["consumes"][0]["fingerprint"] = "f" * 64
+
+    issues = _turn_data_flow_issues(
+        bridge._last_turn_trace["stages"], bridge._last_turn_trace["stage_events"],
+    )
+
+    assert issues == ["source_output_mismatch:prompt->generation"]
 
 
 def test_archive_recall_receipt_links_archive_source_through_retrieval_consumers():
@@ -2130,6 +2215,8 @@ def test_post_turn_stage_cannot_erase_data_flow_integrity_failure():
         "response_finalization": {"status": "completed"},
         "response": {"status": "completed"},
     })
+    bridge._last_turn_trace["stages"]["generation"]["consumes"][0]["fingerprint"] = "f" * 64
+    bridge._last_turn_trace["stages"]["primary_generation"]["consumes"][0]["fingerprint"] = "f" * 64
 
     bridge._finish_turn_trace("completed")
     assert bridge._last_turn_trace["pipeline_integrity"]["status"] == "incomplete_evidence"

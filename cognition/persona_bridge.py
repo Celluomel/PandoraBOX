@@ -264,6 +264,12 @@ def _deterministic_projection_label(validation_method: str) -> tuple[str, str]:
 
 def _prompt_assembly_dependencies(stages: dict[str, Any]) -> tuple[str, ...]:
     """Report only context receipts that actually produced prompt input."""
+    context_build = stages.get("prompt_context_build")
+    if isinstance(context_build, dict) and context_build.get("status") == "failed":
+        # The builder replaced its partially assembled prompt with a minimal
+        # fallback. Earlier context receipts remain useful diagnostics, but
+        # they were not consumed by the prompt sent to the provider.
+        return ("turn_input",)
     dependencies = ["turn_input"]
     for name in (
         "memory_prompt_context", "user_profile_context",
@@ -273,13 +279,82 @@ def _prompt_assembly_dependencies(stages: dict[str, Any]) -> tuple[str, ...]:
         "turn_source_provenance_context", "body_observation_context",
     ):
         stage = stages.get(name)
+        status = str(stage.get("status") or "") if isinstance(stage, dict) else ""
         if (
             isinstance(stage, dict)
+            and (
+                status == "completed"
+                or status.startswith("injected")
+                or status in {
+                    "no_current_evidence", "stale_only",
+                    "fresh_evidence_not_in_prompt",
+                }
+            )
             and stage.get("output_fingerprint")
             and stage.get("output_quality") not in {"empty", "skipped", "unavailable", "failed"}
         ):
             dependencies.append(name)
     return tuple(dependencies)
+
+
+def _turn_data_flow_issues(
+    stages: dict[str, Any], stage_events: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Validate consume edges against the exact producer version at that turn.
+
+    A stage name can be emitted more than once (the prompt is assembled, then
+    re-emitted after context budgeting). The stage dictionary retains only the
+    newest version; consume references must instead resolve to the matching
+    earlier event fingerprint.
+    """
+    events = [event for event in (stage_events or []) if isinstance(event, dict)]
+    issues: list[str] = []
+    for consumer_name, consumer in stages.items():
+        if not isinstance(consumer, dict):
+            continue
+        consumer_events = [
+            event for event in events
+            if event.get("stage") == consumer_name
+            and event.get("output_fingerprint") == consumer.get("output_fingerprint")
+        ]
+        consumer_at = (
+            consumer_events[-1].get("at") if consumer_events
+            else consumer.get("at")
+        )
+        for reference in consumer.get("consumes", []):
+            if not isinstance(reference, dict):
+                issues.append(f"malformed_consumer:{consumer_name}")
+                continue
+            source_name = str(reference.get("stage") or "")
+            source = stages.get(source_name)
+            source_events = [
+                event for event in events
+                if event.get("stage") == source_name and event.get("output_fingerprint")
+            ]
+            expected_fingerprint = reference.get("fingerprint")
+            matching_events = [
+                event for event in source_events
+                if expected_fingerprint and event.get("output_fingerprint") == expected_fingerprint
+            ]
+            if matching_events:
+                source_at = matching_events[-1].get("at")
+            elif not expected_fingerprint or not (
+                isinstance(source, dict) and source.get("output_fingerprint")
+            ):
+                issues.append(f"missing_source_output:{source_name}->{consumer_name}")
+                continue
+            elif not source_events and source.get("output_fingerprint") == expected_fingerprint:
+                source_at = source.get("at")
+            else:
+                issues.append(f"source_output_mismatch:{source_name}->{consumer_name}")
+                continue
+            if (
+                isinstance(source_at, (int, float))
+                and isinstance(consumer_at, (int, float))
+                and consumer_at < source_at
+            ):
+                issues.append(f"consumer_before_source:{source_name}->{consumer_name}")
+    return issues
 
 
 def _affect_prompt_delivery_status(
@@ -633,7 +708,8 @@ def _runtime_execution_evidence_snapshot(trace: Any) -> dict[str, Any]:
     stage_names = (
         "turn_input", "input_safety", "self_description_context",
         "affect_advisory_context",
-        "memory_retrieval", "cognitive_prompt_context", "prompt_assembly",
+        "memory_retrieval", "memory_prompt_context", "prompt_context_build",
+        "cognitive_prompt_context", "prompt_assembly",
         "primary_generation", "provider_completion", "response_finalization",
         "response_learning_and_memory", "organism_post_interaction",
     )
@@ -1120,9 +1196,20 @@ class PersonaBridge:
                 model_name = "llama3.2:latest"
                 logger.warning(f"Could not read Robot config, defaulting to {model_name}: {e}")
 
+            try:
+                from managers.settings_manager import config as robot_config
+                memory_embedding_model = (
+                    str(getattr(robot_config, "QUALITY_EMBED_MODEL", "") or "").strip()
+                    or "all-MiniLM-L6-v2"
+                )
+            except Exception:
+                memory_embedding_model = "all-MiniLM-L6-v2"
+
             lumina_config = SystemConfig(
-                llm=LLMConfig(model_name=model_name)
+                llm=LLMConfig(model_name=model_name),
+                embedding_model_name=memory_embedding_model,
             )
+            logger.info("PandoraBOX memory embedding model: %s", memory_embedding_model)
 
             if external_llm_fn is not None:
                 # Pass the raw callable directly — EnhancedAISystem wraps it in
@@ -2215,36 +2302,9 @@ class PersonaBridge:
                 integrity_issues.extend(
                     f"stage_order:{item}" for item in stage_order_violations
                 )
-                data_flow_issues = []
-                for consumer_name, consumer in stages.items():
-                    if not isinstance(consumer, dict):
-                        continue
-                    for reference in consumer.get("consumes", []):
-                        if not isinstance(reference, dict):
-                            data_flow_issues.append(f"malformed_consumer:{consumer_name}")
-                            continue
-                        source_name = str(reference.get("stage") or "")
-                        source = stages.get(source_name)
-                        source_fingerprint = (
-                            source.get("output_fingerprint")
-                            if isinstance(source, dict) else None
-                        )
-                        if not source_fingerprint:
-                            data_flow_issues.append(
-                                f"missing_source_output:{source_name}->{consumer_name}"
-                            )
-                        elif reference.get("fingerprint") != source_fingerprint:
-                            data_flow_issues.append(
-                                f"source_output_mismatch:{source_name}->{consumer_name}"
-                            )
-                        elif (
-                            isinstance(source.get("at"), (int, float))
-                            and isinstance(consumer.get("at"), (int, float))
-                            and consumer["at"] < source["at"]
-                        ):
-                            data_flow_issues.append(
-                                f"consumer_before_source:{source_name}->{consumer_name}"
-                            )
+                data_flow_issues = _turn_data_flow_issues(
+                    stages, trace.get("stage_events", []),
+                )
                 integrity_issues.extend(
                     f"data_flow:{item}" for item in data_flow_issues
                 )
@@ -4190,7 +4250,7 @@ class PersonaBridge:
             peer_name,
             _audit_turn_id,
             _are_turn_status == "completed",
-            _affect_self_report_query,
+            debug_introspection,
             _memory_query,
             _memory_query_prior_count,
             explicit_named_profile_query=_explicit_named_profile_query,
@@ -4199,6 +4259,7 @@ class PersonaBridge:
             api_route_query=_api_route_query,
             architecture_context_query=_architecture_context_query,
             affect_self_integration_query=_affect_self_integration_query,
+            affect_self_report_query=_affect_self_report_query,
         )
         if _explicit_memory_recall and not peer_name:
             _recent_recall_result = recent_dialogue_recall_source_result(
@@ -6839,6 +6900,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         api_route_query: bool = False,
         architecture_context_query: bool = False,
         affect_self_integration_query: bool = False,
+        affect_self_report_query: bool = False,
     ) -> tuple[str, dict, dict, float | None, dict | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -6857,6 +6919,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         _api_route_query = bool(api_route_query)
         _architecture_context_query = bool(architecture_context_query)
         _affect_self_integration_query = bool(affect_self_integration_query)
+        _affect_self_report_query = bool(affect_self_report_query)
         # Set the fail-closed default before any prompt assembly can raise.
         # The recovery block below also inspects this local.
         _architecture_query = bool(architecture_context_query)
@@ -8716,6 +8779,18 @@ Memory honesty — two distinct cases:
                         turn_id=audit_turn_id,
                     )
 
+            _context_stage_outputs = self._last_turn_trace.get("stages", {})
+            self._record_turn_stage(
+                "prompt_context_build", "completed",
+                "Context builder completed before final prompt contracts and provider budgeting.",
+                output={
+                    "context_prompt_characters": len(system_prompt),
+                    "memory_candidates_injected": len(top_memories),
+                    "session_archive_injected": bool(_session_archive),
+                },
+                consumes=_prompt_assembly_dependencies(_context_stage_outputs),
+                turn_id=audit_turn_id,
+            )
             return (
                 system_prompt, emo_dict, cond_dict, arb_temperature,
                 _memory_recall_result,
@@ -8735,7 +8810,13 @@ Memory honesty — two distinct cases:
             )
 
         except Exception as e:
-            logger.warning(f"Prompt build failed, using fallback: {e}")
+            logger.exception("Prompt build failed, using fallback")
+            self._record_turn_stage(
+                "prompt_context_build", "failed", type(e).__name__,
+                output={"fallback_used": True, "error_type": type(e).__name__},
+                consumes=("turn_input",),
+                turn_id=audit_turn_id,
+            )
             return (
                 f"You are {_gpn()}, still forming — one moment of an ongoing process. No role to play; be what this moment actually is.",
                 {"valence": "Neutral", "arousal": "Medium"},

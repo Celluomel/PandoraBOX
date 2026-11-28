@@ -237,6 +237,23 @@ class APIEmbedder:
             fast_name = getattr(fast, "model_name_or_path", DEFAULT_FAST_MODEL)
             return result, f"sentence-transformers:{fast_name}"
 
+    def encode_strict_with_metadata(self, texts, *, batch_size=32):
+        """Encode only in this API model's vector space; never substitute FAST.
+
+        Persistent vector indexes must not accept a transparent per-call model
+        fallback: equal dimensions do not make embedding spaces interchangeable.
+        """
+        single = isinstance(texts, str)
+        values = [texts] if single else list(texts)
+        values = [str(value) for value in values]
+        if _interactive_priority.is_set():
+            return self.encode_interactive_with_metadata(
+                values[0] if single else values,
+            )
+        matrix = self._encode_list(values, batch_size=max(1, int(batch_size)))
+        result = matrix[0] if single else matrix
+        return result, self.embedding_space_id
+
     def encode_interactive_with_metadata(self, texts, *, lock_timeout: float = 0.75):
         """Run an explicitly requested, bounded foreground QUALITY embedding.
 
@@ -299,7 +316,9 @@ class APIEmbedder:
         if _interactive_priority.is_set():
             raise RuntimeError("quality embedding dimension deferred during interactive turn")
         if self._dim is None:
-            v = self.encode(["dimension calibration probe"])
+            v, _space_id = self.encode_strict_with_metadata(
+                ["dimension calibration probe"],
+            )
             self._dim = int(v.shape[-1] if v.ndim > 1 else len(v))
         return self._dim
 

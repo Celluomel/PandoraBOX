@@ -612,13 +612,16 @@ def filter_recall_query_records(
 
 
 def semantic_user_recall_candidates(
-    memories: Sequence[dict], query: str, *, intent_classifier=None,
+    memories: Sequence[dict], query: str, *, source_role_classifier=None,
 ) -> List[dict]:
     """Preserve ranked user-authored sources after semantic recall routing.
 
-    The semantic router already established historical intent. Do not repeat
-    that decision with token overlap here; the source adjudicator applies a
-    relevance floor and runner-up margin to these FAISS-ranked candidates.
+    A topic-intent classifier cannot establish whether a stored utterance is a
+    source statement: a concern about memory can be misclassified as a request
+    to recall memory. Use a distinct semantic speech-act/source-role classifier
+    and keep only confidently classified user statements. The final source
+    adjudicator still applies the retrieval relevance floor and runner-up
+    margin before a quotation is returned.
     """
     normalized_query = " ".join(str(query or "").casefold().split())
     candidates = []
@@ -638,20 +641,21 @@ def semantic_user_recall_candidates(
     if not candidates:
         return []
     try:
-        if intent_classifier is None:
-            from cognition.profile_flow import classify_memory_profile_intents
-            intent_classifier = classify_memory_profile_intents
-        classifications = intent_classifier([
+        if source_role_classifier is None:
+            from cognition.profile_flow import classify_memory_source_roles
+            source_role_classifier = classify_memory_source_roles
+        classifications = source_role_classifier([
             extract_user_authored_text(item) for item in candidates
         ])
         if len(classifications) != len(candidates):
             return []
-        # A source which is itself a history-recall or profile-lookup request
-        # is another question, not evidence for the historical fact asked.
-        # Keep only semantically non-interrogative/general statements as source.
+        # A source-role decision is distinct from its subject/topic. Keep only
+        # a confident utterance source; history/profile topic routing must not
+        # veto statements merely because they discuss memory or the profile.
         candidates = [
             item for item, result in zip(candidates, classifications)
-            if isinstance(result, dict) and result.get("intent") == "uncertain"
+            if isinstance(result, dict)
+            and result.get("role") == "user_source_statement"
             and result.get("status") != "router_unavailable"
         ]
     except Exception:

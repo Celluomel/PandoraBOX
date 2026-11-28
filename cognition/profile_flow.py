@@ -62,6 +62,30 @@ _GENERAL_MEMORY_PROFILE_EXAMPLES = (
     "Ich mache mir Sorgen, ob das System meine Aussagen richtig erinnert und mein Profil aus unseren Gesprächen aufbaut.",
     "Erkläre allgemein, wie das Gesprächsgedächtnis funktioniert.",
 )
+_USER_SOURCE_STATEMENT_EXAMPLES = (
+    "I doubt that the last memory retrieval found the right source; several explanations remain possible.",
+    "I am concerned that my profile may not represent what I actually said in our conversations.",
+    "My concern is that the conversation memory sometimes recalls a neighboring exchange instead of my statement.",
+    "Je doute que le rappel ait retrouvé la bonne source ; plusieurs explications restent possibles.",
+    "Je m’inquiète de la manière dont mon profil est construit à partir de nos échanges.",
+    "Ma préoccupation est que le souvenir de nos échanges ne restitue pas toujours mes propos correctement.",
+    "No estoy seguro de que el recuerdo haya encontrado la fuente correcta; hay varias explicaciones posibles.",
+    "Me preocupa que el perfil no refleje correctamente lo que digo en nuestras conversaciones.",
+    "Ich bezweifle, dass der Abruf die richtige Quelle gefunden hat; mehrere Erklärungen sind möglich.",
+    "Ich mache mir Sorgen, dass mein Profil meine Aussagen aus den Gesprächen nicht korrekt wiedergibt.",
+)
+_HISTORICAL_RECALL_REQUEST_EXAMPLES = (
+    "What concern did I raise in an earlier conversation about memory retrieval?",
+    "Find my earlier user-authored statement and tell me what it said.",
+    "From our previous conversations, what did I say about my profile?",
+    "Quelle préoccupation ai-je exprimée dans un échange précédent au sujet du rappel mémoire ?",
+    "Retrouve mon ancienne déclaration et dis-moi ce qu’elle disait.",
+    "Qu’ai-je dit auparavant sur la construction de mon profil ?",
+    "¿Qué preocupación expresé anteriormente sobre la recuperación de memoria?",
+    "Encuentra mi mensaje anterior y dime qué decía.",
+    "Welche Sorge habe ich früher über den Speicherabruf geäußert?",
+    "Finde meine frühere Aussage und gib wieder, was ich gesagt habe.",
+)
 _USER_UNCERTAINTY_EXAMPLES = (
     "I am uncertain whether the previous memory retrieval found the right source; several explanations remain possible.",
     "I do not know which of these explanations is correct, and the evidence does not resolve it.",
@@ -107,6 +131,7 @@ _NO_CONTINUING_COMMITMENT_EXAMPLES = (
 # dropped as durable intent.
 _COMMITMENT_MIN_SIMILARITY = 0.66
 _COMMITMENT_MIN_MARGIN = 0.02
+_HISTORY_RECALL_MIN_GENERAL_MARGIN = 0.005
 _PROFILE_FACT_SCOPE_EXAMPLES = {
     "preference": (
         "Which preferences are explicitly recorded in the user's profile?",
@@ -139,6 +164,8 @@ _PROFILE_FACT_SCOPE_EXAMPLES = {
 }
 _MEMORY_PROFILE_ROUTER_LOCK = threading.Lock()
 _MEMORY_PROFILE_ROUTER_CENTROIDS: dict[str, tuple[Any, ...]] = {}
+_MEMORY_SOURCE_ROLE_LOCK = threading.Lock()
+_MEMORY_SOURCE_ROLE_CENTROIDS: dict[str, tuple[Any, Any]] = {}
 
 
 def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[str, Any]]:
@@ -285,7 +312,11 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             margin = profile_score - history_score
             if profile_score >= 0.63 and margin >= 0.04 and profile_score - general_score >= 0.04:
                 status, intent = "profile_lookup", "profile_lookup"
-            elif history_score >= 0.63 and margin <= -0.04 and history_score - general_score >= 0.02:
+            elif (
+                history_score >= 0.63
+                and margin <= -0.04
+                and history_score - general_score >= _HISTORY_RECALL_MIN_GENERAL_MARGIN
+            ):
                 status, intent = "history_recall", "history_recall"
             else:
                 status, intent = "intent_uncertain", "uncertain"
@@ -361,6 +392,116 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
 def classify_memory_profile_intent(user_text: str, *, embedder=None) -> dict[str, Any]:
     """Classify one input through the batched, cross-lingual semantic router."""
     return classify_memory_profile_intents([user_text], embedder=embedder)[0]
+
+
+def classify_memory_source_roles(user_texts, *, embedder=None) -> list[dict[str, Any]]:
+    """Separate historical user statements from requests to retrieve history.
+
+    This answers a different question from ``classify_memory_profile_intents``:
+    topic intent (history/profile/general) must not decide whether a persisted
+    user-authored utterance is a source. Source role is estimated semantically
+    with Nomic v1.5; ambiguous or unavailable results remain explicit instead
+    of being silently treated as either role. Scores are similarities, not
+    probabilities.
+    """
+    texts = [" ".join(str(value or "").split()) for value in user_texts]
+    if not texts:
+        return []
+    results: list[dict[str, Any] | None] = [
+        ({"status": "empty_input", "role": "uncertain", "reason_code": "empty_input"}
+         if not text else None)
+        for text in texts
+    ]
+    active_indices = [index for index, text in enumerate(texts) if text]
+    if not active_indices:
+        return [item for item in results if item is not None]
+    try:
+        if embedder is None:
+            from utils.shared_embedder import get_quality_embedder
+            embedder = get_quality_embedder()
+        encoder = getattr(embedder, "encode_interactive_with_metadata", None)
+        if not callable(encoder):
+            raise RuntimeError("interactive quality embedding unavailable")
+        cache_hint = str(
+            getattr(embedder, "embedding_space_id", "")
+            or getattr(embedder, "model_name", "")
+        )
+        with _MEMORY_SOURCE_ROLE_LOCK:
+            cached = _MEMORY_SOURCE_ROLE_CENTROIDS.get(cache_hint)
+        if cached is None:
+            vectors, space_id = encoder([
+                *_USER_SOURCE_STATEMENT_EXAMPLES,
+                *_HISTORICAL_RECALL_REQUEST_EXAMPLES,
+                *(texts[index] for index in active_indices),
+            ])
+            import numpy as np
+            matrix = np.asarray(vectors, dtype="float64")
+            source_count = len(_USER_SOURCE_STATEMENT_EXAMPLES)
+            request_count = len(_HISTORICAL_RECALL_REQUEST_EXAMPLES)
+            expected_rows = source_count + request_count + len(active_indices)
+            if matrix.ndim != 2 or matrix.shape[0] != expected_rows or not np.isfinite(matrix).all():
+                raise ValueError("memory source-role router received invalid embeddings")
+            if not str(space_id).endswith(":text-embedding-nomic-embed-text-v1.5"):
+                raise RuntimeError("memory source-role thresholds require Nomic v1.5")
+            normalized = matrix / np.maximum(
+                np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12
+            )
+
+            def centroid(rows):
+                value = rows.mean(axis=0)
+                return value / max(float(np.linalg.norm(value)), 1e-12)
+
+            source_center = centroid(normalized[:source_count])
+            request_center = centroid(normalized[source_count:source_count + request_count])
+            with _MEMORY_SOURCE_ROLE_LOCK:
+                _MEMORY_SOURCE_ROLE_CENTROIDS[str(space_id)] = (
+                    source_center, request_center,
+                )
+            queries = normalized[source_count + request_count:]
+            actual_space = str(space_id)
+        else:
+            source_center, request_center = cached
+            vectors, actual_space = encoder([texts[index] for index in active_indices])
+            import numpy as np
+            queries = np.asarray(vectors, dtype="float64")
+            if (
+                queries.ndim != 2
+                or queries.shape != (len(active_indices), source_center.size)
+                or not np.isfinite(queries).all()
+            ):
+                raise ValueError("memory source-role query vector is incompatible")
+            queries /= np.maximum(
+                np.linalg.norm(queries, axis=1, keepdims=True), 1e-12
+            )
+
+        for index, query in zip(active_indices, queries):
+            source_score = float(query @ source_center)
+            request_score = float(query @ request_center)
+            margin = source_score - request_score
+            if source_score >= 0.66 and margin >= 0.02:
+                role = "user_source_statement"
+            elif request_score >= 0.66 and margin <= -0.02:
+                role = "historical_retrieval_request"
+            else:
+                role = "uncertain"
+            results[index] = {
+                "status": "classified" if role != "uncertain" else "uncertain",
+                "role": role,
+                "source_similarity": round(source_score, 4),
+                "request_similarity": round(request_score, 4),
+                "margin": round(margin, 4),
+                "embedding_space": actual_space,
+                "score_semantics": "uncalibrated Nomic v1.5 cosine similarity; not a probability",
+            }
+    except Exception as exc:
+        for index in active_indices:
+            results[index] = {
+                "status": "router_unavailable",
+                "role": "uncertain",
+                "reason_code": type(exc).__name__,
+                "score_semantics": "unavailable; no source-role claim",
+            }
+    return [item for item in results if item is not None]
 
 
 def is_explicit_named_profile_query(

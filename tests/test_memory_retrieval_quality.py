@@ -20,7 +20,10 @@ from cognition.memory_retrieval import (
     semantic_user_recall_candidates,
     tokenize,
 )
-from cognition.profile_flow import classify_memory_profile_intents
+from cognition.profile_flow import (
+    classify_memory_profile_intents,
+    classify_memory_source_roles,
+)
 
 
 class _MemoryProfileRouterEmbedder:
@@ -100,6 +103,10 @@ class _MemoryProfileRouterEmbedder:
                 vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
             elif index < query_start:
                 vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+            elif "near-history-centroid" in text.casefold():
+                vectors.append([0.0, 0.714, 0.700, 0.0, 0.0, 0.0, 0.0])
+            elif "near-general-centroid" in text.casefold():
+                vectors.append([0.0, 0.700, 0.714, 0.0, 0.0, 0.0, 0.0])
             elif any(marker in text.casefold() for marker in (
                 "i am committed", "keep pursuing this goal", "je m'engage",
                 "poursuivre ce projet", "quiero continuar este proyecto",
@@ -125,6 +132,37 @@ class _MemoryProfileRouterEmbedder:
                 vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             else:
                 vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+        return vectors, self.embedding_space_id
+
+
+class _MemorySourceRoleEmbedder:
+    """Independent deterministic fixture for source speech-act semantics."""
+
+    model_name = "test-memory-source-role"
+    embedding_space_id = "test-memory-source-role:text-embedding-nomic-embed-text-v1.5"
+
+    def encode_interactive_with_metadata(self, texts):
+        from cognition.profile_flow import (
+            _HISTORICAL_RECALL_REQUEST_EXAMPLES,
+            _USER_SOURCE_STATEMENT_EXAMPLES,
+        )
+
+        if isinstance(texts, str):
+            texts = [texts]
+        source_count = len(_USER_SOURCE_STATEMENT_EXAMPLES)
+        request_count = len(_HISTORICAL_RECALL_REQUEST_EXAMPLES)
+        vectors = []
+        for index, text in enumerate(texts):
+            if index < source_count:
+                vectors.append([1.0, 0.0])
+            elif index < source_count + request_count:
+                vectors.append([0.0, 1.0])
+            elif "uncertain role" in text.casefold():
+                vectors.append([0.707, 0.707])
+            elif "source statement" in text.casefold():
+                vectors.append([1.0, 0.0])
+            else:
+                vectors.append([0.0, 1.0])
         return vectors, self.embedding_space_id
 
 
@@ -209,9 +247,9 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         query = "From earlier conversations, what concern did I raise about memory recall and my profile?"
         def classify_fixture_sources(texts):
             return [
-                {"intent": "history_recall", "status": "history_recall"}
+                {"role": "historical_retrieval_request", "status": "classified"}
                 if "From earlier conversations" in text else
-                {"intent": "uncertain", "status": "intent_uncertain"}
+                {"role": "user_source_statement", "status": "classified"}
                 for text in texts
             ]
 
@@ -224,13 +262,31 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
              "text": "User message: I worry about whether memory recall works and how my profile learns from exchanges."},
             {"id": "current", "memory_type": "user_message", "relevance": 1.0,
              "text": f"User message: {query}"},
-        ], query, intent_classifier=classify_fixture_sources)
+        ], query, source_role_classifier=classify_fixture_sources)
 
         self.assertEqual([item["id"] for item in candidates], ["source"])
         answer = explicit_recall_source_result(query, candidates, explicit_intent=True)
         self.assertEqual(answer["status"], "supported_verbatim_source")
         self.assertEqual(answer["source_type"], "user_message")
         self.assertIn("I worry about whether memory recall works", answer["answer"])
+
+    def test_source_role_router_distinguishes_statement_request_and_uncertainty(self):
+        embedder = _MemorySourceRoleEmbedder()
+        embedder.embedding_space_id = (
+            "test-memory-source-role:isolated:text-embedding-nomic-embed-text-v1.5"
+        )
+        results = classify_memory_source_roles([
+            "source statement: I doubt the previous memory result found the right source.",
+            "historical request: What concern did I raise in the earlier conversation?",
+            "uncertain role between a statement and a retrieval request",
+        ], embedder=embedder)
+
+        self.assertEqual(
+            [result["role"] for result in results],
+            ["user_source_statement", "historical_retrieval_request", "uncertain"],
+        )
+        self.assertEqual(results[0]["score_semantics"],
+                         "uncalibrated Nomic v1.5 cosine similarity; not a probability")
 
     def test_semantic_memory_profile_router_batches_source_questions(self):
         results = classify_memory_profile_intents([
@@ -243,6 +299,22 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(results[0]["intent"], "history_recall")
         self.assertEqual(results[1]["intent"], "uncertain")
         self.assertEqual(results[2]["intent"], "profile_lookup")
+
+    def test_history_router_uses_relative_semantic_winner_near_margin(self):
+        embedder = _MemoryProfileRouterEmbedder()
+        embedder.embedding_space_id = (
+            "test-memory-profile-router:near-margin:text-embedding-nomic-embed-text-v1.5"
+        )
+        history, general = classify_memory_profile_intents([
+            "near-history-centroid",
+            "near-general-centroid",
+        ], embedder=embedder)
+
+        self.assertEqual(history["intent"], "history_recall")
+        self.assertGreaterEqual(
+            history["history_similarity"] - history["general_similarity"], 0.005,
+        )
+        self.assertEqual(general["intent"], "uncertain")
 
     def test_semantic_uncertainty_router_is_independent_of_memory_recall_route(self):
         results = classify_memory_profile_intents([

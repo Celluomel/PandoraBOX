@@ -50,6 +50,34 @@ class InteractiveEmbeddingPriorityTests(unittest.TestCase):
         self.assertEqual(api._transport_backoff_until, 0.0)
         fast_fallback.assert_not_called()
 
+    def test_strict_quality_embedding_never_substitutes_fast_tier(self):
+        api = APIEmbedder("text-embedding-nomic-embed-text-v1.5", "http://127.0.0.1:1234/v1")
+        payload = {
+            "model": api.model_name,
+            "data": [
+                {"index": 0, "embedding": [0.25, 0.75]},
+                {"index": 1, "embedding": [0.5, 0.5]},
+            ],
+        }
+        with patch.object(api, "_post", return_value=payload), patch(
+            "utils.shared_embedder._get_fast_embedder"
+        ) as fast_fallback:
+            vectors, space_id = api.encode_strict_with_metadata(["one", "two"], batch_size=2)
+
+        self.assertEqual(vectors.shape, (2, 2))
+        self.assertEqual(space_id, api.embedding_space_id)
+        fast_fallback.assert_not_called()
+
+    def test_strict_quality_embedding_propagates_transport_failure(self):
+        api = APIEmbedder("text-embedding-nomic-embed-text-v1.5", "http://127.0.0.1:1234/v1")
+        with patch.object(api, "_post", side_effect=urllib.error.URLError(TimeoutError("offline"))), patch(
+            "utils.shared_embedder._get_fast_embedder"
+        ) as fast_fallback:
+            with self.assertRaises(urllib.error.URLError):
+                api.encode_strict_with_metadata(["probe"])
+
+        fast_fallback.assert_not_called()
+
     def test_interactive_transport_timeout_is_bounded_and_backed_off(self):
         api = APIEmbedder("nomic-model", "http://127.0.0.1:1234/v1", timeout=8)
         with patch.object(

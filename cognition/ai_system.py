@@ -907,8 +907,22 @@ class EnhancedMemorySystem:
             # instance when running standalone.
             try:
                 from utils.shared_embedder import get_embedder
-                self.embedding_model = get_embedder(self.config.embedding_model_name)
-                logger.info("Persona using shared embedder singleton")
+                model_name = str(self.config.embedding_model_name or "all-MiniLM-L6-v2")
+                try:
+                    from managers.settings_manager import config as _robot_config
+                    configured_quality_models = {
+                        str(getattr(_robot_config, name, "") or "").strip()
+                        for name in ("QUALITY_EMBED_MODEL", "MEMORY_COGNEE_EMBED_MODEL")
+                    }
+                except Exception:
+                    configured_quality_models = set()
+                quality_model = model_name in configured_quality_models
+                self.embedding_model = get_embedder(model_name, quality=quality_model)
+                logger.info(
+                    "Persona using shared %s embedder: %s",
+                    "quality API" if quality_model else "fast local",
+                    model_name,
+                )
             except ImportError:
                 self.embedding_model = SentenceTransformer(self.config.embedding_model_name)
                 logger.info(f"Persona loaded own embedder: {self.config.embedding_model_name}")
@@ -925,7 +939,7 @@ class EnhancedMemorySystem:
         if self.embedding_model is None:
             raise RuntimeError("Embedding model is unavailable")
         try:
-            vector = self.embedding_model.encode(text).astype("float32").reshape(1, -1)
+            vector = self._encode_memory_vectors(text)
             if vector.shape[1] != self.embedding_dim or not np.isfinite(vector).all():
                 raise ValueError("Embedding model returned an invalid vector")
             return vector
@@ -933,6 +947,40 @@ class EnhancedMemorySystem:
             self.embedding_model = None
             self.faiss_index = None
             raise RuntimeError(f"Embedding failed; switching memory retrieval to lexical search: {exc}") from exc
+
+    def _encode_memory_vectors(self, texts, *, batch_size: int = 32) -> np.ndarray:
+        """Encode memory vectors in the exact space declared by the index."""
+        if self.embedding_model is None:
+            raise RuntimeError("Embedding model is unavailable")
+        strict = getattr(self.embedding_model, "encode_strict_with_metadata", None)
+        if callable(strict):
+            vectors, space_id = strict(texts, batch_size=batch_size)
+            expected = self._embedding_model_id()
+            if str(space_id) != expected:
+                raise ValueError(
+                    f"Embedding space mismatch: expected {expected!r}, got {space_id!r}"
+                )
+        else:
+            if isinstance(texts, str):
+                vectors = self.embedding_model.encode(texts)
+            else:
+                vectors = self.embedding_model.encode(
+                    texts, show_progress_bar=False, batch_size=batch_size,
+                )
+        result = np.asarray(vectors, dtype=np.float32)
+        if isinstance(texts, str) and result.ndim == 1:
+            result = result.reshape(1, -1)
+        expected_rows = 1 if isinstance(texts, str) else len(texts)
+        if (
+            result.ndim != 2
+            or result.shape != (expected_rows, self.embedding_dim)
+            or not np.isfinite(result).all()
+        ):
+            raise ValueError(
+                "Memory embedder returned invalid vectors: "
+                f"expected {(expected_rows, self.embedding_dim)}, got {result.shape}"
+            )
+        return result
 
     def _load_or_build_index(self):
         if faiss is None:
@@ -968,7 +1016,10 @@ class EnhancedMemorySystem:
         return self._build_index_from_db()
 
     def _embedding_model_id(self) -> str:
-        """Return the configured model identity used for this memory index."""
+        """Return the actual configured model/vector-space identity."""
+        space_id = getattr(getattr(self, "embedding_model", None), "embedding_space_id", None)
+        if space_id:
+            return str(space_id)
         return str(getattr(self.config, "embedding_model_name", "unknown") or "unknown")
 
     @staticmethod
@@ -1073,12 +1124,7 @@ class EnhancedMemorySystem:
                     )
                     for _, text in missing_rows
                 ]
-                vectors = np.asarray(
-                    self.embedding_model.encode(
-                        texts, show_progress_bar=False, batch_size=128,
-                    ),
-                    dtype=np.float32,
-                )
+                vectors = self._encode_memory_vectors(texts, batch_size=128)
                 if (
                     vectors.shape != (len(missing_rows), self.embedding_dim)
                     or not np.isfinite(vectors).all()
@@ -1135,12 +1181,7 @@ class EnhancedMemorySystem:
                     for row in rows
                 ]
                 try:
-                    vecs = np.asarray(
-                        self.embedding_model.encode(
-                            texts, show_progress_bar=False, batch_size=128,
-                        ),
-                        dtype=np.float32,
-                    )
+                    vecs = self._encode_memory_vectors(texts, batch_size=128)
                 except Exception as exc:
                     self.embedding_model = None
                     self.faiss_index = None
@@ -1840,9 +1881,9 @@ class EnhancedMemorySystem:
 
             # ── Batch embed ───────────────────────────────────────────────
             try:
-                candidate_vecs = self.embedding_model.encode(
-                    texts, show_progress_bar=False, batch_size=32
-                ).astype("float32")   # shape (n, dim)
+                candidate_vecs = self._encode_memory_vectors(
+                    texts, batch_size=32,
+                )   # shape (n, dim)
             except Exception as ee:
                 logger.warning(f"[EnhancedMemorySystem] chaos batch embed error: {ee}")
                 return self.get_random_episodic(candidate_pool)
