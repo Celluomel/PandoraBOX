@@ -9,28 +9,7 @@ from pathlib import Path
 from datetime import datetime
 import hashlib
 from typing import List, Dict, Any
-
-
-# These are producer-owned ThoughtStream schema IDs, not words searched in
-# thought text. Free prose must never decide whether the internal loop admits
-# a goal proposal. Unknown/legacy IDs remain non-actionable until a producer
-# supplies a typed signal.
-_THOUGHT_TYPES_BY_SIGNAL = {
-    "uncertainty": frozenset({"curiosity", "open_question", "uncertainty"}),
-    "tension": frozenset({
-        "tension_awareness", "associative_tension",
-        "associative_contradiction", "contradiction",
-    }),
-    "opportunity": frozenset({
-        "goal_evaluation", "associative_goal", "opportunity",
-        "action_affordance",
-    }),
-}
-_NON_REEVALUATABLE_SOURCE_IDS = frozenset({
-    "goal_action.self_question", "goal_action.memory_recall",
-    "goal_action.web_search", "insight", "reflection",
-    "thought_evaluator.followup", "thought_evaluator.stagnation_guard",
-})
+from cognition.thought_signals import signal_for_thought
 
 class SimpleThoughtEvaluator:
     
@@ -496,21 +475,7 @@ class SimpleThoughtEvaluator:
     # ✅ FIX: added thought parameter
     def _classify_thought(self, text: str, thought: Dict) -> str:
         """Classify only from producer-owned schema fields, never prose."""
-        source = str(thought.get("source") or "").strip()
-        if (
-            source in _NON_REEVALUATABLE_SOURCE_IDS
-            or source.startswith("goal_action.")
-            or source.startswith("thought_evaluator.")
-        ):
-            return 'mundane'
-        explicit_signal = str(thought.get("cognitive_signal") or "").strip().casefold()
-        if explicit_signal in _THOUGHT_TYPES_BY_SIGNAL:
-            return explicit_signal
-        thought_type = str(thought.get("thought_type") or "").strip().casefold()
-        for signal, schema_ids in _THOUGHT_TYPES_BY_SIGNAL.items():
-            if thought_type in schema_ids:
-                return signal
-        return 'mundane'
+        return signal_for_thought(thought) or "mundane"
     
     def _compute_priority(self, thought: Dict, _thought_type: str) -> float:
         """Use producer-measured priority; do not infer it from wording."""

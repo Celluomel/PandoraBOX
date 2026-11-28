@@ -434,6 +434,10 @@ class GoalEngine:
                 if (thought_id and method == "structured_topic"
                         and ref == f"thought:{thought_id}"):
                     return True, "verified_workspace_thought"
+            elif kind == "evaluated_internal_thought":
+                if (thought_id and method == "advanced_thought_evaluator"
+                        and ref == f"thought:{thought_id}"):
+                    return True, "verified_evaluated_internal_thought"
             elif kind == "autonomous_motivation":
                 if method and ref:
                     return True, "verified_autonomous_motivation"
@@ -690,6 +694,25 @@ class GoalEngine:
                                         gdata.get("tension_level", 0.0) or 0.0),
                                 "status":        gdata.get("status", "active"),
                                 "completion":    float(gdata.get("completion", 0.0)),
+                                # Preserve causal authority receipts when a
+                                # DAL-shaped goal needs the schema bridge.
+                                # Dropping them here makes valid goals look
+                                # unverified and causes them to be deferred.
+                                "source_turn_id": str(gdata.get("source_turn_id", "") or ""),
+                                "source_evidence_turn_ids": list(
+                                    gdata.get("source_evidence_turn_ids", []) or []),
+                                "source_thought_id": str(gdata.get("source_thought_id", "") or ""),
+                                "source_thought_source": str(gdata.get("source_thought_source", "") or ""),
+                                "source_thought_type": str(gdata.get("source_thought_type", "") or ""),
+                                "source_thought_timestamp": str(gdata.get("source_thought_timestamp", "") or ""),
+                                "source_concept_method": str(gdata.get("source_concept_method", "") or ""),
+                                "source_concept_kind": str(gdata.get("source_concept_kind", "") or ""),
+                                "source_concept_ref": str(gdata.get("source_concept_ref", "") or ""),
+                                "source_concept_sha256": str(gdata.get("source_concept_sha256", "") or ""),
+                                "source_provenance_records": list(
+                                    gdata.get("source_provenance_records", []) or []),
+                                "source_provenance_status": str(gdata.get("source_provenance_status", "unverified") or "unverified"),
+                                "source_provenance_reason": str(gdata.get("source_provenance_reason", "") or ""),
                                 "created_at":    str(gdata.get("created_at",
                                                      gdata.get("created_cycle", ""))),
                             }

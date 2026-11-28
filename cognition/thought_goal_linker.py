@@ -52,6 +52,13 @@ class ThoughtGoalLinker:
             'linked_goals': [],
             'merged_goals': []
         }
+
+        # Numeric actionability alone is not authority to mutate durable goals.
+        # Require the structured signal emitted by AdvancedThoughtEvaluator.
+        from cognition.thought_signals import signal_for_thought
+        cognitive_signal = signal_for_thought(evaluated_thought)
+        if cognitive_signal is None:
+            return result
         
         # Load current goals
         goals = self._load_goals()
@@ -86,8 +93,13 @@ class ThoughtGoalLinker:
                 created_cycle=int(getattr(engine, "_cycle_counter", 0)),
                 last_active=int(getattr(engine, "_cycle_counter", 0)),
                 source_thought_id=str(evaluated_thought.get('origin_thought_id') or ""),
-                source_thought_type=str(evaluated_thought.get('type') or "")[:80],
+                source_thought_type=cognitive_signal[:80],
+                source_concept_kind="evaluated_internal_thought",
                 source_concept_method="advanced_thought_evaluator",
+                source_concept_ref=(
+                    f"thought:{evaluated_thought.get('origin_thought_id')}"[:240]
+                    if evaluated_thought.get('origin_thought_id') else ""
+                ),
             ))
             if accepted:
                 result['created_goals'].append(new_goal['id'])
@@ -207,36 +219,27 @@ class ThoughtGoalLinker:
         goals: List[Dict]
     ) -> Optional[Dict]:
         """
-        Find existing goal similar to this thought.
+        Consume the matched-goal receipt produced by AdvancedThoughtEvaluator.
+
+        This preserves causal provenance and avoids a second, language-specific
+        comparison in the downstream linker.
         """
-        thought_concepts = set(evaluated_thought.get('concepts', []))
-        
-        if not thought_concepts:
+        goal_id = str(evaluated_thought.get("related_goal_id") or "")
+        evaluation = evaluated_thought.get("evaluation", {})
+        if not isinstance(evaluation, dict):
             return None
-        
-        best_match = None
-        best_similarity = 0.0
-        
+        if str(evaluation.get("related_goal_id") or "") != goal_id:
+            return None
+        try:
+            similarity = float(evaluation.get("goal_similarity", 0.0))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            similarity = 0.0
+        if not goal_id or not similarity > 0.4:
+            return None
+
         for goal in goals:
-            if goal.get('status') != 'active':
-                continue
-            
-            # Extract goal concepts
-            goal_text = goal.get('name', goal.get('description', ''))
-            goal_words = set(goal_text.lower().split())
-            
-            # Compute overlap
-            overlap = len(thought_concepts & goal_words)
-            similarity = overlap / len(thought_concepts) if thought_concepts else 0.0
-            
-            if similarity > best_similarity:
-                best_similarity = similarity
-                best_match = goal
-        
-        # Only return if similarity is significant
-        if best_similarity > 0.4:
-            return best_match
-        
+            if str(goal.get("id") or "") == goal_id and goal.get("status") == "active":
+                return goal
         return None
     
     def _update_goal_from_thought(self, goal: Dict, evaluated_thought: Dict):
@@ -300,41 +303,56 @@ class ThoughtGoalLinker:
         Returns list of merged goal IDs.
         """
         merged = []
-        
-        # Compare all pairs
-        for i, goal1 in enumerate(goals):
-            if goal1.get('status') != 'active':
-                continue
-            
-            for goal2 in goals[i+1:]:
-                if goal2.get('status') != 'active':
-                    continue
-                
-                # Compute similarity
-                similarity = self._compute_goal_similarity(goal1, goal2)
-                
-                if similarity > self.merge_threshold:
-                    # Merge goal2 into goal1
+        active = [goal for goal in goals if goal.get("status") == "active"]
+        texts = [str(goal.get("name") or goal.get("description") or "") for goal in active]
+        similarities = self._compute_semantic_similarity_matrix(texts)
+        if similarities is None:
+            return merged
+
+        for i, goal1 in enumerate(active):
+            for j in range(i + 1, len(active)):
+                goal2 = active[j]
+                if float(similarities[i, j]) > self.merge_threshold:
                     self._merge_goals(goal1, goal2)
-                    merged.append(goal2['id'])
-        
+                    merged.append(goal2["id"])
         return merged
     
     def _compute_goal_similarity(self, goal1: Dict, goal2: Dict) -> float:
-        """Compute similarity between two goals."""
-        text1 = goal1.get('name', '').lower()
-        text2 = goal2.get('name', '').lower()
-        
-        words1 = set(text1.split())
-        words2 = set(text2.split())
-        
-        if not words1 or not words2:
+        """Compare two goal descriptions only in calibrated Nomic space."""
+        matrix = self._compute_semantic_similarity_matrix([
+            str(goal1.get("name") or goal1.get("description") or ""),
+            str(goal2.get("name") or goal2.get("description") or ""),
+        ])
+        if matrix is None:
             return 0.0
-        
-        overlap = len(words1 & words2)
-        union = len(words1 | words2)
-        
-        return overlap / union if union > 0 else 0.0
+        return float(matrix[0, 1])
+
+    @staticmethod
+    def _compute_semantic_similarity_matrix(texts: List[str]):
+        """Return cosine similarities only for calibrated Nomic vectors."""
+        usable = [str(text).strip() for text in texts]
+        if len(usable) < 2 or any(not text for text in usable):
+            return None
+        try:
+            import numpy as np
+            from utils.shared_embedder import get_embedder, is_calibrated_quality_space
+
+            embedder = get_embedder(quality=True)
+            if not hasattr(embedder, "encode_with_metadata"):
+                return None
+            encoded, space_id = embedder.encode_with_metadata(usable)
+            if not is_calibrated_quality_space(space_id):
+                return None
+            vectors = np.asarray(encoded, dtype="float32")
+            if vectors.ndim != 2 or vectors.shape[0] != len(usable) or not np.isfinite(vectors).all():
+                return None
+            norms = np.linalg.norm(vectors, axis=1)
+            if np.any(norms <= 1e-9):
+                return None
+            normalized = vectors / norms[:, None]
+            return np.clip(normalized @ normalized.T, 0.0, 1.0)
+        except Exception:
+            return None
     
     def _merge_goals(self, target_goal: Dict, source_goal: Dict):
         """

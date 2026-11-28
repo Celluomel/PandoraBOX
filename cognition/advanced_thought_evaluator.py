@@ -1,17 +1,14 @@
 """
 Phase 2.1: Advanced Thought Evaluator
 
-Goes beyond keyword matching to use semantic similarity,
-conceptual friction detection, and multi-factor priority scoring.
-
-This replaces the simple keyword-based evaluator with true
-conceptual understanding.
+Consumes producer-owned thought signals and structured topics, then applies
+calibrated semantic similarity and numeric evidence. It never classifies
+free prose with word lists.
 """
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-import re
+from typing import List, Dict, Any
 import math
 
 class AdvancedThoughtEvaluator:
@@ -19,7 +16,7 @@ class AdvancedThoughtEvaluator:
     Advanced thought evaluation using semantic understanding.
     
     Improvements over simple evaluator:
-    - Semantic similarity to active goals (not just keywords)
+    - Calibrated semantic similarity to active goals
     - Conceptual friction detection (conflicting concepts)
     - Multi-factor priority scoring (urgency × impact × actionability)
     - Goal impact prediction
@@ -32,31 +29,6 @@ class AdvancedThoughtEvaluator:
         # Semantic similarity thresholds
         self.high_similarity_threshold = 0.7
         self.moderate_similarity_threshold = 0.4
-        
-        # Enhanced classification patterns
-        self.uncertainty_patterns = {
-            'explicit': ['wonder', 'curious', 'unsure', 'unclear', 'question', 'confusing'],
-            'implicit': ['might', 'perhaps', 'maybe', 'possibly', 'could be', 'not sure'],
-            'epistemic': ['how', 'why', 'what if', 'whether', 'which', 'understand']
-        }
-        
-        self.tension_patterns = {
-            'conflict': ['conflict', 'tension', 'contradiction', 'opposing', 'clash'],
-            'dissonance': ['inconsistent', 'incompatible', 'mismatch', 'discrepancy'],
-            'dilemma': ['choice', 'decide', 'torn', 'struggle', 'difficult']
-        }
-        
-        self.opportunity_patterns = {
-            'exploration': ['explore', 'try', 'experiment', 'discover', 'learn'],
-            'growth': ['improve', 'develop', 'enhance', 'expand', 'grow'],
-            'creation': ['create', 'build', 'make', 'design', 'construct']
-        }
-        
-        # Conceptual friction indicators
-        self.friction_indicators = [
-            'but', 'however', 'yet', 'although', 'despite', 'whereas',
-            'on the other hand', 'nevertheless', 'nonetheless'
-        ]
     
     def evaluate_recent_thoughts(self, max_thoughts: int = 10) -> List[Dict]:
         """
@@ -85,9 +57,10 @@ class AdvancedThoughtEvaluator:
             if evaluation['actionability'] > 0.5:
                 suggestion = self._create_goal_suggestion(thought, evaluation)
                 suggestions.append(suggestion)
-                
-                # Mark thought as evaluated
-                self._mark_thought_evaluated(thought.get('id', ''))
+
+            # Persist a completed evaluation even when it produces no goal;
+            # otherwise the same low-signal thoughts are recomputed each cycle.
+            self._mark_thought_evaluated(thought.get('id', ''))
         
         return suggestions
     
@@ -99,19 +72,18 @@ class AdvancedThoughtEvaluator:
         """
         Advanced evaluation using multiple factors.
         """
-        text = thought.get('content', thought.get('text', ''))
-        
-        # 1. Classify thought type with confidence
-        thought_type, type_confidence = self._classify_thought_advanced(text)
-        
-        # 2. Extract concepts (not just keywords)
-        concepts = self._extract_concepts(text)
+        # 1. Classify only producer-owned schema metadata.
+        thought_type, type_confidence = self._classify_thought_advanced(thought)
+
+        # 2. The producer's topic is the concept contract; do not mine prose.
+        concepts = self._extract_concepts(thought)
         
         # 3. Compute semantic similarity to active goals
-        goal_similarity = self._compute_goal_similarity(concepts, active_goals)
+        goal_match = self._compute_goal_match(concepts, active_goals)
+        goal_similarity = goal_match["similarity"]
         
         # 4. Detect conceptual friction
-        friction_score = self._detect_conceptual_friction(text)
+        friction_score = self._detect_conceptual_friction(thought)
         
         # 5. Compute multi-factor priority
         priority = self._compute_priority_multifactor(
@@ -141,6 +113,7 @@ class AdvancedThoughtEvaluator:
             'type_confidence': type_confidence,
             'concepts': concepts,
             'goal_similarity': goal_similarity,
+            'related_goal_id': goal_match["goal_id"],
             'friction_score': friction_score,
             'priority': priority,
             'urgency': urgency,
@@ -148,170 +121,97 @@ class AdvancedThoughtEvaluator:
             'goal_impact': goal_impact
         }
     
-    def _classify_thought_advanced(self, text: str) -> tuple:
-        """
-        Classify thought type with confidence score.
-        
-        Returns: (type, confidence)
-        """
-        text_lower = text.lower()
-        
-        scores = {
-            'uncertainty': 0.0,
-            'tension': 0.0,
-            'opportunity': 0.0
-        }
-        
-        # Score uncertainty
-        for category, patterns in self.uncertainty_patterns.items():
-            matches = sum(1 for p in patterns if p in text_lower)
-            weight = {'explicit': 1.0, 'implicit': 0.7, 'epistemic': 0.9}[category]
-            scores['uncertainty'] += matches * weight
-        
-        # Score tension
-        for category, patterns in self.tension_patterns.items():
-            matches = sum(1 for p in patterns if p in text_lower)
-            weight = {'conflict': 1.0, 'dissonance': 0.9, 'dilemma': 0.8}[category]
-            scores['tension'] += matches * weight
-        
-        # Score opportunity
-        for category, patterns in self.opportunity_patterns.items():
-            matches = sum(1 for p in patterns if p in text_lower)
-            weight = {'exploration': 1.0, 'growth': 0.9, 'creation': 1.0}[category]
-            scores['opportunity'] += matches * weight
-        
-        # Normalize scores
-        max_score = max(scores.values()) if any(scores.values()) else 1.0
-        if max_score > 0:
-            scores = {k: v / max_score for k, v in scores.items()}
-        
-        # Get dominant type
-        thought_type = max(scores, key=scores.get)
-        confidence = scores[thought_type]
-        
-        # If confidence too low, classify as general
-        if confidence < 0.3:
-            thought_type = 'general'
-            confidence = 0.5
-        
-        return thought_type, confidence
-    
-    def _extract_concepts(self, text: str) -> List[str]:
-        """
-        Extract meaningful concepts (not just keywords).
-        
-        Uses simple noun phrase extraction and important words.
-        """
-        concepts = []
-        
-        # Remove common stop words
-        stop_words = {'i', 'me', 'my', 'the', 'a', 'an', 'is', 'are', 'was', 'were',
-                     'of', 'to', 'in', 'for', 'on', 'with', 'as', 'by'}
-        
-        # Extract words
-        words = re.findall(r'\b[a-z]+\b', text.lower())
-        
-        # Filter and get meaningful words
-        meaningful = [w for w in words if w not in stop_words and len(w) > 3]
-        
-        # Simple noun phrase extraction (adjacent meaningful words)
-        i = 0
-        while i < len(meaningful):
-            if i < len(meaningful) - 1:
-                # Try bigram
-                bigram = f"{meaningful[i]} {meaningful[i+1]}"
-                concepts.append(bigram)
-                i += 2
-            else:
-                concepts.append(meaningful[i])
-                i += 1
-        
-        # Add important single words
-        concepts.extend([w for w in meaningful if len(w) > 5])
-        
-        # Deduplicate
-        return list(set(concepts))
+    def _classify_thought_advanced(self, thought: Dict) -> tuple:
+        """Return a schema signal and its explicit producer confidence."""
+        from cognition.thought_signals import signal_for_thought
+
+        signal = signal_for_thought(thought)
+        if signal is None:
+            return "general", 0.0
+        try:
+            confidence = float(thought.get("cognitive_signal_confidence", 1.0))
+        except (TypeError, ValueError, OverflowError):
+            confidence = 0.0
+        if not math.isfinite(confidence):
+            confidence = 0.0
+        return signal, max(0.0, min(1.0, confidence))
+
+    @staticmethod
+    def _extract_concepts(thought: Dict) -> List[str]:
+        """Return only the producer's structured topic/concept fields."""
+        raw = thought.get("topic") or thought.get("concept")
+        if isinstance(raw, str) and raw.strip():
+            return [" ".join(raw.replace("_", " ").split())[:240]]
+        return []
     
     def _compute_goal_similarity(
         self,
         concepts: List[str],
         active_goals: List[Dict]
     ) -> float:
-        """
-        Compute semantic similarity to active goals.
+        return self._compute_goal_match(concepts, active_goals)["similarity"]
 
-        Uses cosine similarity only when Nomic v1.5 actually produced the
-        vectors. The shared embedder can silently fall back to MiniLM; that
-        vector space has different score distributions, so the Nomic
-        thresholds must not be applied to it. Uncalibrated/unavailable spaces
-        use the legacy word-overlap heuristic.
+    def _compute_goal_match(
+        self,
+        concepts: List[str],
+        active_goals: List[Dict],
+    ) -> Dict[str, Any]:
+        """
+        Return the best active goal ID and similarity from one calibrated batch.
+
+        Use cosine similarity only when the calibrated Nomic space produced
+        the vectors. An unavailable or uncalibrated embedding result contributes
+        no semantic similarity; it never falls back to token overlap.
         """
         if not concepts or not active_goals:
-            return 0.0
+            return {"goal_id": None, "similarity": 0.0}
         concept_text = ' '.join(concepts)
-        goal_texts = [goal.get('name', goal.get('description', '')) for goal in active_goals]
-        goal_texts = [g for g in goal_texts if g]
-        if not goal_texts:
-            return 0.0
+        goals = [
+            (str(goal.get("id") or ""), str(goal.get("name") or goal.get("description") or ""))
+            for goal in active_goals
+        ]
+        goals = [(goal_id, text) for goal_id, text in goals if text]
+        if not goals:
+            return {"goal_id": None, "similarity": 0.0}
         try:
             import numpy as np
             from utils.shared_embedder import (
                 get_embedder, is_calibrated_quality_space,
             )
             emb = get_embedder(quality=True)
-            texts = [concept_text] + goal_texts
+            texts = [concept_text] + [text for _, text in goals]
             if hasattr(emb, "encode_with_metadata"):
                 encoded, space_id = emb.encode_with_metadata(texts)
                 if not is_calibrated_quality_space(space_id):
-                    return self._compute_goal_similarity_word_overlap(
-                        concepts, active_goals,
-                    )
+                    return {"goal_id": None, "similarity": 0.0}
             else:
-                encoded = emb.encode(texts)
+                return {"goal_id": None, "similarity": 0.0}
             vecs = np.asarray(encoded, dtype="float32")
+            if vecs.ndim != 2 or vecs.shape[0] != len(texts) or not np.isfinite(vecs).all():
+                return {"goal_id": None, "similarity": 0.0}
             c = vecs[0]
             others = vecs[1:]
             cn = float(np.linalg.norm(c)) + 1e-9
             on = np.linalg.norm(others, axis=1) + 1e-9
             sims = (others @ c) / (on * cn)
             if not len(sims):
-                return 0.0
-            return float(min(1.0, max(0.0, float(np.max(sims)))))
+                return {"goal_id": None, "similarity": 0.0}
+            best_index = int(np.argmax(sims))
+            return {
+                "goal_id": goals[best_index][0] or None,
+                "similarity": float(min(1.0, max(0.0, float(sims[best_index])))),
+            }
         except Exception:
-            return self._compute_goal_similarity_word_overlap(concepts, active_goals)
+            return {"goal_id": None, "similarity": 0.0}
 
-    def _compute_goal_similarity_word_overlap(
-        self,
-        concepts: List[str],
-        active_goals: List[Dict]
-    ) -> float:
-        """Legacy word-overlap similarity (offline fallback)."""
-        max_similarity = 0.0
-        for goal in active_goals:
-            goal_text = goal.get('name', goal.get('description', '')).lower()
-            goal_words = set(re.findall(r'\b[a-z]+\b', goal_text))
-            concept_words = set(' '.join(concepts).split())
-            overlap = len(concept_words & goal_words)
-            if goal_words:
-                similarity = overlap / len(goal_words)
-                max_similarity = max(max_similarity, similarity)
-        return min(1.0, max_similarity)
-
-    def _detect_conceptual_friction(self, text: str) -> float:
-        """
-        Detect conflicting concepts or tension indicators.
-        
-        Higher score = more friction = more cognitive tension.
-        """
-        text_lower = text.lower()
-        
-        friction_count = sum(1 for indicator in self.friction_indicators 
-                           if indicator in text_lower)
-        
-        # Normalize to 0-1
-        friction_score = min(1.0, friction_count * 0.3)
-        
-        return friction_score
+    @staticmethod
+    def _detect_conceptual_friction(thought: Dict) -> float:
+        """Use the producer's numeric friction measurement, never phrasing."""
+        try:
+            score = float(thought.get("conceptual_friction", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        return max(0.0, min(1.0, score)) if math.isfinite(score) else 0.0
     
     def _compute_priority_multifactor(
         self,
@@ -364,6 +264,12 @@ class AdvancedThoughtEvaluator:
         
         More concepts + higher goal similarity = more actionable.
         """
+        # Similarity is relevance evidence, not evidence that a thought
+        # requests or supports action. Require a producer-owned signal before
+        # a Phase 2 suggestion can become a durable goal.
+        if thought_type == "general":
+            return 0.0
+
         # Base actionability by type
         base = {
             'opportunity': 0.8,
@@ -398,7 +304,10 @@ class AdvancedThoughtEvaluator:
         
         suggestion = {
             'type': f"{evaluation['type']}_{primary_concept}".replace(' ', '_'),
+            'cognitive_signal': evaluation['type'],
+            'source': 'advanced_thought_evaluator',
             'concept': primary_concept,
+            'related_goal_id': evaluation.get('related_goal_id'),
             'priority': evaluation['priority'],
             'urgency': evaluation['urgency'],
             'actionability': evaluation['actionability'],
@@ -408,6 +317,7 @@ class AdvancedThoughtEvaluator:
             'evaluation': {
                 'type_confidence': evaluation['type_confidence'],
                 'goal_similarity': evaluation['goal_similarity'],
+                'related_goal_id': evaluation.get('related_goal_id'),
                 'friction_score': evaluation['friction_score'],
                 'concepts_extracted': len(concepts)
             },
@@ -467,7 +377,7 @@ class AdvancedThoughtEvaluator:
                     t['evaluated'] = True
                     t['evaluated_at'] = datetime.now().isoformat()
                     t['evaluator_version'] = '2.0_advanced'
-                    dal.add_thought(t)
+                    dal.update_thought(t)
                     break
         except Exception:
             pass
