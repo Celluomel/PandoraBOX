@@ -1459,7 +1459,7 @@ def affect_advisory_context(description: str = "") -> str:
     qualitative = " ".join(str(description or "").split())[:320]
     return (
         "━━ PRIVATE AFFECT ADVISORY ━━\n"
-        "This is a qualitative self-state signal for conversational tone. Use it when it "
+        "This is a qualitative software-state signal about modeled affect for conversational tone. Use it when it "
         "helps the exchange; "
         "do not recite affect numbers or turn ordinary social replies into a self-report. "
         "When asked how you are, answer naturally and briefly.\n"

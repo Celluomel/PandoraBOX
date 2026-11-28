@@ -933,6 +933,28 @@ def test_source_backed_deterministic_planner_answer_skips_uninformative_llm_revi
     ) is True
 
 
+def test_affect_integration_answer_gets_only_post_response_advisory_review():
+    common = dict(
+        response_present=True,
+        generation_failed=False,
+        source_recall_attempt=False,
+        deterministic_affect_report=False,
+        deterministic_planner_answer=False,
+        peer_name=None,
+        state_signaled_depth_turn=False,
+    )
+    assert _should_schedule_semantic_review_post_response(
+        **common, affect_self_integration_query=True,
+    ) is True
+    assert _should_schedule_semantic_review_post_response(
+        **common, affect_self_integration_query=False,
+    ) is False
+    assert _should_schedule_semantic_review_post_response(
+        **{**common, "deterministic_affect_report": True},
+        affect_self_integration_query=True,
+    ) is False
+
+
 def test_runtime_execution_evidence_snapshot_binds_exact_turn_and_manifest_counts():
     snapshot = _runtime_execution_evidence_snapshot({
         "turn_id": "audit-turn-7",

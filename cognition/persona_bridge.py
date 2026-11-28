@@ -688,8 +688,9 @@ def _should_schedule_semantic_review_post_response(
     deterministic_planner_answer: bool,
     peer_name: str | None,
     state_signaled_depth_turn: bool,
+    affect_self_integration_query: bool = False,
 ) -> bool:
-    """Schedule only reviews that can add evidence beyond deterministic receipts."""
+    """Schedule advisory review for depth or affect-integration answers only."""
     return bool(
         response_present
         and not generation_failed
@@ -697,7 +698,7 @@ def _should_schedule_semantic_review_post_response(
         and not deterministic_affect_report
         and not deterministic_planner_answer
         and not peer_name
-        and state_signaled_depth_turn
+        and (state_signaled_depth_turn or affect_self_integration_query)
     )
 
 
@@ -6222,6 +6223,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     or _goal_means_followup
                     or displayed_cognitive_trace is not None
                 ),
+                affect_self_integration_query=_affect_self_integration_query,
             )
             _semantic_status = (
                 "scheduled_post_response" if _semantic_review_post_response
