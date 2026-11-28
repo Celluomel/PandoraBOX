@@ -15,6 +15,7 @@ from cognition.cognitive_dissonance_engine import DissonanceEvent, DissonanceEve
 
 def make_loop():
     loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+    loop._process_instance_id = "test-process-instance"
     loop._cycle_evidence_lock = threading.RLock()
     loop._cycle_evidence = deque(maxlen=40)
     loop._active_cycle_evidence = None
@@ -84,16 +85,36 @@ def test_audit_mode_cycle_receipts_persist_and_restore_across_restart(tmp_path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["schema"] == "lumina_cognitive_cycle_evidence.v1"
     assert payload["cycles"][0]["process_id"] > 0
+    assert payload["cycles"][0]["process_instance_id"] == loop._process_instance_id
     assert payload["cycles"][0]["stages"][0]["output_ref"] == output_ref
     assert loop.cycle_evidence_snapshot()["persistence_status"] == "persisted"
 
     restored = make_loop()
+    restored._process_instance_id = "restored-process-instance"
     restored._cycle_evidence_audit_path = path
     restored._load_cycle_evidence_audit()
     snapshot = restored.cycle_evidence_snapshot()
     assert snapshot["persistence_status"] == "loaded"
-    assert snapshot["cycles"][0]["cycle_id"] == 41
-    assert snapshot["cycles"][0]["stages"][0]["metrics"]["prediction_detector_status"] == "unavailable_no_outcome_results"
+    assert snapshot["cycles"] == []
+    assert snapshot["historical_cycles"][0]["cycle_id"] == 41
+    assert snapshot["historical_cycles"][0]["stages"][0]["metrics"]["prediction_detector_status"] == "unavailable_no_outcome_results"
+
+
+def test_cycle_snapshot_never_labels_previous_process_receipts_as_live():
+    loop = make_loop()
+    loop._process_instance_id = "current-process-instance"
+    loop._cycle_evidence.append({
+        "cycle_id": 99,
+        "process_id": 101,
+        "process_instance_id": "previous-process-instance",
+        "stages": [],
+    })
+
+    snapshot = loop.cycle_evidence_snapshot()
+
+    assert snapshot["current_process_instance_id"] == "current-process-instance"
+    assert snapshot["cycles"] == []
+    assert snapshot["historical_cycles"][0]["cycle_id"] == 99
 
 
 def test_audit_cycle_receipt_does_not_overwrite_corrupt_journal(tmp_path):

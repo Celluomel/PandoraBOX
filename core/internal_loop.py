@@ -371,6 +371,9 @@ class InternalThoughtLoop:
 
     def __init__(self, organism: "CognitiveOrganism"):
         self._organism = organism
+        # PID alone can be reused; bind live execution evidence to this exact
+        # process instance so persisted cycles cannot masquerade as current.
+        self._process_instance_id = f"{os.getpid()}:{time.time_ns()}"
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._slow_cycle_count = 0
@@ -1300,6 +1303,9 @@ class InternalThoughtLoop:
             self._active_cycle_evidence = {
                 "cycle_id": int(cycle_id),
                 "process_id": os.getpid(),
+                "process_instance_id": getattr(
+                    self, "_process_instance_id", f"{os.getpid()}:untracked"
+                ),
                 "started_at": time.time(),
                 "status": "running",
                 "stages": [],
@@ -1528,21 +1534,40 @@ class InternalThoughtLoop:
             logger.warning("[InternalLoop] Cycle evidence journal save failed: %s", type(exc).__name__)
 
     def cycle_evidence_snapshot(self, limit: int = 5) -> dict[str, Any]:
-        """Expose recent bounded causal receipts; semantic correctness is not inferred."""
+        """Separate this process's receipts from preserved prior-run history."""
         lock = getattr(self, "_cycle_evidence_lock", None)
         if lock is None:
-            return {"retained": 0, "cycles": []}
+            return {"retained": 0, "cycles": [], "historical_cycles": []}
         with lock:
             bounded_limit = max(0, min(int(limit), 10))
-            cycles = list(self._cycle_evidence)[-bounded_limit:] if bounded_limit else []
+            all_cycles = list(self._cycle_evidence)
             if self._active_cycle_evidence is not None:
-                cycles.append(dict(self._active_cycle_evidence))
+                all_cycles.append(dict(self._active_cycle_evidence))
+            instance_id = getattr(
+                self, "_process_instance_id", f"{os.getpid()}:untracked"
+            )
+            current_cycles = [
+                cycle for cycle in all_cycles
+                if cycle.get("process_instance_id") == instance_id
+            ]
+            historical_cycles = [
+                cycle for cycle in all_cycles
+                if cycle.get("process_instance_id") != instance_id
+            ]
+            if bounded_limit:
+                current_cycles = current_cycles[-bounded_limit:]
+                historical_cycles = historical_cycles[-bounded_limit:]
+            else:
+                current_cycles = []
+                historical_cycles = []
             return {
                 "retained": len(self._cycle_evidence),
                 "capacity": 40,
                 "persistence_status": self._cycle_evidence_persistence_status,
+                "current_process_instance_id": instance_id,
                 "evidence_scope": "internal_cycle_execution_and_explicit_dataflow; semantic_quality_not_assessed",
-                "cycles": json.loads(json.dumps(cycles, default=str)),
+                "cycles": json.loads(json.dumps(current_cycles, default=str)),
+                "historical_cycles": json.loads(json.dumps(historical_cycles, default=str)),
             }
 
     @staticmethod
