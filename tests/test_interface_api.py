@@ -201,6 +201,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 'relevant': True, 'claim_basis': 'factual',
                 'evidence_support': 'supported', 'contract_compliant': True,
                 'material_issue_count': 0, 'repair_rechecked': False,
+                'response_replaced': False,
             },
             'stage_events': [], 'recent_turns': [],
         }
@@ -231,6 +232,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             'relevant': True, 'claim_basis': 'factual',
             'evidence_support': 'supported', 'contract_compliant': True,
             'material_issue_count': 0, 'repair_rechecked': False,
+            'response_replaced': False,
         })
         self.assertNotIn('private pipeline detail', repr(payload))
         self.assertNotIn('private validator detail', repr(payload))

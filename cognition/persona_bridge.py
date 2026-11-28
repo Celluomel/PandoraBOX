@@ -1997,6 +1997,12 @@ class PersonaBridge:
             if status == "not_required_single_pass"
             else "review_scheduled_post_response"
             if status == "scheduled_post_response"
+            else "reviewed_advisory"
+            if status == "reviewed_advisory"
+            else "flagged_advisory"
+            if status == "flagged_advisory"
+            else "review_unavailable_advisory"
+            if status == "unavailable_advisory"
             else "review_incomplete",
             "scope": (
                 "deterministic_response_equals_retrieved_user_source"
@@ -2009,10 +2015,14 @@ class PersonaBridge:
                 if status == "passed_deterministic_source_projection"
                 else "deterministic_projection_of_persisted_planner_snapshot"
                 if status == "passed_factual_planner_projection"
+                else "post_response_advisory_not_proof_of_truth"
+                if status in {"reviewed_advisory", "flagged_advisory", "unavailable_advisory"}
                 else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
             ),
             "stage_status": str(status)[:48],
         }
+        if status in {"reviewed_advisory", "flagged_advisory", "unavailable_advisory"}:
+            summary["response_replaced"] = False
         if isinstance(review.get("relevant"), bool):
             summary["relevant"] = review["relevant"]
         if review.get("claim_basis") in {"factual", "subjective_or_creative", "mixed"}:
@@ -3321,6 +3331,11 @@ class PersonaBridge:
                 ),
             )
             status = str(review.get("status") or "unavailable")
+            advisory_status = (
+                "reviewed_advisory" if status == "passed" else
+                "flagged_advisory" if status == "needs_revision" else
+                "unavailable_advisory"
+            )
             output = {
                 "scope": "post_response_relevance_and_constraints_only",
                 "live_facts_verified": False,
@@ -3334,12 +3349,14 @@ class PersonaBridge:
             }
             self._record_turn_stage(
                 "semantic_answer_validation",
-                "reviewed_advisory" if status == "passed" else
-                "flagged_advisory" if status == "needs_revision" else "unavailable",
+                advisory_status,
                 "Post-response model review; not independent verification and never an answer gate.",
                 output=output,
                 consumes=("response_finalization", "turn_input"),
                 turn_id=turn_id,
+            )
+            self._record_semantic_validation_summary(
+                turn_id, advisory_status, review,
             )
             # Surface only a clear relevance/contract concern on the next
             # prompt. A reviewer uncertainty or unsupported factual claim is

@@ -275,6 +275,12 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
         self.assertEqual(receipt["status"], "flagged_advisory")
         self.assertNotIn(original_answer, repr(receipt))
         self.assertIn("unverified advisory", bridge._reflection_results["fred"][1])
+        summary = bridge._last_turn_trace["semantic_answer_validation"]
+        self.assertEqual(summary["status"], "flagged_advisory")
+        self.assertEqual(summary["stage_status"], "flagged_advisory")
+        self.assertIs(summary["response_replaced"], False)
+        self.assertEqual(summary["evidence_support"], "insufficient_evidence")
+        self.assertNotIn("Answer may not address", repr(summary))
 
     def test_post_response_review_provider_call_is_correlated_to_originating_turn(self):
         observed = []

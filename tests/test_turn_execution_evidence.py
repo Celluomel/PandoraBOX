@@ -341,6 +341,29 @@ def test_semantic_validation_receipt_keeps_dimensions_without_answer_text():
     assert "private repair text" not in repr(receipt)
 
 
+def test_post_response_advisory_summary_reports_terminal_result_and_no_replacement():
+    bridge = _bridge()
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "flagged_advisory", {
+            "status": "needs_revision",
+            "relevant": False,
+            "claim_basis": "mixed",
+            "evidence_support": "insufficient_evidence",
+            "contract_compliant": False,
+            "material_issues": ["private review detail"],
+        },
+    )
+
+    receipt = bridge._last_turn_trace["semantic_answer_validation"]
+    assert receipt["status"] == "flagged_advisory"
+    assert receipt["stage_status"] == "flagged_advisory"
+    assert receipt["scope"] == "post_response_advisory_not_proof_of_truth"
+    assert receipt["response_replaced"] is False
+    assert receipt["evidence_support"] == "insufficient_evidence"
+    assert receipt["material_issue_count"] == 1
+    assert "private review detail" not in repr(receipt)
+
+
 def test_source_grounded_answer_receipt_is_not_mislabeled_as_llm_review():
     bridge = _bridge()
     bridge._record_semantic_validation_summary(

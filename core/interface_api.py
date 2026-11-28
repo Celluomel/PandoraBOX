@@ -334,7 +334,7 @@ def _compact_turn_audit_record(raw: Any) -> dict[str, Any]:
                 'repair_rechecked', 'reviewer_status', 'reviewer_reason',
                 'repair_reviewer_status', 'repair_reviewer_issue_count',
                 'validation_method', 'source_ref', 'source_status', 'exact_source_match',
-                'exact_result_match', 'abstention_matches_gate',
+                'exact_result_match', 'abstention_matches_gate', 'response_replaced',
             }
         },
     }
