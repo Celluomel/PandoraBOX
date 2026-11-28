@@ -3383,16 +3383,11 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
                 if conflicts:
                     logger.debug(f"Liberty: Detected {len(conflicts)} goal conflicts")
 
-                # Update goal satisfaction based on emotional state
-                for goal_name in self.liberty_goals.goals:
-                    satisfaction = 0.5
-                    if goal_name == 'connection' and hasattr(self.emotional_state, 'emotions'):
-                        if 'warmth' in self.emotional_state.emotions:
-                            satisfaction = self.emotional_state.emotions['warmth'].value
-                    elif goal_name == 'understanding' and hasattr(self.emotional_state, 'emotions'):
-                        if 'curiosity' in self.emotional_state.emotions:
-                            satisfaction = self.emotional_state.emotions['curiosity'].value
-                    self.liberty_goals.update_goal_satisfaction(goal_name, satisfaction)
+                # Goal satisfaction is a progress/outcome measure. Affective
+                # warmth or curiosity may influence priorities, but neither
+                # proves that a connection or understanding goal advanced.
+                # Leave this state unchanged until a goal-specific execution
+                # receipt provides admissible progress evidence.
 
             # Perform reflection
             if self.liberty_reflection:

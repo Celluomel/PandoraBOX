@@ -9,6 +9,7 @@ Generate: "My drive to finish is creating pressure (0.73), but my
 empathy (0.82) makes me prioritize understanding the user's perspective."
 """
 import json
+import math
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, List
@@ -78,7 +79,7 @@ class NarrativeSynthesizer:
             
             # Identity evolution
             'identity_shift': [
-                "My {trait_name} was {old_value:.2f}, now {new_value:.2f}. "
+                "My {trait_name} changed from {old_value:.2f} to {new_value:.2f}. "
                 "This shift is {change_magnitude} — I'm becoming {direction}.",
                 
                 "I notice {trait_name} changing from {old_value:.2f} to {new_value:.2f}. "
@@ -107,11 +108,8 @@ class NarrativeSynthesizer:
             
             # Achievement
             'goal_completed': [
-                "I've resolved {goal_name}. The satisfaction is {satisfaction:.2f}, "
-                "and my confidence in similar tasks has grown to {confidence:.2f}.",
-                
-                "Completing {goal_name} brings relief (pressure reduced from {old_pressure:.2f} "
-                "to {new_pressure:.2f}). I feel {emotion}."
+                "A verified execution receipt records {goal_name} as complete "
+                "(reference: {completion_ref}).",
             ]
         }
     
@@ -151,63 +149,100 @@ class NarrativeSynthesizer:
         
         Returns situation key for template selection.
         """
-        # Extract factors
-        goal_pressure = context.get('goal_pressure', 0.0)
-        empathy = context.get('empathy', 0.0)
-        curiosity = context.get('curiosity', 0.0)
-        energy = context.get('energy', 1.0)
-        iteration_count = context.get('thread_iteration_count', 0)
-        trait_value = context.get('trait_value', 0.0)
-        confidence = context.get('belief_confidence', 1.0)
-        total_pressure = context.get('total_pressure', 0.5)
+        # Missing observations stay missing; defaults must not manufacture a
+        # balanced, conflicted, exhausted, or confident cognitive state.
+        goal_pressure = self._number(context, 'goal_pressure')
+        empathy = self._number(context, 'empathy')
+        curiosity = self._number(context, 'curiosity')
+        energy = self._number(context, 'energy')
+        iteration_count = self._number(context, 'thread_iteration_count')
+        trait_value = self._number(context, 'trait_value')
+        confidence = self._number(context, 'belief_confidence')
+        total_pressure = self._number(context, 'total_pressure')
         
         # Check conditions for each situation
         
         # High pressure + High empathy
-        if goal_pressure > 0.7 and empathy > 0.7:
+        if (goal_pressure is not None and empathy is not None
+                and goal_pressure > 0.7 and empathy > 0.7
+                and context.get('active_goals')
+                and context.get('relational_focus')):
             return 'high_pressure_high_empathy'
         
         # Exploration loop (repeated thread)
-        if iteration_count > 3 and curiosity > 0.6:
+        if (iteration_count is not None and curiosity is not None
+                and iteration_count > 3 and curiosity > 0.6
+                and context.get('thread_name') and context.get('user_name')
+                and self._number(context, 'trust_level') is not None):
             return 'exploration_loop'
         
         # Confidence gap
-        trait_confidence_gap = abs(trait_value - confidence)
-        if trait_confidence_gap > 0.3:
+        if (trait_value is not None and confidence is not None
+                and context.get('trait_name')
+                and context.get('tension_type')
+                and self._number(context, 'tension_value') is not None
+                and abs(trait_value - confidence) > 0.3):
             return 'confidence_gap'
         
         # Goal conflict
         active_goals = context.get('active_goals', [])
-        if len(active_goals) >= 2:
+        if isinstance(active_goals, list) and len(active_goals) >= 2:
             # Check if top 2 goals have similar high priority
-            sorted_goals = sorted(active_goals, key=lambda g: g.get('priority', 0), reverse=True)
+            sorted_goals = sorted(
+                (g for g in active_goals if isinstance(g, dict)
+                 and g.get('name') and self._number(g, 'priority') is not None),
+                key=lambda g: self._number(g, 'priority'), reverse=True,
+            )
             if len(sorted_goals) >= 2:
-                p1 = sorted_goals[0].get('priority', 0)
-                p2 = sorted_goals[1].get('priority', 0)
+                p1 = self._number(sorted_goals[0], 'priority')
+                p2 = self._number(sorted_goals[1], 'priority')
                 if p1 > 0.6 and p2 > 0.6 and abs(p1 - p2) < 0.2:
                     return 'goal_conflict'
         
         # Low energy + High curiosity
-        if energy < 0.3 and curiosity > 0.6:
+        if (energy is not None and curiosity is not None
+                and context.get('curiosity_topic')
+                and energy < 0.3 and curiosity > 0.6):
             return 'low_energy_high_curiosity'
         
         # Identity shift
-        if context.get('identity_changed', False):
+        if (context.get('identity_changed') is True
+                and context.get('trait_name')
+                and self._number(context, 'old_trait_value') is not None
+                and self._number(context, 'new_trait_value') is not None):
             return 'identity_shift'
         
         # User intent uncertainty
-        if context.get('user_input_ambiguous', False):
+        if (context.get('user_input_ambiguous') is True
+                and context.get('user_input')
+                and context.get('interpretation1') and context.get('interpretation2')
+                and self._number(context, 'uncertainty') is not None
+                and curiosity is not None):
             return 'user_intent_uncertainty'
         
-        # Goal completed
-        if context.get('goal_just_completed', False):
+        # Completion is an effect claim. Require a receipt tied to an execution
+        # and an independently verified effect; a planner flag is only intent.
+        if self._has_verified_goal_completion(context):
             return 'goal_completed'
         
         # Balanced state
-        if 0.4 < total_pressure < 0.6 and energy > 0.6:
+        if (total_pressure is not None and energy is not None
+                and isinstance(context.get('emotions'), dict)
+                and context['emotions']
+                and self._number(context, 'goal_pressure') is not None
+                and curiosity is not None
+                and 0.4 < total_pressure < 0.6 and energy > 0.6):
             return 'balanced'
         
         return None
+
+    @staticmethod
+    def _number(context: Dict[str, Any], key: str) -> Optional[float]:
+        try:
+            value = float(context[key])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return value if math.isfinite(value) else None
     
     def _select_template(self, situation: str) -> Optional[str]:
         """Select a template for the situation."""
@@ -226,82 +261,72 @@ class NarrativeSynthesizer:
         # Prepare fill values
         fill_values = {}
         
-        # Basic factors
-        fill_values['goal_pressure'] = context.get('goal_pressure', 0.0)
-        fill_values['curiosity'] = context.get('curiosity', 0.0)
-        fill_values['empathy'] = context.get('empathy', 0.0)
-        fill_values['energy'] = context.get('energy', 1.0)
-        fill_values['confidence'] = context.get('belief_confidence', 1.0)
-        fill_values['total_pressure'] = context.get('total_pressure', 0.5)
+        # Populate only recorded inputs. Missing values cause an incomplete
+        # narrative to be omitted by the KeyError handler below.
+        for source_key, template_key in (
+            ('goal_pressure', 'goal_pressure'), ('curiosity', 'curiosity'),
+            ('empathy', 'empathy'), ('energy', 'energy'),
+            ('belief_confidence', 'confidence'), ('total_pressure', 'total_pressure'),
+            ('tension_value', 'tension_value'), ('thread_iteration_count', 'iteration_count'),
+            ('trust_level', 'trust'), ('user_input', 'user_input'),
+            ('interpretation1', 'interpretation1'), ('interpretation2', 'interpretation2'),
+            ('uncertainty', 'uncertainty'), ('relational_focus', 'relational_aspect'),
+            ('user_name', 'user'), ('thread_name', 'thread_name'),
+            ('trait_name', 'trait_name'), ('trait_value', 'trait_value'),
+            ('old_trait_value', 'old_value'), ('new_trait_value', 'new_value'),
+            ('tension_type', 'tension_type'), ('curiosity_topic', 'topic'),
+        ):
+            if source_key in context and context[source_key] is not None:
+                if source_key in {
+                    'goal_pressure', 'curiosity', 'empathy', 'energy',
+                    'belief_confidence', 'total_pressure', 'tension_value',
+                    'thread_iteration_count', 'trust_level', 'uncertainty',
+                    'trait_value', 'old_trait_value', 'new_trait_value',
+                }:
+                    numeric = self._number(context, source_key)
+                    if numeric is not None:
+                        fill_values[template_key] = numeric
+                else:
+                    fill_values[template_key] = context[source_key]
         
         # Goals
         active_goals = context.get('active_goals', [])
-        if active_goals:
-            fill_values['primary_goal'] = active_goals[0].get('name', 'unknown')
-            fill_values['priority1'] = active_goals[0].get('priority', 0.0)
+        if isinstance(active_goals, list) and active_goals:
+            ordered = sorted(
+                (g for g in active_goals if isinstance(g, dict) and g.get('name')
+                 and self._number(g, 'priority') is not None),
+                key=lambda g: self._number(g, 'priority'), reverse=True,
+            )
+            if ordered:
+                fill_values['primary_goal'] = ordered[0]['name']
+                fill_values['priority1'] = self._number(ordered[0], 'priority')
             
-            if len(active_goals) > 1:
-                fill_values['goal1'] = active_goals[0].get('name', 'goal1')
-                fill_values['goal2'] = active_goals[1].get('name', 'goal2')
-                fill_values['priority2'] = active_goals[1].get('priority', 0.0)
+            if len(ordered) > 1:
+                fill_values['goal1'] = ordered[0]['name']
+                fill_values['goal2'] = ordered[1]['name']
+                fill_values['priority2'] = self._number(ordered[1], 'priority')
                 fill_values['conflict_level'] = abs(
-                    active_goals[0].get('priority', 0) - 
-                    active_goals[1].get('priority', 0)
+                    self._number(ordered[0], 'priority') -
+                    self._number(ordered[1], 'priority')
                 )
-        else:
-            fill_values['primary_goal'] = 'my current task'
-            fill_values['goal1'] = 'task A'
-            fill_values['goal2'] = 'task B'
-            fill_values['priority1'] = 0.5
-            fill_values['priority2'] = 0.5
-            fill_values['conflict_level'] = 0.0
-        
-        # Relational
-        fill_values['relational_aspect'] = context.get('relational_focus', 'understanding others')
-        fill_values['user'] = context.get('user_name', 'the user')
-        fill_values['trust'] = context.get('trust_level', 0.7)
-        
-        # Thread info
-        fill_values['thread_name'] = context.get('thread_name', 'this concept')
-        fill_values['iteration_count'] = context.get('thread_iteration_count', 0)
-        
-        # Trait info
-        fill_values['trait_name'] = context.get('trait_name', 'curiosity')
-        fill_values['trait_value'] = context.get('trait_value', 0.5)
-        fill_values['old_value'] = context.get('old_trait_value', 0.5)
-        fill_values['new_value'] = context.get('new_trait_value', 0.5)
         
         # Change direction
-        if 'old_trait_value' in context and 'new_trait_value' in context:
-            change = context['new_trait_value'] - context['old_trait_value']
+        if ('old_trait_value' in context and 'new_trait_value' in context
+                and self._number(context, 'old_trait_value') is not None
+                and self._number(context, 'new_trait_value') is not None):
+            change = self._number(context, 'new_trait_value') - self._number(context, 'old_trait_value')
             fill_values['change_magnitude'] = 'significant' if abs(change) > 0.2 else 'subtle'
             fill_values['direction'] = 'growing' if change > 0 else 'diminishing'
-        else:
-            fill_values['change_magnitude'] = 'subtle'
-            fill_values['direction'] = 'evolving'
-        
-        # Tension info
-        fill_values['tension_type'] = context.get('tension_type', 'cognitive')
-        fill_values['tension_value'] = context.get('tension_value', 0.0)
-        
-        # User input
-        fill_values['user_input'] = context.get('user_input', '')
-        fill_values['interpretation1'] = context.get('interpretation1', 'option A')
-        fill_values['interpretation2'] = context.get('interpretation2', 'option B')
-        fill_values['uncertainty'] = context.get('uncertainty', 0.5)
-        
+
         # Emotions
         dominant_emotion = self._get_dominant_emotion(context)
         fill_values['emotion'] = dominant_emotion
         
-        # Topic
-        fill_values['topic'] = context.get('curiosity_topic', 'this subject')
-        
-        # Goal completion
-        fill_values['goal_name'] = context.get('completed_goal_name', 'this task')
-        fill_values['satisfaction'] = context.get('satisfaction', 0.8)
-        fill_values['old_pressure'] = context.get('old_pressure', 0.8)
-        fill_values['new_pressure'] = context.get('new_pressure', 0.4)
+        # These values come only from the receipt that selected this template.
+        completion = context.get('goal_completion_receipt')
+        if isinstance(completion, dict):
+            fill_values['goal_name'] = completion['goal_name'].strip()
+            fill_values['completion_ref'] = completion['execution_ref'].strip()
         
         # Fill template
         try:
@@ -322,6 +347,19 @@ class NarrativeSynthesizer:
         # Find highest emotion
         dominant = max(emotions.items(), key=lambda x: x[1])
         return dominant[0] if dominant[1] > 0.5 else 'calm'
+
+    @staticmethod
+    def _has_verified_goal_completion(context: Dict[str, Any]) -> bool:
+        """Return true only for a linked execution receipt with verified effect."""
+        receipt = context.get('goal_completion_receipt')
+        if not isinstance(receipt, dict):
+            return False
+        return (
+            receipt.get('status') == 'verified'
+            and receipt.get('effect_verified') is True
+            and bool(str(receipt.get('execution_ref') or '').strip())
+            and bool(str(receipt.get('goal_name') or '').strip())
+        )
     
     def create_narrative_from_cycle(self, cycle_data: Dict) -> Optional[str]:
         """
@@ -329,18 +367,33 @@ class NarrativeSynthesizer:
         
         This is the main entry point for integration.
         """
-        # Build context from cycle data
-        context = {
-            'goal_pressure': cycle_data.get('pressure', {}).get('goal_pressure', 0.0),
-            'curiosity': cycle_data.get('pressure', {}).get('curiosity_drive', 0.0),
-            'empathy': cycle_data.get('traits', {}).get('empathy', 0.0),
-            'energy': cycle_data.get('energy_level', 1.0),
-            'total_pressure': cycle_data.get('pressure', {}).get('total', 0.5),
-            'active_goals': cycle_data.get('goals', []),
-            'emotions': cycle_data.get('emotions', {}),
-            'user_input': cycle_data.get('user_input', ''),
-            # Add more as needed
-        }
+        # Project only values that the cycle actually supplied. A default is
+        # not a measurement and must not create an introspective situation.
+        context: Dict[str, Any] = {}
+        pressure = cycle_data.get('pressure')
+        if isinstance(pressure, dict):
+            for source_key, context_key in (
+                ('goal_pressure', 'goal_pressure'),
+                ('curiosity_drive', 'curiosity'),
+                ('total', 'total_pressure'),
+            ):
+                if source_key in pressure and pressure[source_key] is not None:
+                    context[context_key] = pressure[source_key]
+        traits = cycle_data.get('traits')
+        if isinstance(traits, dict) and traits.get('empathy') is not None:
+            context['empathy'] = traits['empathy']
+        for key in (
+            'energy_level', 'goals', 'emotions', 'user_input',
+            'goal_completion_receipt', 'thread_iteration_count', 'thread_name',
+            'user_name', 'trust_level', 'trait_name', 'trait_value',
+            'belief_confidence', 'tension_type', 'tension_value',
+            'identity_changed', 'old_trait_value', 'new_trait_value',
+            'user_input_ambiguous', 'interpretation1', 'interpretation2',
+            'uncertainty', 'relational_focus', 'curiosity_topic',
+        ):
+            if key in cycle_data and cycle_data[key] is not None:
+                context_key = 'energy' if key == 'energy_level' else key
+                context[context_key] = cycle_data[key]
         
         return self.synthesize_thought(context)
 
