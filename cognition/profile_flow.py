@@ -85,6 +85,13 @@ _HISTORICAL_RECALL_REQUEST_EXAMPLES = (
     "Encuentra mi mensaje anterior y dime qué decía.",
     "Welche Sorge habe ich früher über den Speicherabruf geäußert?",
     "Finde meine frühere Aussage und gib wieder, was ich gesagt habe.",
+    "In our earlier conversations, what concern did I raise about memory recall and how my user profile is built from exchanges? Answer only from my own prior statements.",
+    "From our previous conversations, what concern did I raise about your memory recall and how my user profile is built?",
+    "What concern did I raise in an earlier conversation about memory retrieval, and what did I say about the profile?",
+    "Rappelle uniquement ce que je t’ai demandé concernant la manière de conduire l’audit du harnais cognitif.",
+    "Dans nos échanges précédents, qu’ai-je demandé concernant les filtres lexicaux et la prise en charge de plusieurs langues ?",
+    "Quelles explications ai-je laissées ouvertes dans mon message utilisateur où je doutais que le rappel mémoire de la dernière étape ait retrouvé la bonne source ?",
+    "What did I previously ask you about the accuracy of memory recall? Give only the earlier user message.",
 )
 _USER_UNCERTAINTY_EXAMPLES = (
     "I am uncertain whether the previous memory retrieval found the right source; several explanations remain possible.",
@@ -166,6 +173,8 @@ _MEMORY_PROFILE_ROUTER_LOCK = threading.Lock()
 _MEMORY_PROFILE_ROUTER_CENTROIDS: dict[str, tuple[Any, ...]] = {}
 _MEMORY_SOURCE_ROLE_LOCK = threading.Lock()
 _MEMORY_SOURCE_ROLE_CENTROIDS: dict[str, tuple[Any, Any]] = {}
+_MEMORY_SOURCE_ROLE_MIN_SIMILARITY = 0.66
+_MEMORY_SOURCE_ROLE_MIN_MARGIN = 0.015
 
 
 def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[str, Any]]:
@@ -478,9 +487,15 @@ def classify_memory_source_roles(user_texts, *, embedder=None) -> list[dict[str,
             source_score = float(query @ source_center)
             request_score = float(query @ request_center)
             margin = source_score - request_score
-            if source_score >= 0.66 and margin >= 0.02:
+            if (
+                source_score >= _MEMORY_SOURCE_ROLE_MIN_SIMILARITY
+                and margin >= _MEMORY_SOURCE_ROLE_MIN_MARGIN
+            ):
                 role = "user_source_statement"
-            elif request_score >= 0.66 and margin <= -0.02:
+            elif (
+                request_score >= _MEMORY_SOURCE_ROLE_MIN_SIMILARITY
+                and margin <= -_MEMORY_SOURCE_ROLE_MIN_MARGIN
+            ):
                 role = "historical_retrieval_request"
             else:
                 role = "uncertain"

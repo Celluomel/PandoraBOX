@@ -160,6 +160,10 @@ class _MemorySourceRoleEmbedder:
                 vectors.append([0.0, 1.0])
             elif "uncertain role" in text.casefold():
                 vectors.append([0.707, 0.707])
+            elif "borderline source" in text.casefold():
+                vectors.append([0.715, 0.697])
+            elif "borderline uncertain" in text.casefold():
+                vectors.append([0.712, 0.702])
             elif "source statement" in text.casefold():
                 vectors.append([1.0, 0.0])
             else:
@@ -312,11 +316,16 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
             "source statement: I doubt the previous memory result found the right source.",
             "historical request: What concern did I raise in the earlier conversation?",
             "uncertain role between a statement and a retrieval request",
+            "borderline source with a small positive semantic margin",
+            "borderline uncertain with a margin below the decision boundary",
         ], embedder=embedder)
 
         self.assertEqual(
             [result["role"] for result in results],
-            ["user_source_statement", "historical_retrieval_request", "uncertain"],
+            [
+                "user_source_statement", "historical_retrieval_request", "uncertain",
+                "user_source_statement", "uncertain",
+            ],
         )
         self.assertEqual(results[0]["score_semantics"],
                          "uncalibrated Nomic v1.5 cosine similarity; not a probability")
