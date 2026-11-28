@@ -328,16 +328,20 @@ class BrainWorkflowStatusTests(unittest.TestCase):
         with patch("core.state.asyncio.to_thread", new=Mock(side_effect=fake_to_thread)):
             with patch("core.state.asyncio.create_task", new=Mock(return_value=task)):
                 scheduled = state.schedule_deferred_cognitive_stages(
-                    "How is the current goal progressing?", "It remains in progress.",
+                    "How do your modeled affect signals fit together?", "The modeled signals coexist.",
                     "fred", 12, turn_id="turn-review", semantic_validation=True,
+                    semantic_validation_context="scoped evidence",
+                    semantic_validation_evidence_scope="affect_self_integration",
                 )
 
         self.assertTrue(scheduled)
         persona.run_deferred_semantic_validation.assert_not_called()
         captured["callback"]()
         persona.run_deferred_semantic_validation.assert_called_once_with(
-            "How is the current goal progressing?", "It remains in progress.",
+            "How do your modeled affect signals fit together?", "The modeled signals coexist.",
             "fred", turn_id="turn-review", reflection_epoch=12,
+            evidence_context="scoped evidence",
+            evidence_scope="affect_self_integration",
         )
 
     def test_deferred_stage_updates_its_original_turn_after_a_new_turn_starts(self):

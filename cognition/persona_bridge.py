@@ -3304,12 +3304,13 @@ class PersonaBridge:
     def run_deferred_semantic_validation(
         self, user_text: str, assistant_text: str, user_id: str = "default",
         *, turn_id: str = "", reflection_epoch: int = 0,
+        evidence_context: str = "", evidence_scope: str = "",
     ) -> dict[str, str]:
         """Audit a completed answer asynchronously without changing it.
 
-        This deliberately receives no cached sensor/world-model snapshot. It
-        can assess relevance and explicit constraints, but cannot certify live
-        facts; its receipt says so and any correction is advisory only.
+        The reviewer can receive a bounded, turn-scoped evidence projection
+        for an opted-in route. It cannot certify live facts, block delivery,
+        or change the already visible answer.
         """
         manager = getattr(self._external_llm_fn, "__self__", None)
         review_fn = getattr(manager, "generate_bare_result", None)
@@ -3318,17 +3319,31 @@ class PersonaBridge:
         audit_token = _set_audit_turn_id(turn_id)
         try:
             from cognition.semantic_response_validation import review_response
+            affect_evidence_review = (
+                str(evidence_scope or "") == "affect_self_integration"
+            )
+            bounded_evidence = (
+                str(evidence_context or "")[:4000]
+                if affect_evidence_review else ""
+            )
             review = review_response(
                 review_fn,
                 request=user_text,
                 response=assistant_text,
-                context="",
+                context=bounded_evidence,
                 constraints=(
+                    "This is an asynchronous quality audit after delivery. The reference context, "
+                    "when present, is the structured affect snapshot supplied to this same turn; "
+                    "assess claims against it and distinguish measured values, recorded events, "
+                    "and interpretation. Do not infer an event or cause from channel levels. "
+                    "This result cannot retract or replace the delivered answer."
+                    if affect_evidence_review else
                     "This is an asynchronous quality audit after delivery. No current runtime, "
                     "sensor, memory, or source evidence is supplied. Assess relevance and explicit "
                     "constraints only; factual support must remain insufficient_evidence rather "
                     "than guessed. This result cannot retract or replace the delivered answer."
                 ),
+                require_evidence_support=affect_evidence_review,
             )
             status = str(review.get("status") or "unavailable")
             advisory_status = (
@@ -3337,9 +3352,20 @@ class PersonaBridge:
                 "unavailable_advisory"
             )
             output = {
-                "scope": "post_response_relevance_and_constraints_only",
+                "type": "semantic_response_review_receipt",
+                "scope": (
+                    "post_response_affect_evidence_advisory"
+                    if affect_evidence_review else
+                    "post_response_relevance_and_constraints_only"
+                ),
                 "live_facts_verified": False,
                 "response_replaced": False,
+                "reference_evidence_available": bool(bounded_evidence),
+                "reference_evidence_chars": len(bounded_evidence),
+                "reference_evidence_sha256": (
+                    hashlib.sha256(bounded_evidence.encode("utf-8", errors="replace")).hexdigest()
+                    if bounded_evidence else ""
+                ),
                 "reviewer_status": status,
                 "relevant": review.get("relevant"),
                 "claim_basis": review.get("claim_basis"),
@@ -3352,7 +3378,11 @@ class PersonaBridge:
                 advisory_status,
                 "Post-response model review; not independent verification and never an answer gate.",
                 output=output,
-                consumes=("response_finalization", "turn_input"),
+                consumes=(
+                    ("response_finalization", "turn_input", "affect_self_integration_context", "affective_state")
+                    if affect_evidence_review else
+                    ("response_finalization", "turn_input")
+                ),
                 turn_id=turn_id,
             )
             self._record_semantic_validation_summary(
@@ -6232,6 +6262,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
         )
         _semantic_review_post_response = False
+        _semantic_validation_context = ""
+        _semantic_validation_evidence_scope = ""
         if (
             raw_response.strip() and not _generation_failed
             and not _source_recall_attempt and not _deterministic_affect_report
@@ -6273,6 +6305,22 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 consumes=(_response_source_stage, "turn_input"),
                 turn_id=_audit_turn_id,
             )
+            if _semantic_review_post_response and _affect_self_integration_query:
+                # Send only the structured affect evidence that grounded this
+                # answer to the asynchronous advisor. Do not forward the full
+                # private prompt or unrelated memory/profile context.
+                marker = "━━ AFFECT SELF-REPORT EVIDENCE ━━"
+                if marker in system_prompt:
+                    evidence_tail = system_prompt.rsplit(marker, 1)[-1]
+                    next_section = evidence_tail.find("\n━━ ")
+                    evidence_block = (
+                        evidence_tail[:next_section]
+                        if next_section >= 0 else evidence_tail
+                    )
+                    _semantic_validation_context = (
+                        marker + "\n" + evidence_block
+                    )[:4000]
+                    _semantic_validation_evidence_scope = "affect_self_integration"
         elif raw_response.strip() and not _generation_failed and _deterministic_affect_report:
             _semantic_status = "passed_deterministic_source_projection"
             self._record_turn_stage(
@@ -6919,6 +6967,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             "emotion":   emotion,
             "intensity": intensity,
             "semantic_validation_post_response": _semantic_review_post_response,
+            "semantic_validation_context": _semantic_validation_context,
+            "semantic_validation_evidence_scope": _semantic_validation_evidence_scope,
             **({"error": "provider_empty_output"} if _generation_failed else {}),
         }
 

@@ -566,6 +566,43 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 receipt[key] = digest
         return receipt
 
+    if value.get("type") == "semantic_response_review_receipt":
+        scope = str(value.get("scope") or "")
+        if scope not in {
+            "post_response_affect_evidence_advisory",
+            "post_response_relevance_and_constraints_only",
+        }:
+            scope = "post_response_relevance_and_constraints_only"
+        receipt = {
+            "type": "semantic_response_review_receipt",
+            "quality": "present",
+            "scope": scope,
+            "live_facts_verified": False,
+            "response_replaced": False,
+            "reference_evidence_available": bool(value.get("reference_evidence_available")),
+        }
+        count = value.get("reference_evidence_chars")
+        if isinstance(count, int) and not isinstance(count, bool):
+            receipt["reference_evidence_chars"] = max(0, min(4000, count))
+        digest = str(value.get("reference_evidence_sha256") or "")
+        if re.fullmatch(r"[a-f0-9]{64}", digest):
+            receipt["reference_evidence_sha256"] = digest
+        reviewer_status = str(value.get("reviewer_status") or "")
+        if reviewer_status in {"passed", "needs_revision", "unavailable", "invalid_review_output"}:
+            receipt["reviewer_status"] = reviewer_status
+        if value.get("evidence_support") in {
+            "supported", "partially_supported", "unsupported", "insufficient_evidence",
+        }:
+            receipt["evidence_support"] = value["evidence_support"]
+        if isinstance(value.get("contract_compliant"), bool):
+            receipt["contract_compliant"] = value["contract_compliant"]
+        if isinstance(value.get("relevant"), bool):
+            receipt["relevant"] = value["relevant"]
+        count = value.get("material_issue_count")
+        if isinstance(count, int) and not isinstance(count, bool):
+            receipt["material_issue_count"] = max(0, min(8, count))
+        return receipt
+
     if value.get("type") in {
         "profile_learning_predecessor_receipt", "memory_learning_predecessor_receipt",
     }:

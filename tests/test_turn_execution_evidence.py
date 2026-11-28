@@ -1099,6 +1099,35 @@ def test_affect_self_integration_route_is_preserved_as_safe_turn_receipt():
     assert "private_query" not in repr(receipt)
 
 
+def test_post_response_affect_review_receipt_is_redacted_but_auditable():
+    receipt = audit_safe_turn_summary({
+        "type": "semantic_response_review_receipt",
+        "scope": "post_response_affect_evidence_advisory",
+        "live_facts_verified": False,
+        "response_replaced": False,
+        "reference_evidence_available": True,
+        "reference_evidence_chars": 387,
+        "reference_evidence_sha256": "a" * 64,
+        "reviewer_status": "needs_revision",
+        "evidence_support": "unsupported",
+        "contract_compliant": False,
+        "relevant": True,
+        "material_issue_count": 1,
+        "raw_context": "private affect details must not be copied",
+        "repair": "private repair text must not be copied",
+    })
+
+    assert receipt["scope"] == "post_response_affect_evidence_advisory"
+    assert receipt["reference_evidence_available"] is True
+    assert receipt["reference_evidence_chars"] == 387
+    assert receipt["reference_evidence_sha256"] == "a" * 64
+    assert receipt["reviewer_status"] == "needs_revision"
+    assert receipt["evidence_support"] == "unsupported"
+    assert receipt["response_replaced"] is False
+    assert "private affect details" not in repr(receipt)
+    assert "private repair text" not in repr(receipt)
+
+
 def test_social_affect_route_is_preserved_as_safe_turn_receipt():
     receipt = audit_safe_turn_summary({
         "type": "turn_evidence_routing_receipt",

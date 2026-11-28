@@ -12,9 +12,13 @@ class _ReviewManager:
     def __init__(self, payload):
         self.payload = payload
         self.calls = 0
+        self.last_prompt = ""
+        self.last_kwargs = {}
 
-    def generate_bare_result(self, *_args, **_kwargs):
+    def generate_bare_result(self, prompt, **kwargs):
         self.calls += 1
+        self.last_prompt = prompt
+        self.last_kwargs = kwargs
         return {"status": "ok", "text": json.dumps(self.payload)}
 
 
@@ -305,6 +309,51 @@ class ConversationAuthorityPhase1Tests(unittest.TestCase):
         self.assertEqual(result, {"status": "completed"})
         self.assertEqual(observed, ["trace-42"])
         self.assertEqual(current_turn_id.get(), "")
+
+    def test_affect_integration_review_consumes_its_turn_evidence_after_delivery(self):
+        manager = _ReviewManager({
+            "relevant": True,
+            "claim_basis": "mixed",
+            "evidence_support": "unsupported",
+            "contract_compliant": False,
+            "material_issues": ["The claimed emotional cause is not in the recorded events."],
+            "repair": "The modeled channels are elevated; no recorded event establishes their cause.",
+        })
+        bridge = _bridge_for_review(manager)
+        original_answer = "I felt relief because the connection succeeded."
+        evidence = (
+            "AFFECT SELF-REPORT EVIDENCE\n"
+            "Affect channels: relief=0.70, curiosity=0.80\n"
+            "Latest recorded affect-changing appraisal: none recorded."
+        )
+
+        result = bridge.run_deferred_semantic_validation(
+            "How do your modeled affect signals fit together?", original_answer, "fred",
+            turn_id="turn-affect-evidence", reflection_epoch=3,
+            evidence_context=evidence, evidence_scope="affect_self_integration",
+        )
+
+        self.assertEqual(result, {"status": "completed"})
+        self.assertIn(evidence, manager.last_prompt)
+        self.assertTrue(manager.last_kwargs["require_evidence_support"])
+        self.assertIn("Do not infer an event or cause", manager.last_prompt)
+        self.assertEqual(original_answer, "I felt relief because the connection succeeded.")
+        receipt = bridge._last_turn_trace["stages"]["semantic_answer_validation"]
+        self.assertEqual(receipt["status"], "flagged_advisory")
+        summary = receipt["output_summary"]
+        self.assertEqual(summary["scope"], "post_response_affect_evidence_advisory")
+        self.assertIs(summary["response_replaced"], False)
+        self.assertIs(summary["reference_evidence_available"], True)
+        self.assertEqual(summary["reference_evidence_chars"], len(evidence))
+        self.assertEqual(
+            receipt["consumes"],
+            [
+                {"stage": "response_finalization", "fingerprint": None},
+                {"stage": "turn_input", "fingerprint": None},
+                {"stage": "affect_self_integration_context", "fingerprint": None},
+                {"stage": "affective_state", "fingerprint": None},
+            ],
+        )
 
 
     def test_post_response_collection_is_scheduled_without_waiting(self):

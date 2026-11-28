@@ -521,6 +521,8 @@ class AppState:
         self, user_text: str, assistant_text: str, user_id: str = "default",
         reflection_epoch: int = 0, turn_id: str = "", cognitive_scope_id: str = "",
         semantic_validation: bool = False,
+        semantic_validation_context: str = "",
+        semantic_validation_evidence_scope: str = "",
     ) -> bool:
         """Schedule bounded post-answer analysis without delaying chat delivery."""
         persona = self.persona
@@ -584,6 +586,8 @@ class AppState:
                     result = semantic_review(
                         user_text, assistant_text, user_id,
                         turn_id=turn_id, reflection_epoch=reflection_epoch,
+                        evidence_context=semantic_validation_context,
+                        evidence_scope=semantic_validation_evidence_scope,
                     )
                     if not isinstance(result, dict) or result.get("status") in {
                         "unavailable", "failed", "error",

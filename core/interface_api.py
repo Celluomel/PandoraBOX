@@ -2024,6 +2024,8 @@ async def chat(payload: Turn, request: Request):
         assistant_parts = []
         completed_turn_id = ""
         semantic_validation_post_response = False
+        semantic_validation_context = ""
+        semantic_validation_evidence_scope = ""
         cognitive_scope_id = user_id
         final_response_text = None
 
@@ -2139,6 +2141,19 @@ async def chat(payload: Turn, request: Request):
                             semantic_validation_post_response = bool(
                                 chunk.get('semantic_validation_post_response')
                             )
+                            # Private bounded review evidence is consumed by
+                            # the deferred local reviewer and never emitted to
+                            # the browser/SSE client.
+                            review_context = chunk.get('semantic_validation_context')
+                            semantic_validation_context = (
+                                review_context[:4000]
+                                if isinstance(review_context, str) else ""
+                            )
+                            review_scope = chunk.get('semantic_validation_evidence_scope')
+                            semantic_validation_evidence_scope = (
+                                review_scope[:48]
+                                if isinstance(review_scope, str) else ""
+                            )
                             cognitive_scope_id = str(
                                 chunk.get('cognitive_scope_id') or user_id
                             )
@@ -2191,6 +2206,8 @@ async def chat(payload: Turn, request: Request):
                     turn_id=completed_turn_id,
                     cognitive_scope_id=cognitive_scope_id,
                     semantic_validation=semantic_validation_post_response,
+                    semantic_validation_context=semantic_validation_context,
+                    semantic_validation_evidence_scope=semantic_validation_evidence_scope,
                 )
 
     worker = asyncio.create_task(produce())
