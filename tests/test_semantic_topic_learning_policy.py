@@ -522,3 +522,12 @@ def test_closed_world_report_route_is_forwarded_as_non_topic_learning_act():
         closed_world_report=False,
         explicit_profile_learning_opt_out=True,
     ) == "instruction"
+
+
+def test_response_revision_route_skips_reclassifying_an_instruction_as_a_topic():
+    assert _semantic_turn_kind_for_route(
+        explicit_memory_recall=False,
+        deterministic_affect_report=False,
+        closed_world_report=False,
+        response_format_revision=True,
+    ) == "instruction"

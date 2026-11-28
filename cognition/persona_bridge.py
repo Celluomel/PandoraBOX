@@ -669,11 +669,14 @@ def _semantic_turn_kind_for_route(
     goal_means_decision: bool = False,
     explicit_profile_learning_opt_out: bool = False,
     explicit_named_profile_query: bool = False,
+    response_format_revision: bool = False,
 ) -> str:
     """Carry the already-resolved turn act into asynchronous semantic learning."""
     if explicit_memory_recall:
         return "retrieval"
     if explicit_profile_learning_opt_out or explicit_named_profile_query:
+        return "instruction"
+    if response_format_revision:
         return "instruction"
     if deterministic_affect_report:
         return "social"
@@ -7023,6 +7026,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         goal_means_decision=_goal_means_analysis is not None,
                         explicit_profile_learning_opt_out=_explicit_profile_opt_out,
                         explicit_named_profile_query=_explicit_named_profile_query,
+                        response_format_revision=_response_format_revision,
                     ),
                     not bool(peer_name),
                     not bool(peer_name)

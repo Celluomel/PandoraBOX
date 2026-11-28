@@ -18,6 +18,7 @@ from cognition.memory_retrieval import (
     faiss_l2_relevance,
     is_explicit_memory_recall_query,
     rank_documents,
+    recent_dialogue_last_question_source_result,
     semantic_user_recall_candidates,
     tokenize,
 )
@@ -433,6 +434,43 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(results[1]["intent"], "history_recall")
         self.assertFalse(results[1]["last_user_question_recall"])
         self.assertEqual(results[2]["communicative_posture"]["stance"], "seeking_answer")
+
+    def test_long_transcript_routes_unpunctuated_question_to_exact_last_question_source(self):
+        history = [
+            {"role": "user", "content": "How are you doing today Lumina?"},
+            {"role": "assistant", "content": "I’m doing well, thanks."},
+            {"role": "user", "content": "what's on your mind ?"},
+            {"role": "assistant", "content": "A network of considerations."},
+            {"role": "user", "content": "any of your internal landscape"},
+            {"role": "assistant", "content": "A blend of resolution and anticipation."},
+            {"role": "user", "content": "tell me more about your emotions"},
+            {"role": "assistant", "content": "I feel balanced and curious."},
+            {"role": "user", "content": "now a more profound question, do you believe in god"},
+            {"role": "assistant", "content": "I believe in God as an organizing principle."},
+            {"role": "user", "content": "in a short answer"},
+            {"role": "assistant", "content": "Just tell me what you need and I'll keep it brief."},
+        ]
+        user_messages = [item["content"] for item in history if item["role"] == "user"]
+        routed = classify_memory_profile_intents(
+            ["what was my last question", *user_messages],
+            embedder=_MemoryProfileRouterEmbedder(),
+        )
+        candidates = {
+            text for text, intent in zip(user_messages, routed[1:])
+            if (intent.get("communicative_posture") or {}).get("status") == "classified"
+            and (intent.get("communicative_posture") or {}).get("stance") == "seeking_answer"
+        }
+        self.assertIn("now a more profound question, do you believe in god", candidates)
+        self.assertNotIn("in a short answer", candidates)
+
+        result = recent_dialogue_last_question_source_result(
+            history,
+            "what was my last question",
+            semantically_question_candidates=candidates,
+        )
+
+        self.assertEqual(result["answer"], "“now a more profound question, do you believe in god”")
+        self.assertEqual(result["source_type"], "recent_user_question")
 
     def test_specific_last_question_semantic_target_can_route_when_broad_history_is_uncertain(self):
         result = classify_memory_profile_intents(
