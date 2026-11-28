@@ -51,6 +51,22 @@ _HISTORY_RECALL_EXAMPLES = (
     "Rufe meine Aussage aus einem früheren Gespräch über das Gedächtnis ab.",
     "Was habe ich in unseren früheren Unterhaltungen zur Erinnerung gesagt? Suche meine damalige Aussage.",
 )
+_LAST_USER_QUESTION_EXAMPLES = (
+    "What was the last question I asked you? Quote it exactly from our conversation.",
+    "Which question did I ask most recently in this chat?",
+    "Repeat my most recent question verbatim, not your previous answer.",
+    "Quelle était la dernière question que je t'ai posée ? Cite-la exactement.",
+    "¿Cuál fue la última pregunta que te hice? Cítala literalmente.",
+    "Was war die letzte Frage, die ich dir gestellt habe? Zitiere sie wörtlich.",
+    "Qual foi a última pergunta que fiz? Repita exatamente as minhas palavras.",
+)
+_OTHER_HISTORY_RECALL_EXAMPLES = (
+    "What was my last message? Repeat the whole user message, whether it was a question or not.",
+    "What did we discuss previously about the memory index? Summarize that topic.",
+    "Rappelle-moi le sujet dont nous parlions avant, pas une question précise.",
+    "¿Qué tema tratamos anteriormente? Resume la conversación.",
+    "Was habe ich zuletzt gesagt? Wiederhole meine letzte Nachricht, auch wenn sie keine Frage war.",
+)
 _GENERAL_MEMORY_PROFILE_EXAMPLES = (
     "Explain conceptually how a user profile can be built from conversation exchanges.",
     "Describe the general process by which a system learns a user profile from dialogue.",
@@ -254,6 +270,7 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             vectors, space_id = encoder([
                 *_PROFILE_LOOKUP_EXAMPLES, *_HISTORY_RECALL_EXAMPLES,
                 *_GENERAL_MEMORY_PROFILE_EXAMPLES,
+                *_LAST_USER_QUESTION_EXAMPLES, *_OTHER_HISTORY_RECALL_EXAMPLES,
                 *(
                     example
                     for category_examples in _PROFILE_FACT_SCOPE_EXAMPLES.values()
@@ -275,6 +292,8 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             prototype_count = (
                 len(_PROFILE_LOOKUP_EXAMPLES) + len(_HISTORY_RECALL_EXAMPLES)
                 + len(_GENERAL_MEMORY_PROFILE_EXAMPLES)
+                + len(_LAST_USER_QUESTION_EXAMPLES)
+                + len(_OTHER_HISTORY_RECALL_EXAMPLES)
             )
             category_example_count = sum(
                 len(category_examples)
@@ -306,8 +325,13 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             profile /= max(float(np.linalg.norm(profile)), 1e-12)
             history /= max(float(np.linalg.norm(history)), 1e-12)
             general /= max(float(np.linalg.norm(general)), 1e-12)
+            last_question_end = general_end + len(_LAST_USER_QUESTION_EXAMPLES)
+            last_user_question = normalized[general_end:last_question_end].mean(axis=0)
+            last_user_question /= max(float(np.linalg.norm(last_user_question)), 1e-12)
+            other_history_target = normalized[last_question_end:prototype_count].mean(axis=0)
+            other_history_target /= max(float(np.linalg.norm(other_history_target)), 1e-12)
             category_centroids = {}
-            category_offset = general_end
+            category_offset = prototype_count
             for category, category_examples in _PROFILE_FACT_SCOPE_EXAMPLES.items():
                 category_end = category_offset + len(category_examples)
                 center = normalized[category_offset:category_end].mean(axis=0)
@@ -344,7 +368,8 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 raise RuntimeError("memory/profile thresholds require Nomic v1.5")
             with _MEMORY_PROFILE_ROUTER_LOCK:
                 _MEMORY_PROFILE_ROUTER_CENTROIDS[actual_space] = (
-                    profile, history, general, category_centroids,
+                    profile, history, general, last_user_question, other_history_target,
+                    category_centroids,
                     uncertainty_positive, uncertainty_negative,
                     commitment_positive, commitment_negative, posture_centroids,
                 )
@@ -355,7 +380,8 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 + posture_example_count:
             ]
         else:
-            (profile, history, general, category_centroids, uncertainty_positive,
+            (profile, history, general, last_user_question, other_history_target,
+             category_centroids, uncertainty_positive,
              uncertainty_negative, commitment_positive, commitment_negative,
              posture_centroids) = cached
             vectors, actual_space = encoder([texts[index] for index in active_indices])
@@ -369,6 +395,9 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
             profile_score = float(query @ profile)
             history_score = float(query @ history)
             general_score = float(query @ general)
+            last_question_score = float(query @ last_user_question)
+            other_history_target_score = float(query @ other_history_target)
+            last_question_margin = last_question_score - other_history_target_score
             uncertainty_positive_score = float(query @ uncertainty_positive)
             uncertainty_negative_score = float(query @ uncertainty_negative)
             uncertainty_margin = uncertainty_positive_score - uncertainty_negative_score
@@ -393,6 +422,11 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 status, intent = "history_recall", "history_recall"
             else:
                 status, intent = "intent_uncertain", "uncertain"
+            last_user_question_recall = bool(
+                intent == "history_recall"
+                and last_question_score >= 0.55
+                and last_question_margin >= 0.015
+            )
             category_scores = {
                 category: float(query @ center)
                 for category, center in category_centroids.items()
@@ -434,6 +468,10 @@ def classify_memory_profile_intents(user_texts, *, embedder=None) -> list[dict[s
                 "profile_similarity": round(profile_score, 4),
                 "history_similarity": round(history_score, 4),
                 "general_similarity": round(general_score, 4),
+                "last_user_question_recall": last_user_question_recall,
+                "last_user_question_similarity": round(last_question_score, 4),
+                "other_history_target_similarity": round(other_history_target_score, 4),
+                "last_user_question_margin": round(last_question_margin, 4),
                 "margin": round(margin, 4),
                 "uncertainty_signal_candidate": uncertainty_candidate,
                 "uncertainty_positive_similarity": round(uncertainty_positive_score, 4),

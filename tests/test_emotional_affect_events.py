@@ -317,6 +317,24 @@ class EmotionalAffectEventTests(unittest.TestCase):
         self.assertEqual(reaction["workspace_status"], "returned")
         self.assertNotIn("private details", repr(reaction))
 
+    def test_partial_model_affect_does_not_invent_arousal_and_keeps_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = self.make_state(folder)
+            state.update_from_interaction(
+                "Negative", None, intensity=0.74,
+                turn_id="turn-affect-9", source="multilingual_embedding",
+            )
+
+            event = state.get_recent_affect_events(1)[0]
+            self.assertEqual(event["event_type"], "interaction_appraisal")
+            self.assertEqual(event["turn_id"], "turn-affect-9")
+            self.assertEqual(event["cause_context"], {
+                "valence": "negative",
+                "arousal": "unassessed",
+                "source": "multilingual_embedding",
+            })
+            self.assertTrue(event["changes"])
+
     def test_affect_event_context_does_not_persist_free_text(self):
         with tempfile.TemporaryDirectory() as folder:
             state = self.make_state(folder)

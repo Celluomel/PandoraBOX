@@ -38,9 +38,11 @@ from cognition.memory_retrieval import (
     explicit_recall_source_result,
     explicit_recall_archive_source_result,
     explicit_recall_abstention_result,
+    is_supported_user_recall_result,
     is_exact_value_recall_query,
     recent_dialogue_recall_source_result,
     recent_dialogue_message_source_result,
+    recent_dialogue_last_question_source_result,
     semantic_user_recall_candidates,
     filter_recall_query_records,
     filter_recall_lane_for_route,
@@ -51,6 +53,7 @@ from cognition.memory_retrieval import (
 )
 from managers.session_manager import archived_context_for_explicit_recall
 from cognition.turn_context_evidence import (
+    affect_learning_evidence,
     audit_safe_turn_summary,
     deterministic_reasoning_dependencies,
     verify_history_exchange_append,
@@ -74,7 +77,7 @@ from cognition.conversation_context import (
     recent_dialogue_messages,
 )
 from cognition.profile_flow import (
-    classify_memory_profile_intent,
+    classify_memory_profile_intents,
     has_explicit_profile_learning_opt_out,
     render_explicit_profile_facts,
 )
@@ -2052,7 +2055,8 @@ class PersonaBridge:
             if review.get("source_ref"):
                 summary["source_ref"] = str(review["source_ref"])[:40]
             if review.get("source_status") in {
-                "supported", "supported_verbatim_source", "supported_compressed_archive_source",
+                "supported", "supported_verbatim_source", "supported_recent_dialogue_source",
+                "supported_compressed_archive_source",
             }:
                 summary["source_status"] = review["source_status"]
             summary["exact_source_match"] = status == "passed_source_grounded"
@@ -3532,9 +3536,42 @@ class PersonaBridge:
         s = self._system
         _audit_turn_id = audit_turn_id
         _cognitive_scope = str(cognitive_scope_id or user_id)
-        _memory_profile_intent = await asyncio.to_thread(
-            classify_memory_profile_intent, effective_input,
+        _route_history = conversation_history
+        if _route_history is None and not peer_name:
+            _route_manager = getattr(self._llm_stream_fn, "__self__", None)
+            _route_history = getattr(_route_manager, "history", [])
+        _route_user_messages = []
+        if isinstance(_route_history, (list, tuple)) and not peer_name:
+            _route_user_messages = [
+                item["content"] for item in _route_history
+                if isinstance(item, dict)
+                and str(item.get("role") or "").casefold().strip() == "user"
+                and isinstance(item.get("content"), str)
+                and item["content"].strip()
+            ][-24:]
+            if (
+                _route_user_messages
+                and " ".join(_route_user_messages[-1].casefold().split())
+                == " ".join(str(effective_input or "").casefold().split())
+            ):
+                _route_user_messages.pop()
+        _intent_batch = await asyncio.to_thread(
+            classify_memory_profile_intents,
+            [effective_input, *_route_user_messages],
         )
+        _memory_profile_intent = _intent_batch[0] if _intent_batch else {
+            "status": "router_unavailable", "intent": "uncertain",
+            "reason_code": "empty_router_result",
+        }
+        _dialogue_semantic_question_candidates = {
+            source_text for source_text, result in zip(
+                _route_user_messages, _intent_batch[1:],
+            )
+            if isinstance(result, dict)
+            and isinstance(result.get("communicative_posture"), dict)
+            and result["communicative_posture"].get("status") == "classified"
+            and result["communicative_posture"].get("stance") == "seeking_answer"
+        }
         self._record_turn_stage(
             "memory_profile_intent",
             "completed" if _memory_profile_intent.get("status") != "router_unavailable" else "unavailable",
@@ -3543,6 +3580,25 @@ class PersonaBridge:
                 "intent": _memory_profile_intent.get("intent"),
                 "communicative_posture": _memory_profile_intent.get("communicative_posture"),
                 "embedding_space": _memory_profile_intent.get("embedding_space"),
+                "last_user_question_recall": bool(
+                    _memory_profile_intent.get("last_user_question_recall")
+                ),
+                "last_user_question_similarity": _memory_profile_intent.get(
+                    "last_user_question_similarity"
+                ),
+                "other_history_target_similarity": _memory_profile_intent.get(
+                    "other_history_target_similarity"
+                ),
+                "last_user_question_margin": _memory_profile_intent.get(
+                    "last_user_question_margin"
+                ),
+                "historical_question_candidate_count": len(
+                    _dialogue_semantic_question_candidates
+                ),
+                "historical_question_candidate_source": (
+                    "cross_lingual_semantic_posture"
+                    if _route_user_messages else "no_recent_user_history"
+                ),
             },
         )
         # Keep routing language-independent: the cross-lingual semantic
@@ -3906,6 +3962,7 @@ class PersonaBridge:
 
         # ── Empathy Engine: read user affect before prompt build ────────────
         self._chat_stage = 'empathy preparation'
+        _empathy_read = None
         try:
             from core.state import state as _st_ee
             if peer_name:
@@ -4362,13 +4419,26 @@ class PersonaBridge:
             affect_self_report_query=_affect_self_report_query,
         )
         if _explicit_memory_recall and not peer_name:
-            _recent_recall_result = recent_dialogue_recall_source_result(
-                effective_input, _history_for_anchor,
+            _last_user_question_recall = bool(
+                _memory_profile_intent.get("last_user_question_recall")
             )
-            if _recent_recall_result is None:
-                _recent_recall_result = recent_dialogue_message_source_result(
+            if _last_user_question_recall:
+                _recent_recall_result = recent_dialogue_last_question_source_result(
+                    _history_for_anchor,
+                    effective_input,
+                    max_messages=48,
+                    semantically_question_candidates=(
+                        _dialogue_semantic_question_candidates
+                    ),
+                )
+            else:
+                _recent_recall_result = recent_dialogue_recall_source_result(
                     effective_input, _history_for_anchor,
                 )
+                if _recent_recall_result is None:
+                    _recent_recall_result = recent_dialogue_message_source_result(
+                        effective_input, _history_for_anchor,
+                    )
             if _recent_recall_result is not None:
                 _memory_recall_result = _recent_recall_result
                 self._record_turn_stage(
@@ -4385,6 +4455,10 @@ class PersonaBridge:
                     },
                     consumes=("conversation_history", "turn_input"),
                     turn_id=_audit_turn_id,
+                )
+            elif _last_user_question_recall:
+                _memory_recall_result = explicit_recall_abstention_result(
+                    effective_input, [], explicit_intent=True,
                 )
             elif _memory_recall_result is None:
                 # An explicit recall with no resolvable source must not fall
@@ -6284,11 +6358,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _explicit_memory_recall
             and isinstance(_memory_recall_result, dict)
             and (
-                (
-                    _memory_recall_result.get("status")
-                    in {"supported", "supported_verbatim_source", "supported_compressed_archive_source"}
-                    and bool(_memory_recall_result.get("source_ref"))
-                )
+                is_supported_user_recall_result(_memory_recall_result)
                 or str(_memory_recall_result.get("status") or "").startswith("abstained_")
             )
         )
@@ -6448,9 +6518,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         elif raw_response.strip() and not _generation_failed and _source_recall_attempt:
             expected_source_answer = str(_memory_recall_result.get("answer") or "").strip()
             exact_result_match = bool(expected_source_answer) and raw_response.strip() == expected_source_answer
-            source_supported = _memory_recall_result.get("status") in {
-                "supported", "supported_verbatim_source", "supported_compressed_archive_source",
-            }
+            source_supported = is_supported_user_recall_result(_memory_recall_result)
             _semantic_status = (
                 ("passed_source_grounded" if exact_result_match else "abstained_source_mismatch")
                 if source_supported
@@ -6744,6 +6812,23 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         else:
             memory_future = None
             if not peer_name:
+                # The asynchronous affect model may finish during response
+                # generation. Use its result for this turn's learning only if
+                # the source and turn ID match; otherwise retain Unassessed.
+                _affect_learning = affect_learning_evidence(_empathy_read, _audit_turn_id)
+                if _affect_learning["status"] == "assessed":
+                    emo_dict = dict(emo_dict or {})
+                    emo_dict.update({
+                        "valence": _affect_learning["valence"].title(),
+                        "arousal": "Unassessed",
+                        "source": _affect_learning["source"],
+                    })
+                self._record_turn_stage(
+                    "affect_learning_input", _affect_learning["status"],
+                    output=_affect_learning,
+                    consumes=("empathy_read",),
+                    turn_id=_audit_turn_id,
+                )
                 pending_memory = getattr(self, "_pending_memory_learning", None)
                 if pending_memory is None:
                     pending_memory = self._pending_memory_learning = {}
@@ -7379,10 +7464,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             gap_note = s._handle_time_gap(user_id)
             s.emotional_state.apply_time_decay(turn_id=audit_turn_id)
             emo_dict = s.memory_system.analyze_emotional_context(user_input)
-            if mark_user_active:
+            if mark_user_active and emo_dict.get("source") != "unassessed":
                 s.emotional_state.update_from_interaction(
                     emo_dict["valence"], emo_dict["arousal"],
                     turn_id=audit_turn_id,
+                    source=emo_dict.get("source", ""),
                 )
             cond_dict = s.conditioning.check_input(user_input)
             if mark_user_active:
@@ -9593,7 +9679,7 @@ Memory honesty — two distinct cases:
             "failed" if failed else "completed",
             str(receipt.get("status") or "unreported") if failed else "",
             output=response_learning_evidence(receipt),
-            consumes=("turn_input", "response_finalization"),
+            consumes=("turn_input", "response_finalization", "affect_learning_input"),
             turn_id=audit_turn_id,
         )
         if failed:

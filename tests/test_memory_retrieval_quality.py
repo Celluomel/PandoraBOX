@@ -37,6 +37,8 @@ class _MemoryProfileRouterEmbedder:
         from cognition.profile_flow import (
             _GENERAL_MEMORY_PROFILE_EXAMPLES,
             _HISTORY_RECALL_EXAMPLES,
+            _LAST_USER_QUESTION_EXAMPLES,
+            _OTHER_HISTORY_RECALL_EXAMPLES,
             _NO_EXPLICIT_UNCERTAINTY_EXAMPLES,
             _NO_CONTINUING_COMMITMENT_EXAMPLES,
             _PROFILE_LOOKUP_EXAMPLES,
@@ -52,6 +54,8 @@ class _MemoryProfileRouterEmbedder:
             len(_PROFILE_LOOKUP_EXAMPLES)
             + len(_HISTORY_RECALL_EXAMPLES)
             + len(_GENERAL_MEMORY_PROFILE_EXAMPLES)
+            + len(_LAST_USER_QUESTION_EXAMPLES)
+            + len(_OTHER_HISTORY_RECALL_EXAMPLES)
         )
         category_count = sum(len(items) for items in _PROFILE_FACT_SCOPE_EXAMPLES.values())
         uncertainty_positive_start = prototype_count + category_count
@@ -66,91 +70,111 @@ class _MemoryProfileRouterEmbedder:
         vectors = []
         for index, text in enumerate(texts):
             if not batch_has_prototypes:
-                if any(marker in text.casefold() for marker in (
+                if "believe in god" in text.casefold():
+                    vectors.append([0.0] * 10 + [1.0] + [0.0] * (len(_COMMUNICATIVE_POSTURE_EXAMPLES) - 2))
+                elif any(marker in text.casefold() for marker in (
                     "i am committed", "keep pursuing this goal", "je m'engage",
                     "poursuivre ce projet", "quiero continuar este proyecto",
                     "ich möchte dieses vorhaben",
                 )):
-                    vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                    vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
                 elif any(marker in text.casefold() for marker in (
                     "what uncertainties are you tracking", "quelles incertitudes",
                     "what goals are currently active", "quels objectifs sont actuellement actifs",
                     "explain how the system stores", "one-time question",
                 )):
-                    vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+                    vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
                 elif any(marker in text.casefold() for marker in (
                     "i am uncertain", "i do not know which", "cannot distinguish",
                     "je doute", "je ne sais pas encore", "no estoy seguro", "ich bin unsicher",
                 )):
-                    vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+                    vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+                elif any(marker in text.casefold() for marker in (
+                    "last question", "most recent question", "dernière question",
+                    "última pregunta", "letzte frage",
+                )):
+                    vectors.append([0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
                 elif any(marker in text.casefold() for marker in (
                     "previous conversations", "conversation précédente",
                 )):
-                    vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                    vectors.append([0.0, 0.707, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.707] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
                 elif "explicitly stored" in text.casefold():
-                    vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                    vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
                 elif "stance:challenging" in text.casefold():
-                    vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+                    vectors.append([0.0] * 12 + [1.0] + [0.0] * (len(_COMMUNICATIVE_POSTURE_EXAMPLES) - 4))
                 else:
-                    vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+                    vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
                 continue
             if index < len(_PROFILE_LOOKUP_EXAMPLES):
-                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             elif index < len(_PROFILE_LOOKUP_EXAMPLES) + len(_HISTORY_RECALL_EXAMPLES):
-                vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            elif index < len(_PROFILE_LOOKUP_EXAMPLES) + len(_HISTORY_RECALL_EXAMPLES) + len(_GENERAL_MEMORY_PROFILE_EXAMPLES):
+                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            elif index < len(_PROFILE_LOOKUP_EXAMPLES) + len(_HISTORY_RECALL_EXAMPLES) + len(_GENERAL_MEMORY_PROFILE_EXAMPLES) + len(_LAST_USER_QUESTION_EXAMPLES):
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
             elif index < prototype_count:
-                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
             elif index < uncertainty_positive_start:
-                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             elif index < uncertainty_negative_start:
-                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             elif index < commitment_positive_start:
-                vectors.append([0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+                vectors.append([0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
             elif index < commitment_negative_start:
-                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             elif index < posture_start:
-                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
             elif index < query_start:
                 offset = posture_start
                 for posture_index, examples in enumerate(_COMMUNICATIVE_POSTURE_EXAMPLES.values()):
                     end = offset + len(examples)
                     if index < end:
-                        row = [0.0] * 7
-                        row[posture_index] = 1.0
+                        row = [0.0] * (9 + len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+                        row[9 + posture_index] = 1.0
                         vectors.append(row)
                         break
                     offset = end
+            elif "believe in god" in text.casefold():
+                vectors.append([0.0] * 10 + [1.0] + [0.0] * (len(_COMMUNICATIVE_POSTURE_EXAMPLES) - 2))
             elif "near-history-centroid" in text.casefold():
-                vectors.append([0.0, 0.714, 0.700, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 0.714, 0.700, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif "near-general-centroid" in text.casefold():
-                vectors.append([0.0, 0.700, 0.714, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 0.700, 0.714, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif any(marker in text.casefold() for marker in (
                 "i am committed", "keep pursuing this goal", "je m'engage",
                 "poursuivre ce projet", "quiero continuar este proyecto",
                 "ich möchte dieses vorhaben",
             )):
-                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif any(marker in text.casefold() for marker in (
                 "what uncertainties are you tracking", "quelles incertitudes",
                 "what goals are currently active", "quels objectifs sont actuellement actifs",
                 "explain how the system stores", "one-time question",
             )):
-                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+                vectors.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif any(marker in text.casefold() for marker in (
                 "i am uncertain", "i do not know which", "cannot distinguish",
                 "je doute", "je ne sais pas encore", "no estoy seguro", "ich bin unsicher",
             )):
-                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+            elif any(marker in text.casefold() for marker in (
+                "last question", "most recent question", "dernière question",
+                "última pregunta", "letzte frage",
+            )):
+                vectors.append([0.0, 0.707, 0.0, 0.0, 0.0, 0.0, 0.0, 0.707, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif any(marker in text.casefold() for marker in (
                 "previous conversations", "conversation précédente",
             )):
-                vectors.append([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 0.707, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.707] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif "explicitly stored" in text.casefold():
-                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
             elif "stance:challenging" in text.casefold():
-                vectors.append([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0] * 12 + [1.0] + [0.0] * (len(_COMMUNICATIVE_POSTURE_EXAMPLES) - 4))
             else:
-                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+                vectors.append([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [0.0] * len(_COMMUNICATIVE_POSTURE_EXAMPLES))
+        width = max((len(vector) for vector in vectors), default=0)
+        vectors = [vector + [0.0] * (width - len(vector)) for vector in vectors]
         return vectors, self.embedding_space_id
 
 
@@ -359,6 +383,19 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(results[0]["intent"], "history_recall")
         self.assertEqual(results[1]["intent"], "uncertain")
         self.assertEqual(results[2]["intent"], "profile_lookup")
+
+    def test_semantic_history_target_distinguishes_last_question_from_last_message(self):
+        results = classify_memory_profile_intents([
+            "What was my last question?",
+            "From previous conversations, what concern did I raise about memory recall?",
+            "now a more profound question, do you believe in god",
+        ], embedder=_MemoryProfileRouterEmbedder())
+
+        self.assertEqual(results[0]["intent"], "history_recall")
+        self.assertTrue(results[0]["last_user_question_recall"])
+        self.assertEqual(results[1]["intent"], "history_recall")
+        self.assertFalse(results[1]["last_user_question_recall"])
+        self.assertEqual(results[2]["communicative_posture"]["stance"], "seeking_answer")
 
     def test_history_router_uses_relative_semantic_winner_near_margin(self):
         embedder = _MemoryProfileRouterEmbedder()

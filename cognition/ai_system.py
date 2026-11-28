@@ -65,7 +65,6 @@ from cognition.memory_retrieval import (
     filter_recall_query_records, rank_documents,
 )
 from cognition.turn_context_evidence import memory_embedding_text
-from cognition.emotional_text_appraisal import appraise_emotional_text
 
 # ── Liberty Components (NEW) ────────────────────────────────────────
 from cognition.self_modification import SelfModificationAuthority
@@ -1248,16 +1247,16 @@ class EnhancedMemorySystem:
             return False
 
     def add_memory(self, text: str, impact_score: float = 0.5, memory_type: str = "general",
-                   emotional_valence: str = "Neutral", arousal_level: str = "Medium",
+                   emotional_valence: str | None = "Neutral", arousal_level: str | None = "Medium",
                    memory_tier: str = "interaction", owner_user_id: Optional[str] = None) -> bool:
         with self._lock:
             try:
                 impact_score = validate_trait_value(impact_score)
                 if emotional_valence not in ("Positive","Negative","Neutral"):
-                    emotional_valence = "Neutral"
+                    emotional_valence = None
                 if arousal_level not in ("Low","Medium","High"):
-                    arousal_level = "Medium"
-                if arousal_level == "High" and emotional_valence != "Neutral":
+                    arousal_level = None
+                if arousal_level == "High" and emotional_valence in ("Positive", "Negative"):
                     impact_score = validate_trait_value(impact_score * 1.2)
 
                 now = datetime.datetime.now().isoformat()
@@ -1801,14 +1800,18 @@ class EnhancedMemorySystem:
 
     def analyze_emotional_context(self, text: str) -> Dict[str, str]:
         """
-        Fast multilingual text appraisal used as one input to persistent affect.
-        Cognitive event appraisals remain the primary source of Lumina's affect.
+        Compatibility API for conversational affect appraisal.
+
+        Conversation text alone is not a measured affect signal. The cognitive
+        turn's multilingual affect model may provide a sourced result through
+        EmpathyEngine; this method deliberately abstains instead of assigning
+        emotion from a lexical list or punctuation.
         """
-        return appraise_emotional_text(text)
+        return {"valence": "Unassessed", "arousal": "Unassessed", "source": "unassessed"}
 
     def _keyword_emotion_fallback(self, text: str) -> Dict[str, str]:
-        # Retained as a compatibility alias for older callers.
-        return appraise_emotional_text(text)
+        # Retained for compatibility; never infer emotion from surface words.
+        return self.analyze_emotional_context(text)
 
     # ── Chaos Fetcher ─────────────────────────────────────────────────────────
     # Required by GoalActionExecutor._action_bisociative_hypothesis().
@@ -2770,7 +2773,10 @@ class EnhancedAISystem:
             # ── 2. Emotional decay + incoming emotion ─────────────────────
             self.emotional_state.apply_time_decay()
             emo = self.memory_system.analyze_emotional_context(user_input)
-            self.emotional_state.update_from_interaction(emo["valence"], emo["arousal"])
+            if emo.get("source") != "unassessed":
+                self.emotional_state.update_from_interaction(
+                    emo.get("valence"), emo.get("arousal"), source=emo.get("source", "")
+                )
 
             # ── 3. Conditioning check ──────────────────────────────────────
             cond = self.conditioning.check_input(user_input)
@@ -3132,17 +3138,23 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
 
         try:
             # Self-concept: scan response for assertions and detect tension
-            tension = self.self_concept.update_from_response(response, emo["valence"])
+            emo_valence = emo.get("valence")
+            if emo_valence not in ("Positive", "Negative", "Neutral"):
+                emo_valence = None
+            emo_arousal = emo.get("arousal")
+            if emo_arousal not in ("High", "Medium", "Low"):
+                emo_arousal = None
+            tension = self.self_concept.update_from_response(response, emo_valence)
             if tension:
                 logger.info(f"Self-concept tension detected: {tension}")
 
             # Relational memory: record this exchange
-            impact = 0.5 + (0.2 if emo["arousal"] == "High" else 0.0)
+            impact = 0.5 + (0.2 if emo_arousal == "High" else 0.0)
             resp_emo = self.memory_system.analyze_emotional_context(response)
             topic = self._quick_topic(user_input)
             self.relational_memory.record_exchange(
                 user_id, user_input, response,
-                emo["valence"], emo["arousal"],
+                emo_valence, emo_arousal,
                 topic=topic, impact=impact,
             )
 
@@ -3162,12 +3174,21 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             _combined_impact = min(0.95, impact + (0.15 if _words_in > 15 and _words_out > 20 else 0.0))
             _u_snippet = user_input[:400].replace("\n", " ")
             _r_snippet = response[:300].replace("\n", " ")
+            _user_affect_note = (
+                f" (affect {emo_valence.casefold()}; source {str(emo.get('source') or 'unknown')})"
+                if emo_valence else ""
+            )
+            _response_affect_note = (
+                f" (affect {str(resp_emo.get('valence') or '').casefold()})"
+                if resp_emo.get("source") != "unassessed"
+                and resp_emo.get("valence") in ("Positive", "Negative", "Neutral") else ""
+            )
             _store_memory(
                 "episodic_exchange",
-                f"Conversation — User: {_u_snippet} (felt {emo['valence'].lower()}) | "
-                f"{_gpn()}: {_r_snippet} (responded {resp_emo['valence'].lower()})",
+                f"Conversation — User: {_u_snippet}{_user_affect_note} | "
+                f"{_gpn()}: {_r_snippet}{_response_affect_note}",
                 _combined_impact, "episodic",
-                emo["valence"], emo["arousal"]
+                emo_valence, emo_arousal
             )
             # Index the user's own words independently as well. The combined
             # episode remains useful as dialogue context, but its embedding
@@ -3178,7 +3199,7 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
                 "user_authored_message",
                 "User message: " + user_input[:1200].replace("\r", " ").replace("\n", " "),
                 _combined_impact, "user_message",
-                emo["valence"], emo["arousal"],
+                emo_valence, emo_arousal,
             )
 
             # Personal-fact extraction: catches "X is my Y" (and reverse
@@ -3228,7 +3249,7 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
                 _store_memory(
                     "visual_perception",
                     _vis_text, 0.6, "visual_perception",
-                    emo["valence"], emo["arousal"],
+                    emo_valence, emo_arousal,
                     memory_tier="visual",
                 )
 
@@ -3238,7 +3259,7 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
 
             # Evolve immediately with intensity boost for high-arousal interactions
             # so emotionally significant exchanges produce more change than mundane ones
-            _intensity_boost = 1.0 + (1.2 if emo.get("arousal") == "High" else 0.0)
+            _intensity_boost = 1.0 + (1.2 if emo_arousal == "High" else 0.0)
             try:
                 self.evolution_engine.evolve(self.personality, intensity_boost=_intensity_boost)
             except TypeError:

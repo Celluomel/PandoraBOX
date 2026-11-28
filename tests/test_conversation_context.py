@@ -116,6 +116,8 @@ def test_continuity_contract_does_not_treat_a_bare_checkin_as_consent_or_resume(
 def test_continuity_contract_expands_last_substantive_turn_and_respects_pending_choice():
     assert "develop the most recent substantive assistant explanation as the referent" in RECENT_DIALOGUE_INSTRUCTIONS
     assert "do not replace it with a new topic menu" in RECENT_DIALOGUE_INSTRUCTIONS
+    assert "apply it to that reply directly" in RECENT_DIALOGUE_INSTRUCTIONS
+    assert "do not merely acknowledge the instruction" in RECENT_DIALOGUE_INSTRUCTIONS
     assert "selection answers the latest still-open assistant question or option set" in RECENT_DIALOGUE_INSTRUCTIONS
 
     history = [

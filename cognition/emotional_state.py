@@ -285,16 +285,24 @@ class EmotionalStateManager:
 
     def update_from_interaction(
         self,
-        valence:  str,          # "Positive" | "Negative" | "Neutral"
-        arousal:  str,          # "High" | "Medium" | "Low"
+        valence:  str | None,   # "Positive" | "Negative" | "Neutral" | None
+        arousal:  str | None,   # "High" | "Medium" | "Low" | None
         intensity: float = 1.0,
         *,
         turn_id: str = "",
+        source: str = "",
     ) -> None:
         """
         Shift emotional state based on an interaction's emotional content.
         Effects are immediate but small — they accumulate over a conversation.
         """
+        if valence not in {"Positive", "Negative", "Neutral"}:
+            valence = None
+        if arousal not in {"High", "Medium", "Low"}:
+            arousal = None
+        if valence is None and arousal is None:
+            return
+
         with self._lock:
             now = time.time()
             # Apply any pending decay first
@@ -314,14 +322,15 @@ class EmotionalStateManager:
 
             v_map = {"Positive": 1.0, "Neutral": 0.0, "Negative": -1.0}
             a_map = {"High": 1.0,     "Medium": 0.5,  "Low": 0.0}
-            v = v_map.get(valence, 0.0)
-            a = a_map.get(arousal, 0.5)
+            v = v_map.get(valence) if valence is not None else None
+            a = a_map.get(arousal) if arousal is not None else None
             i = max(0.1, min(2.0, intensity))
 
             if valence == "Positive":
                 self._nudge("warmth",       +0.04 * i)
                 self._nudge("satisfaction", +0.03 * i)
-                self._nudge("enthusiasm",   +0.05 * i * a)
+                if a is not None:
+                    self._nudge("enthusiasm", +0.05 * i * a)
                 self._nudge("anxiety",      -0.02 * i)
                 self._nudge("frustration",  -0.03 * i)
             elif valence == "Negative":
@@ -329,11 +338,13 @@ class EmotionalStateManager:
                 self._nudge("anxiety",      +0.03 * i)
                 self._nudge("warmth",       -0.02 * i)
                 self._nudge("satisfaction", -0.03 * i)
-                self._nudge("enthusiasm",   -0.04 * i)
+                if a is not None:
+                    self._nudge("enthusiasm", -0.04 * i)
 
             # High arousal always spikes curiosity
             if arousal == "High":
-                self._nudge("curiosity",    +0.04 * i * abs(v + 0.5))
+                if v is not None:
+                    self._nudge("curiosity", +0.04 * i * abs(v + 0.5))
                 self._nudge("enthusiasm",   +0.03 * i)
 
             # Update volatility based on the magnitude of changes
@@ -343,9 +354,15 @@ class EmotionalStateManager:
                 name: emo.value - before_update[name]
                 for name, emo in self.emotions.items()
             }
+            affect_context = {
+                "valence": str(valence).casefold() if valence is not None else "unassessed",
+                "arousal": str(arousal).casefold() if arousal is not None else "unassessed",
+            }
+            if source:
+                affect_context["source"] = str(source)[:80]
             self._append_affect_event(
                 "interaction_appraisal", "update_from_interaction", i, changes,
-                {"valence": str(valence).casefold(), "arousal": str(arousal).casefold()},
+                affect_context,
                 timestamp=now, turn_id=turn_id,
             )
             self._save()
@@ -358,7 +375,7 @@ class EmotionalStateManager:
             try:
                 _phi_delta = 0.0
                 if valence == "Positive":
-                    _phi_delta = +0.010 * i * (1.0 - a * 0.3)  # high arousal dampens
+                    _phi_delta = +0.008 * i
                 elif valence == "Negative":
                     _phi_delta = -0.012 * i
 
@@ -942,10 +959,11 @@ class EmotionalStateManager:
                 safe_changes[name] = round(max(-1.0, min(1.0, delta)), 4)
         safe_context = {}
         for key, value in (cause_context or {}).items():
-            if key not in {"drive", "valence", "arousal", "feedback", "gap_hours"}:
+            if key not in {"drive", "valence", "arousal", "feedback", "gap_hours", "source"}:
                 continue
             candidate = str(value).strip().casefold()
-            if candidate and len(candidate) <= 32 and all(
+            max_length = 80 if key == "source" else 32
+            if candidate and len(candidate) <= max_length and all(
                 char.isalnum() or char in "_.-" for char in candidate
             ):
                 safe_context[key] = candidate

@@ -297,6 +297,26 @@ def response_learning_evidence(receipt: Mapping[str, Any]) -> dict:
     }
 
 
+def affect_learning_evidence(affect_read: Any, turn_id: str) -> dict:
+    """Project a same-turn, model-backed affect result without retaining text."""
+    actual_turn = str(getattr(affect_read, "turn_id", "") or "")
+    source = str(getattr(affect_read, "source", "") or "")
+    valence = str(getattr(affect_read, "valence", "") or "").casefold()
+    accepted = (
+        bool(turn_id)
+        and actual_turn == str(turn_id)
+        and source == "multilingual_embedding"
+        and valence in {"positive", "neutral", "negative"}
+    )
+    return {
+        "status": "assessed" if accepted else "unassessed",
+        "source": source if accepted else "unassessed",
+        "valence": valence if accepted else None,
+        "arousal": None,
+        "turn_id": str(turn_id or "")[:120],
+    }
+
+
 def profile_context_evidence(
     status: str, source: str, context: str, provenance_summary: Mapping[str, Any] | None = None,
 ) -> dict:
@@ -910,11 +930,22 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "router_unavailable", "empty_input",
         }:
             receipt["memory_profile_intent_status"] = memory_profile_status
+        if isinstance(value.get("last_user_question_recall"), bool):
+            receipt["last_user_question_recall"] = value["last_user_question_recall"]
+        question_candidate_count = value.get("historical_question_candidate_count")
+        if isinstance(question_candidate_count, int) and not isinstance(question_candidate_count, bool):
+            receipt["historical_question_candidate_count"] = max(0, min(24, question_candidate_count))
+        question_candidate_source = str(value.get("historical_question_candidate_source") or "")
+        if question_candidate_source in {"cross_lingual_semantic_posture", "no_recent_user_history"}:
+            receipt["historical_question_candidate_source"] = question_candidate_source
         for key in (
             "memory_profile_intent_profile_similarity",
             "memory_profile_intent_history_similarity",
             "memory_profile_intent_general_similarity",
             "memory_profile_intent_margin",
+            "last_user_question_similarity",
+            "other_history_target_similarity",
+            "last_user_question_margin",
         ):
             number = value.get(key)
             if isinstance(number, (int, float)) and not isinstance(number, bool):

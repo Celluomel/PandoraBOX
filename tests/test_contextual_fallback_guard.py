@@ -98,6 +98,7 @@ def test_local_camera_fallback_guard_resolves_at_runtime():
 def test_history_source_and_continuity_are_linked_into_final_prompt():
     stages = {
         "conversation_continuity_context": {
+            "status": "injected",
             "output_fingerprint": "a" * 64,
             "output_quality": "present",
         },

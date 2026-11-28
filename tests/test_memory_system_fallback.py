@@ -31,6 +31,8 @@ from cognition.memory_retrieval import (
     merge_user_authored_memories,
     recent_dialogue_recall_source_result,
     recent_dialogue_message_source_result,
+    recent_dialogue_last_question_source_result,
+    is_supported_user_recall_result,
 )
 from cognition.turn_context_evidence import format_memory_for_prompt
 
@@ -1256,6 +1258,41 @@ class MemorySystemFallbackTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "supported_recent_dialogue_source")
         self.assertIn("Vérifie la provenance des sources mémoire", result["answer"])
+
+    def test_last_question_recall_selects_latest_user_question_not_latest_instruction(self):
+        history = [
+            {"role": "user", "content": "How are you doing today Lumina?"},
+            {"role": "assistant", "content": "I’m doing well, thanks."},
+            {"role": "user", "content": "what's on your mind ?"},
+            {"role": "assistant", "content": "I have been thinking about clarity and curiosity."},
+            {"role": "user", "content": "any of your internal landscape"},
+            {"role": "assistant", "content": "A blend of resolution and anticipation."},
+            {"role": "user", "content": "tell me more about your emotions"},
+            {"role": "assistant", "content": "I feel balanced and curious."},
+            {"role": "user", "content": "now a more profound question, do you believe in god"},
+            {"role": "assistant", "content": "I believe in God as an organizing principle."},
+            {"role": "user", "content": "in a short answer"},
+            {"role": "assistant", "content": "Just tell me what you need and I'll keep it brief."},
+        ]
+
+        result = recent_dialogue_last_question_source_result(
+            history,
+            "what was my last question",
+            semantically_question_candidates={
+                "now a more profound question, do you believe in god"
+            },
+        )
+
+        self.assertEqual(result["source_type"], "recent_user_question")
+        self.assertEqual(result["status"], "supported_recent_dialogue_source")
+        self.assertEqual(result["answer"], "“now a more profound question, do you believe in god”")
+        self.assertTrue(is_supported_user_recall_result(result))
+
+    def test_last_question_recall_ignores_assistant_question_and_abstains_without_user_question(self):
+        self.assertIsNone(recent_dialogue_last_question_source_result([
+            {"role": "assistant", "content": "What can I help with?"},
+            {"role": "user", "content": "A brief declarative statement."},
+        ]))
 
     def test_immediate_exact_value_recall_never_treats_assistant_claim_as_source(self):
         query = "Quel code témoin ai-je demandé de retenir pour cette question ?"

@@ -36,7 +36,10 @@ class _ProfileIntentEmbedder:
                 rows.append([0.0, 1.0])
             elif "explain conceptually how a user profile" in normalized or \
                     "describe the general process" in normalized or \
-                    "comment un profil utilisateur peut-il se construire" in normalized:
+                    "comment un profil utilisateur peut-il se construire" in normalized or \
+                    "memory recall works and how the user profile is built" in normalized or \
+                    "memory retrieval reflect what i say in conversation" in normalized or \
+                    "profil se construit à partir de nos échanges" in normalized:
                 rows.append([0.6, 0.6])
             elif "explain how user profiles are built" in normalized:
                 rows.append([0.6, 0.6])

@@ -332,6 +332,22 @@ class EmpathyEngine:
                 self._org._last_user_affect_read = read
             except Exception:
                 pass
+        # Apply this sourced semantic appraisal to Lumina's own affect state
+        # once, asynchronously. The live response path must not substitute a
+        # word list while this model-backed result is pending.
+        try:
+            ai_system = getattr(self._org, "ai_system", None)
+            emotional_state = getattr(ai_system, "emotional_state", None)
+            update = getattr(emotional_state, "update_from_interaction", None)
+            if callable(update):
+                update(
+                    valence.title(), None,
+                    intensity=confidence,
+                    turn_id=read.turn_id,
+                    source=read.source,
+                )
+        except Exception as exc:
+            logger.debug("Semantic affect → internal state update failed: %s", exc)
         logger.debug(
             "Multilingual affect updated for %s: %s (confidence %.2f)",
             user_id, valence, confidence,

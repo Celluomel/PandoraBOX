@@ -29,6 +29,7 @@ from cognition.persona_bridge import (
 )
 from core.module_tick_log import summarize_output
 from cognition.turn_context_evidence import (
+    affect_learning_evidence,
     audit_safe_turn_summary,
     deterministic_reasoning_dependencies,
     response_learning_evidence,
@@ -1364,6 +1365,10 @@ def test_failed_post_response_memory_write_fails_turn_stage_with_redacted_receip
     bridge = _bridge()
     bridge._record_turn_stage("turn_input", "received", output="private user text")
     bridge._record_turn_stage("response_finalization", "completed", output="private answer")
+    bridge._record_turn_stage(
+        "affect_learning_input", "unassessed",
+        output={"source": "unassessed", "valence": None, "arousal": None},
+    )
     system = SimpleNamespace(
         _last_responses=[],
         _check_if_stuck=lambda: None,
@@ -1397,6 +1402,7 @@ def test_failed_post_response_memory_write_fails_turn_stage_with_redacted_receip
     assert stage["consumes"] == [
         {"stage": "turn_input", "fingerprint": bridge._last_turn_trace["stages"]["turn_input"]["output_fingerprint"]},
         {"stage": "response_finalization", "fingerprint": bridge._last_turn_trace["stages"]["response_finalization"]["output_fingerprint"]},
+        {"stage": "affect_learning_input", "fingerprint": bridge._last_turn_trace["stages"]["affect_learning_input"]["output_fingerprint"]},
     ]
     assert "private user text" not in repr(stage)
     assert "private answer" not in repr(stage)
@@ -1497,6 +1503,27 @@ def test_post_response_processing_treats_existing_identical_user_memory_as_dedup
     evidence = response_learning_evidence(receipt)
     assert evidence["memory_deduplicated_count"] == 1
     assert evidence["quality"] == "present"
+
+
+def test_affect_learning_evidence_requires_same_turn_and_model_source():
+    accepted = affect_learning_evidence(SimpleNamespace(
+        turn_id="turn-a", source="multilingual_embedding", valence="negative",
+    ), "turn-a")
+    stale = affect_learning_evidence(SimpleNamespace(
+        turn_id="turn-old", source="multilingual_embedding", valence="negative",
+    ), "turn-a")
+    lexical = affect_learning_evidence(SimpleNamespace(
+        turn_id="turn-a", source="heuristic", valence="negative",
+    ), "turn-a")
+
+    assert accepted == {
+        "status": "assessed", "source": "multilingual_embedding",
+        "valence": "negative", "arousal": None, "turn_id": "turn-a",
+    }
+    assert stale["status"] == "unassessed"
+    assert stale["valence"] is None
+    assert lexical["status"] == "unassessed"
+    assert lexical["source"] == "unassessed"
 
 
 def test_cognitive_context_is_linked_to_prompt_assembly_on_its_own_turn():

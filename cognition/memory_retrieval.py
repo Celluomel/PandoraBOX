@@ -10,6 +10,10 @@ from collections import Counter
 from typing import List, Sequence, Tuple
 
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+SUPPORTED_USER_RECALL_STATUSES = frozenset({
+    "supported", "supported_verbatim_source", "supported_recent_dialogue_source",
+    "supported_compressed_archive_source",
+})
 _VISUAL_INTENT_TERMS = frozenset((
     "photo", "picture", "image", "see", "saw", "seeing", "room", "face",
     "camera", "vision", "visual", "see", "voir", "vois", "voit", "vu",
@@ -1045,6 +1049,67 @@ def recent_dialogue_message_source_result(
             "relevance": None,
         }
     return None
+
+
+def recent_dialogue_last_question_source_result(
+    history: Sequence[dict], current_input: str = "", *, max_messages: int = 24,
+    semantically_question_candidates: set[str] | None = None,
+) -> dict | None:
+    """Return the latest prior user-authored question from ordered chat history.
+
+    The caller must establish the semantic recall target first. Selection uses
+    speaker provenance, chronology, question punctuation, and optional
+    cross-lingual semantic speech-act results. It never guesses from Lumina's
+    generated replies or topic similarity. If no prior user question is
+    supported by either source, it abstains.
+    """
+    if not isinstance(history, (list, tuple)):
+        return None
+    recent = list(history)[-max(0, int(max_messages)):]
+    normalized_current = " ".join(str(current_input or "").casefold().split())
+    if recent and isinstance(recent[-1], dict):
+        last = recent[-1]
+        if (
+            str(last.get("role") or "").casefold().strip() == "user"
+            and " ".join(str(last.get("content") or "").casefold().split()) == normalized_current
+        ):
+            recent.pop()
+
+    question_marks = {"?", "？", "؟", "⸮"}
+    semantic_questions = {
+        " ".join(str(value or "").casefold().split())
+        for value in (semantically_question_candidates or set())
+    }
+    for recency, item in enumerate(reversed(recent)):
+        if not isinstance(item, dict) or str(item.get("role") or "").casefold().strip() != "user":
+            continue
+        source_text = " ".join(str(item.get("content") or "").split()).strip()
+        normalized_source = " ".join(source_text.casefold().split())
+        if not source_text or not (
+            any(mark in source_text for mark in question_marks)
+            or normalized_source in semantic_questions
+        ):
+            continue
+        source_key = hashlib.sha256(source_text.encode("utf-8", errors="replace")).hexdigest()
+        return {
+            "answer": f'“{source_text[:800]}”',
+            "status": "supported_recent_dialogue_source",
+            "source_ref": hashlib.sha256(
+                f"recent-user-question:{recency}:{source_key}".encode("utf-8")
+            ).hexdigest()[:20],
+            "source_type": "recent_user_question",
+            "relevance": None,
+        }
+    return None
+
+
+def is_supported_user_recall_result(result: object) -> bool:
+    """Whether a recall result carries an accepted user-authored source receipt."""
+    return bool(
+        isinstance(result, dict)
+        and result.get("status") in SUPPORTED_USER_RECALL_STATUSES
+        and str(result.get("source_ref") or "").strip()
+    )
 
 
 def explicit_recall_archive_source_result(

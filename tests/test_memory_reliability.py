@@ -598,6 +598,70 @@ class MemoryReliabilityTests(unittest.TestCase):
         self.assertEqual(engine.get_model("fred").session_valence, [])
         self.assertEqual(engine.get_prompt_fragment("fred"), "")
 
+    def test_legacy_conversation_appraisal_abstains_instead_of_using_lexical_values(self):
+        from cognition.ai_system import EnhancedMemorySystem
+
+        result = EnhancedMemorySystem.analyze_emotional_context(
+            None, "I am happy, but also worried and frustrated!",
+        )
+
+        self.assertEqual(result["valence"], "Unassessed")
+        self.assertEqual(result["arousal"], "Unassessed")
+        self.assertEqual(result["source"], "unassessed")
+
+    def test_memory_persistence_keeps_unassessed_affect_as_null(self):
+        from cognition.ai_system import EnhancedMemorySystem
+
+        saved = []
+        memory = object.__new__(EnhancedMemorySystem)
+        memory._lock = threading.RLock()
+        memory.persistence = type("Persistence", (), {
+            "add_memory": lambda _self, row: saved.append(dict(row)) or 7,
+        })()
+        memory.faiss_index = None
+        memory._counter = 0
+        memory.config = type("Config", (), {
+            "faiss": type("Faiss", (), {"save_interval": 100})(),
+        })()
+
+        self.assertTrue(memory.add_memory(
+            "Conversation with no measured affect.",
+            emotional_valence=None, arousal_level=None,
+        ))
+        self.assertIsNone(saved[0]["emotional_valence"])
+        self.assertIsNone(saved[0]["arousal_level"])
+
+    def test_semantic_affect_result_updates_lumina_state_with_source_and_turn(self):
+        updates = []
+
+        class _EmotionalState:
+            def update_from_interaction(self, valence, arousal, **kwargs):
+                updates.append((valence, arousal, kwargs))
+
+        classifier = lambda: type("Classifier", (), {
+            "classify": lambda _self, _text: type("Classification", (), {
+                "valence": "negative", "confidence": 0.74,
+            })(),
+        })()
+        organism = type("Organism", (), {
+            "ai_system": type("AI", (), {"emotional_state": _EmotionalState()})(),
+        })()
+        engine = EmpathyEngine(
+            organism, llm=None, multilingual_classifier_factory=classifier,
+        )
+
+        read = engine.read_user("fred", "A semantically negative example.", turn_id="turn-affect-9")
+        engine._affect_queue.join()
+
+        self.assertEqual(read.source, "multilingual_embedding")
+        self.assertEqual(updates, [(
+            "Negative", None, {
+                "intensity": 0.74,
+                "turn_id": "turn-affect-9",
+                "source": "multilingual_embedding",
+            },
+        )])
+
     def test_semantic_posture_is_separate_from_affect_and_scoped_to_turn(self):
         engine = EmpathyEngine(type("Organism", (), {})(), llm=None)
         read = engine.read_user(
